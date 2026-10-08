@@ -249,6 +249,9 @@ func TestAGrantRemembersWhatItWaitedFor(t *testing.T) {
 	h := take(t, g, slotRequest{queue: "mac-codex"})
 	h.setRun("arun-1")
 	w := g.join(slotRequest{queue: "mac-claude"})
+	// Started waiting a second ago: Windows' clock is too coarse to see the
+	// microseconds this test would otherwise wait.
+	w.since = w.since.Add(-time.Second)
 	if got, _ := g.tryEnter(w); got != nil {
 		t.Fatal("entered a full gate")
 	}
@@ -260,8 +263,8 @@ func TestAGrantRemembersWhatItWaitedFor(t *testing.T) {
 	if !strings.Contains(got.waitedOn, "mac-codex run arun-1") {
 		t.Errorf("the grant forgot what it waited on: %q", got.waitedOn)
 	}
-	if got.waited <= 0 {
-		t.Error("the grant did not record how long it waited")
+	if got.waited < time.Second {
+		t.Errorf("the grant recorded waiting %s, want at least the second it stood in line", got.waited)
 	}
 }
 
