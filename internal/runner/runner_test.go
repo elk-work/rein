@@ -723,7 +723,7 @@ func TestSystemPromptCarriesTheContractEssentials(t *testing.T) {
 	prompt := strings.ToLower(strings.Join(strings.Fields(runner.SystemPrompt), " "))
 	for _, want := range []string{
 		"secrets are never in the environment",
-		"on path (elk: `vault-run -- <cmd>`)",
+		"on path (elk: `vault-run --only key -- <cmd>`, naming each secret the command reads)",
 		"declares the capability by name",
 		"packet's preflight list",
 		"use the tool, never a sibling checkout",
