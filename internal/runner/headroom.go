@@ -1,11 +1,8 @@
 package runner
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 )
 
 // How many runs may be in flight at once, and on what evidence.
@@ -161,82 +158,6 @@ func humanBytes(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
-}
-
-// DefaultSlotInterval is how often a queue waiting for a slot asks again. Short
-// enough that memory freed by a finishing run is noticed promptly, long enough
-// that the measurement is not the workload.
-const DefaultSlotInterval = 5 * time.Second
-
-// slotGate is the concurrency limit, recomputed rather than fixed.
-//
-// It replaces a buffered channel sized once at startup. A channel can only
-// express the ceiling; this has to express "four is allowed and one is
-// affordable", which is a different number every few minutes on a machine
-// somebody is also using.
-type slotGate struct {
-	mu     sync.Mutex
-	active int
-	// last is the slot count as of the most recent measurement, and the state
-	// behind "log it when it changes" — 0 means nothing has been measured.
-	last int
-
-	hard    int
-	workDir string
-	probe   HeadroomFunc
-	logf    func(string, ...any)
-	retry   time.Duration
-}
-
-// enter takes a slot, waiting until the machine can afford one. It returns
-// false only when ctx is done.
-//
-// Waiting rather than skipping the tick is deliberate: a queue that gave up on
-// a full machine would report "nothing waiting to claim" and, under --once,
-// exit having done nothing — indistinguishable in the log from an empty queue.
-func (g *slotGate) enter(ctx context.Context) bool {
-	for {
-		if g.tryEnter() {
-			return true
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(g.retry):
-		}
-	}
-}
-
-func (g *slotGate) tryEnter() bool {
-	n, why := Slots(g.probe(g.workDir), g.hard)
-
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if n != g.last {
-		g.logf("concurrency: %s", why)
-		g.last = n
-	}
-	if g.active >= n {
-		return false
-	}
-	g.active++
-	return true
-}
-
-// leave gives a slot back.
-func (g *slotGate) leave() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.active > 0 {
-		g.active--
-	}
-}
-
-// inFlight is how many runs hold a slot right now.
-func (g *slotGate) inFlight() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.active
 }
 
 // DetectHeadroom measures free memory and the free space under dir. It is the

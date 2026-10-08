@@ -162,6 +162,19 @@ type SessionReading struct {
 	// fallback. Present exactly when ExhaustedUntil is.
 	ExhaustedReason string `json:"exhausted_reason,omitempty"`
 
+	// WaitingOn is why work Elk counts on this queue is not being started,
+	// in one sentence of Rein's own (ark:rein#59): no free slot on the
+	// machine, and who holds it; a claim Elk refused, in Elk's words; a
+	// heartbeat that counted runs claim_run then would not hand over. Absent
+	// when nothing is held up — and while ExhaustedUntil holds, which already
+	// says why. WaitingSince is when that started, RFC3339, present exactly
+	// when WaitingOn is.
+	//
+	// Never error text from below Rein: a transport error carries the
+	// connector URL, and the connector URL carries the queue's token.
+	WaitingOn    string `json:"waiting_on,omitempty"`
+	WaitingSince string `json:"waiting_since,omitempty"`
+
 	// MCPServers is the session's MCP inventory. A POINTER to a slice, so
 	// that an empty list and a missing measurement stay different claims —
 	// see the package note above. For a Rein-driven Claude run the true value

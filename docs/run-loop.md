@@ -559,11 +559,6 @@ reply is where Rein learns the run has been parked for Elk's review pass.
 
 ## Concurrency, and stopping
 
-A run under review holds its concurrency slot until the review settles, because
-it is not finished: it may need the agent again. On a busy machine that is the
-argument for raising `--max-concurrent` rather than shortening
-`--review-timeout`.
-
 `--max-concurrent` (default **4**) is the **ceiling** on how many runs are
 driven at once across every queue — the bound is on the machine, because what
 is scarce is memory. It is not the number: every claim takes the smaller of the
@@ -573,6 +568,87 @@ the arithmetic and how each platform is measured. The slot is taken **before**
 the claim, not after: claiming first and then queueing for a slot would hold a
 lease Rein is not yet working, and a lease held without a report lapses in
 fifteen minutes.
+
+### Who gets the next slot
+
+`ark:rein#60 (01M49A7SJE3SRE0TDS6Q451QVG)`. The claims waiting for a slot stand
+in a line (`internal/runner/slotgate.go`), and a free slot goes to the front of
+it — not to whichever queue's five-second clock happens to come round first,
+which is what decided it until v0.8.3. On 2026-10-06 that meant the Elk Scout
+Wrangler cycle, the run that reviews, deploys and unsticks everybody else's,
+waited an hour and a half on a one-slot Mac while the slot went to seven build
+runs in turn.
+
+| In line | Goes |
+|---|---|
+| a claim on a **Wrangler queue** (`wrangler = true`) | first |
+| a run this machine holds, **reopened by Elk's review** with revisions | next |
+| any other claim | in the order they started waiting |
+
+Priority orders the line; it never idles a slot. A build may take the second of
+two free slots while a Wrangler claim takes the first.
+
+**Wrangler priority belongs to the queue, not the run**, because the run is not
+known until it is claimed: `claim_run` hands over the queue's next run and the
+heartbeat says only how many there are, and mac-claude is Elk Scout's Wrangler
+and an ordinary Claude build queue at once. So a Wrangler queue's place at the
+front can be spent on a build. When it is, the queue **lends it back**: its next
+claim stands in line like any build until some other claim on the machine has
+had a slot, and then it is first again. At worst a Wrangler queue that is also
+a busy build queue takes every other turn; it never takes every turn.
+
+The other way #60 offered — a slot held free for Wrangler cycles even at
+headroom one — was not taken, for the same reason: what that slot claimed could
+be a build, and a build in a slot the machine was measured not to afford is the
+2026-08-20 freeze.
+
+Which run a queue's claim gets is Elk's: `claim_run` hands over the oldest run
+group first, and Rein never names a run. A Wrangler cycle queued behind builds
+on its *own* queue therefore still waits for them; that half is Elk's to order.
+
+### A run under review gives its slot back
+
+Until v0.8.3 a run under review held its slot until the review settled. Nothing
+runs in that window — the session has ended, and a revision resumes it — so on
+a one-slot machine every reviewed run was up to twenty minutes of nobody
+working, Wrangler cycle included. Now the slot goes back at the submit that
+parks the run for review, and is taken again, at revision priority, only if
+Elk reopens the run with revisions.
+
+While it waits for that slot the run is `running` under this machine's claim,
+so Rein keeps its lease and says so **on the run**: a `report_progress` naming
+what holds the slot, then one every ten minutes. A cancellation while it waits
+discards the run as any cancellation does; a shutdown leaves the claim to
+lapse.
+
+What does not change: a queue drives one run at a time, so a queue whose run
+is under review claims nothing else until the review settles — the slot is
+free for the *other* queues.
+
+### Saying why work is not starting
+
+`ark:rein#59 (01M497PK82CRKX7K3W40XE6T9N)`. A queued run Rein has not claimed
+has no run id Rein knows, so the reason rides the queue's **heartbeat** as
+`session.waiting_on`, with `session.waiting_since`:
+
+| When | `waiting_on` |
+|---|---|
+| no slot is free | `waiting for a slot on this machine: 1 slot — held down by 5.0 GiB RAM free (cap 4); in use by mac-codex run arun-48e658fb for 25m; next in line mac-claude (Wrangler)` |
+| Elk refuses the claim — a parked agent, a wrong tier | `claim_run refused: ` and Elk's own sentence |
+| Elk cannot answer | `claim_run failed: Elk answered error -32603: …`, or `… could not be reached` |
+| the beat counted runs the claim would not hand over | `Elk's heartbeat counted 2 waiting on this queue, but claim_run handed none over: Queue "mac-grok" is clear: …` |
+| a newer Rein is installed | `not claiming: a newer Rein is installed, …` |
+
+It is absent when nothing is waiting, and while `exhausted_until` holds, which
+already says why. The session `state` stays `idle` (or `running`): the apps
+render Elk's state words and nothing else, and an unknown one reads as "No
+reading". Only Elk's words or Rein's own are ever sent — a transport error
+carries the connector URL, and the connector URL carries the queue's token —
+while the local log keeps the whole error, once per change rather than on every
+poll.
+
+Once the run is claimed, its first progress report says how long it waited for
+its slot and what was holding it, so the reason ends up on the run itself.
 
 Queues are polled in parallel with a ±10% jitter, so several queues on one
 machine, or several machines restarted together, do not all ask at once.

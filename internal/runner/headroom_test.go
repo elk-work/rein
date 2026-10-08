@@ -1,11 +1,8 @@
 package runner
 
 import (
-	"context"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 )
 
 const gib = 1 << 30
@@ -90,103 +87,6 @@ func TestSlotsExplanationNamesTheLimit(t *testing.T) {
 	_, why = Slots(Headroom{FreeRAM: 64 * gib, RAMKnown: true, FreeDisk: 15 * gib, DiskKnown: true}, 4)
 	if !strings.Contains(why, "disk") {
 		t.Errorf("the explanation does not name disk as the limit: %q", why)
-	}
-}
-
-func TestSlotGateLogsOnlyWhenTheCountChanges(t *testing.T) {
-	var (
-		mu   sync.Mutex
-		logs []string
-		free = uint64(32 * gib)
-	)
-	g := &slotGate{
-		hard: 4,
-		probe: func(string) Headroom {
-			mu.Lock()
-			defer mu.Unlock()
-			return Headroom{FreeRAM: free, RAMKnown: true}
-		},
-		logf:  func(format string, args ...any) { mu.Lock(); logs = append(logs, format); mu.Unlock() },
-		retry: time.Millisecond,
-	}
-
-	for i := 0; i < 3; i++ {
-		if !g.tryEnter() {
-			t.Fatalf("entry %d refused with 32 GiB free", i)
-		}
-	}
-	mu.Lock()
-	n := len(logs)
-	mu.Unlock()
-	if n != 1 {
-		t.Fatalf("logged %d times for an unchanging slot count, want 1", n)
-	}
-
-	// Memory disappears; the next measurement drops to the floor and says so.
-	mu.Lock()
-	free = 2 * gib
-	mu.Unlock()
-	if g.tryEnter() {
-		t.Error("a fourth run was admitted with 2 GiB free")
-	}
-	mu.Lock()
-	n = len(logs)
-	mu.Unlock()
-	if n != 2 {
-		t.Fatalf("logged %d times, want 2 — the change must be visible", n)
-	}
-}
-
-func TestSlotGateWaitsForRoomAndTakesItWhenFreed(t *testing.T) {
-	g := &slotGate{
-		hard:  1,
-		probe: func(string) Headroom { return Headroom{} },
-		logf:  func(string, ...any) {},
-		retry: time.Millisecond,
-	}
-	if !g.tryEnter() {
-		t.Fatal("the first run was refused")
-	}
-	if g.inFlight() != 1 {
-		t.Fatalf("in flight = %d, want 1", g.inFlight())
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	entered := make(chan bool, 1)
-	go func() { entered <- g.enter(ctx) }()
-
-	select {
-	case <-entered:
-		t.Fatal("a second run entered a gate of one")
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	g.leave()
-	select {
-	case ok := <-entered:
-		if !ok {
-			t.Fatal("the waiting run gave up once a slot was free")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the waiting run never noticed the freed slot")
-	}
-}
-
-func TestSlotGateGivesUpWhenTheContextEnds(t *testing.T) {
-	g := &slotGate{
-		hard:  1,
-		probe: func(string) Headroom { return Headroom{} },
-		logf:  func(string, ...any) {},
-		retry: time.Millisecond,
-	}
-	if !g.tryEnter() {
-		t.Fatal("the first run was refused")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
-	if g.enter(ctx) {
-		t.Fatal("enter reported a slot after the context ended")
 	}
 }
 

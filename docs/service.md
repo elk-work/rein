@@ -258,7 +258,10 @@ The slot count is logged **whenever it changes**, with the reason:
 ```
 
 That line matters because a throttled runner and an idle one look identical
-from outside.
+from outside. So does the one a waiting queue sends Elk on its beat,
+`session.waiting_on`, which names the limit, who holds each slot and who is
+next in line — a Wrangler queue's claim, ahead of every build. `docs/run-loop.md`
+(*Who gets the next slot*) has the order.
 
 How each half is measured, and why not the obvious way:
 

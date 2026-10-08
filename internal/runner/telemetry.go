@@ -230,6 +230,13 @@ type queueTelemetry struct {
 	// lastBeat is when this queue last told Elk it was alive, from either
 	// clock. It is what makes the tick a backstop rather than a duplicate.
 	lastBeat time.Time
+
+	// waitingOn is why work Elk counts on this queue is not being started,
+	// and waitingSince when that began — see [elk.SessionReading.WaitingOn].
+	// Reported idle or running: a run reopened for revisions can be the one
+	// waiting for a slot.
+	waitingOn    string
+	waitingSince time.Time
 }
 
 // tokens is a cumulative spend. Four plain counters: this is a running total
@@ -295,6 +302,31 @@ func (qr *queueRunner) noteEvent(kind adapter.EventKind) {
 	qr.tel.asked = kind == adapter.EventQuestion
 }
 
+// setWaiting records why work Elk counts on this queue is not being started,
+// or clears it with "". It reports whether the reason changed in substance —
+// compared with its numbers blanked, the way heartbeat replies are, so that a
+// wait whose sentence only counts up the minutes is still the same wait.
+func (qr *queueRunner) setWaiting(reason string) (changed bool) {
+	qr.telMu.Lock()
+	defer qr.telMu.Unlock()
+	changed = digitsRE.ReplaceAllString(reason, "#") != digitsRE.ReplaceAllString(qr.tel.waitingOn, "#")
+	switch {
+	case reason == "":
+		qr.tel.waitingSince = time.Time{}
+	case qr.tel.waitingOn == "":
+		qr.tel.waitingSince = time.Now()
+	}
+	qr.tel.waitingOn = reason
+	return changed
+}
+
+// waiting is the current reason, if any.
+func (qr *queueRunner) waiting() string {
+	qr.telMu.Lock()
+	defer qr.telMu.Unlock()
+	return qr.tel.waitingOn
+}
+
 // noteBeat records that this queue has just told Elk it is alive.
 func (qr *queueRunner) noteBeat() {
 	qr.telMu.Lock()
@@ -327,6 +359,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 			state = StateFaulted
 		}
 		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault()}
+		putWaiting(s, tel)
 		// No session, but the subscription is still there: the last reading,
 		// carried forward, and whether the queue is holding (ark:rein#40).
 		qr.fillHeadroom(s, nil)
@@ -350,6 +383,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	if tel.asked {
 		s.State = string(StateAsked)
 	}
+	putWaiting(s, tel)
 
 	// The live session, if there is one. There is not, between a submit and
 	// Elk's review verdict — the run is still this queue's, so the state above
@@ -365,6 +399,20 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	fillSessionTelemetry(s, live.sess)
 	qr.fillHeadroom(s, live.sess)
 	return s
+}
+
+// putWaiting adds why the queue's work is held up, when something is.
+//
+// The state stays what it was — idle, or running for a run waiting to work its
+// revisions — rather than becoming a new word: the apps render Elk's state
+// vocabulary and nothing else, and a state they do not know reads as "No
+// reading", which is the opposite of what this is for.
+func putWaiting(s *elk.SessionReading, tel queueTelemetry) {
+	if tel.waitingOn == "" {
+		return
+	}
+	s.WaitingOn = tel.waitingOn
+	s.WaitingSince = elk.RFC3339(tel.waitingSince)
 }
 
 // fillHeadroom adds the subscription half of the reading: the window as the

@@ -230,10 +230,16 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 			return err
 		}
 
-		qr.logf("run %s: submitted; Elk is reviewing it. Waiting up to %s (round %d)",
+		qr.logf("run %s: submitted; Elk is reviewing it. Waiting up to %s (round %d), with the slot given back",
 			wo.RunID, qr.reviewTimeout(), round)
-		qr.log.Runner(runlog.KindReview, "submitted; waiting up to %s for Elk's review (round %d)",
+		qr.log.Runner(runlog.KindReview, "submitted; waiting up to %s for Elk's review (round %d), with the slot given back",
 			qr.reviewTimeout(), round)
+		// No agent is running while Elk reviews — the session has ended and
+		// a revision resumes it — so the slot goes back for the wait and is
+		// taken again only if there is more to do (ark:rein#60). Holding it
+		// made every reviewed run on a one-slot machine twenty minutes of
+		// nobody working, Wrangler cycle included.
+		qr.slot.release()
 		verdict, outcome := qr.awaitReview(ctx, wo)
 		switch outcome {
 		case reviewCancelled:
@@ -256,6 +262,9 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 					"or the work needs a different approach.\n\n"+
 					qr.runDetails(wt, repo, spec, res.sessionID), &pending)
 		}
+		if stop, err := qr.retakeSlot(ctx, wo, round+1, &pending); stop {
+			return err
+		}
 		qr.logf("run %s: Elk asked for revisions; running the agent again (round %d)", wo.RunID, round+1)
 		qr.log.Runner(runlog.KindReview, "Elk asked for revisions; running the agent again (round %d)", round+1)
 		_ = qr.report(ctx, wo.RunID, elk.ProgressStep,
@@ -263,6 +272,58 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 				round+1, qr.maxReviewRounds()), &pending)
 		spec = qr.revisionSpec(a, spec, wo, res.sessionID, verdict)
 	}
+}
+
+// retakeSlot gets a slot back for a run Elk's review has reopened, before the
+// agent starts again. The run is `running` under this machine's claim while it
+// waits, so its lease is kept and the person is told why nothing is happening
+// yet: a report on the run itself, and then one every [MaxReportInterval].
+//
+// stop is true when the run must go no further — a person cancelled it while
+// it waited, or Rein is shutting down — and err is then what drive returns.
+// Neither submits anything: a cancelled run is not Rein's to write over, and a
+// shutdown leaves the claim to lapse, as Ctrl-C does mid-session.
+func (qr *queueRunner) retakeSlot(ctx context.Context, wo *elk.WorkOrder, round int, pending *elk.Usage) (stop bool, err error) {
+	if qr.slot != nil && !qr.slot.isReleased() {
+		return false, nil
+	}
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		reported  time.Time
+		cancelled bool
+	)
+	hold, ok := qr.r.gate.enter(waitCtx, slotRequest{queue: qr.q.Name, prio: prioRevision}, func(reason string) {
+		if qr.setWaiting(reason) && reported.IsZero() {
+			qr.logf("run %s: %s", wo.RunID, reason)
+		}
+		if !reported.IsZero() && time.Since(reported) < MaxReportInterval {
+			return
+		}
+		reported = time.Now()
+		body := fmt.Sprintf("Elk's review asked for revisions (round %d of %d). Rein is %s, and starts on them "+
+			"as soon as one is free.", round, qr.maxReviewRounds(), reason)
+		if err := qr.report(waitCtx, wo.RunID, elk.ProgressStep, body, pending); errors.Is(err, elk.ErrCancelled) {
+			cancelled = true
+			cancel()
+		}
+	})
+	qr.setWaiting("")
+	switch {
+	case cancelled:
+		qr.logf("run %s: cancelled while waiting for a slot to work Elk's revisions — nothing submitted", wo.RunID)
+		qr.logStatus = runlog.StatusCancelled
+		qr.log.Runner(runlog.KindReview, "cancelled while waiting for a slot to work Elk's revisions")
+		return true, nil
+	case !ok:
+		return true, nil
+	}
+	qr.slot = hold
+	hold.setRun(wo.RunID)
+	if hold.waited >= time.Minute {
+		qr.logf("run %s: a slot is free after %s waiting", wo.RunID, span(hold.waited))
+	}
+	return false, nil
 }
 
 // awaitReview polls until Elk's review pass says something, or until it has
@@ -596,6 +657,12 @@ func (qr *queueRunner) openingReport(repo RepoResolution, wt *worktree.Worktree)
 	}
 	if wt.Initialised {
 		fmt.Fprintf(&b, "Ran `%s` in the worktree first.\n", worktree.InitScript)
+	}
+	// Said on the run itself, so that a person who saw it sit queued can
+	// read here what it was waiting for (ark:rein#59).
+	if h := qr.slot; h != nil && h.waited >= time.Minute {
+		fmt.Fprintf(&b, "Waited %s for a slot on this machine (%s).\n",
+			span(h.waited), strings.TrimPrefix(h.waitedOn, slotWaitPrefix))
 	}
 	return b.String()
 }

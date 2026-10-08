@@ -150,7 +150,9 @@ pass may reopen it with a revision request and expect the agent to still be
 there. Rein stays, polls, works the revisions (resuming the session where the
 adapter can), and gives up into `stuck` after `--max-review-rounds`. Silence for
 `--review-timeout` counts as approval, because an approved run looks exactly
-like one whose review has not run yet.
+like one whose review has not run yet. No agent runs while Elk reviews, so the
+run gives its concurrency slot back for the wait and takes one again only to
+work revisions.
 
 Each run gets a git worktree of its own, branched from the **remote's default
 branch** after a fetch — not from whatever the local checkout is sitting on,
@@ -466,7 +468,12 @@ elk's standing cap for a Mac, from the 2026-08-20 freeze — and every claim
 takes the smaller of that and what the machine can currently afford: free RAM
 over 4 GiB a run, free disk under `work_dir` over 10 GiB a run, floor of one.
 The count is logged whenever it changes, with the reason, because a throttled
-runner and an idle one look identical from outside.
+runner and an idle one look identical from outside. Claims waiting for a slot
+stand in line: a Wrangler queue's claim goes first, then a run Elk's review has
+reopened, then everything else in arrival order; a run under review gives its
+slot back while Elk thinks. A queue whose work is not starting says why on its
+heartbeat, as `session.waiting_on`. [`docs/run-loop.md`](docs/run-loop.md)
+has the rules.
 
 ### Telling Elk what the machine looks like
 
