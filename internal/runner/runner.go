@@ -48,6 +48,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	_ "embed"
 
@@ -587,6 +588,25 @@ type queueRunner struct {
 	// a queue with no secrets map (secrets.go). Atomic because the control
 	// plane's goroutine logs through logf while the run's goroutine sets it.
 	redact atomic.Pointer[secretenv.Redactor]
+
+	// slot is the concurrency slot the current run holds — nil between runs,
+	// and released (but still set) while Elk's review pass has the run
+	// (drive.go, retakeSlot). Like log, it lives in a field because this
+	// queue drives one run at a time.
+	slot *slotHold
+
+	// lent and lentAt are a Wrangler queue lending its place at the front of
+	// the line (claimPriority): set when a claim made at Wrangler priority
+	// turned out to be a build, cleared once any later claim on the machine
+	// has had a slot. Only this queue's own goroutine touches them.
+	lent   bool
+	lentAt uint64
+
+	// claimErr is the last claim failure, as reported, and when it was
+	// logged — so a queue Elk keeps refusing (a parked agent, a database
+	// timing out) says so once a lease rather than on every poll.
+	claimErr   string
+	claimErrAt time.Time
 }
 
 // logf writes one line to the daemon's log, through the current run's
@@ -626,6 +646,9 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 		} else {
 			qr.logf("scoped secrets, read from the keychain at each run: %s", strings.Join(names, ", "))
 		}
+	}
+	if qr.q.IsWrangler() {
+		qr.logf("Wrangler queue: its claims take the next free slot on this machine ahead of build claims")
 	}
 
 	if qr.r.opts.DryRun {
@@ -674,6 +697,10 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 			qr.logf("online — %d waiting", depth)
 			lastDepth, lastDepthLog = depth, time.Now()
 		}
+		if known && depth == 0 {
+			// Nothing is waiting, so there is nothing to explain.
+			qr.setWaiting("")
+		}
 
 		// But the depth does not answer the whole question. Elk's
 		// `queue_depth` counts `status='queued'` rows only, while
@@ -710,17 +737,25 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 				heldLogged = until
 			}
 			wantClaim = false
+			// exhausted_until and exhausted_reason already say why, on
+			// every beat; a second sentence would only disagree with them.
+			qr.setWaiting("")
 		}
 
 		var (
 			claimed bool
 			err     error
 		)
+		if wantClaim && qr.r.isDraining() && (!known || depth > 0) {
+			qr.setWaiting("not claiming: a newer Rein is installed, and this one restarts into it " +
+				"once the runs it holds are finished")
+		}
 		if wantClaim && !qr.r.isDraining() {
 			lastClaim = time.Now()
-			claimed, err = qr.claimAndDrive(ctx)
-			if err != nil && ctx.Err() == nil {
-				qr.logf("%v", err)
+			var clear string
+			claimed, clear, err = qr.claimAndDrive(ctx)
+			if ctx.Err() == nil {
+				qr.noteClaimOutcome(claimed, clear, err, depth, known)
 			}
 		}
 		if qr.r.opts.Once {
@@ -858,10 +893,15 @@ func collapseLines(s string) string {
 // Claiming first and then queueing for a slot would hold a lease Rein is not
 // yet working, and a lease held without a report lapses in fifteen minutes.
 //
-// The slot is granted against live headroom rather than a fixed count, so
-// waiting here can also mean "the machine cannot afford another run yet"
-// rather than only "every slot is taken".
-func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, err error) {
+// The slot is granted against live headroom rather than a fixed count, and in
+// order (slotgate.go): a Wrangler queue's claim goes ahead of every build
+// claim, so waiting here can mean "the machine cannot afford another run yet",
+// "every slot is taken", or "a Wrangler cycle is next". Which one is reported to
+// Elk on the queue's beat while it waits (ark:rein#59).
+//
+// clear is Elk's own sentence when claim_run handed nothing over, so the serve
+// loop can tell a heartbeat that counted waiting work it could not claim.
+func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear string, err error) {
 	// Waiting for headroom is not an in-flight run. Drain cancels only
 	// this wait, never the context passed to a claimed run.
 	gateCtx, cancel := context.WithCancel(ctx)
@@ -873,25 +913,166 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, err err
 			cancel()
 		}
 	}()
-	if !qr.r.gate.enter(gateCtx) {
-		return false, nil
+	prio := qr.claimPriority()
+	logged := false
+	hold, ok := qr.r.gate.enter(gateCtx, slotRequest{queue: qr.q.Name, prio: prio}, func(reason string) {
+		qr.setWaiting(reason)
+		if !logged {
+			qr.logf("%s", reason)
+			logged = true
+		}
+	})
+	if !ok {
+		return false, "", nil
 	}
-	defer qr.r.gate.leave()
+	qr.slot = hold
+	defer qr.releaseSlot()
+	if logged {
+		// The slot wait is over. Any other reason stands until the claim
+		// says something new (noteClaimOutcome).
+		qr.setWaiting("")
+	}
+	if hold.waited >= time.Minute {
+		qr.logf("a slot is free after %s waiting", span(hold.waited))
+	}
 	if !qr.r.beginClaim() {
-		return false, nil
+		return false, "", nil
 	}
 	defer qr.r.endClaim()
 
 	wo, err := qr.elk.ClaimRun(ctx, elk.ClaimRequest{Workspace: qr.workspace, Queue: qr.q.Name})
 	switch {
 	case errors.Is(err, elk.ErrNoWork):
-		return false, nil
+		return false, strings.TrimPrefix(err.Error(), elk.ErrNoWork.Error()+": "), nil
 	case err != nil:
-		return false, fmt.Errorf("claim: %w", err)
+		return false, "", fmt.Errorf("claim: %w", err)
 	}
+	hold.setRun(wo.RunID)
+	qr.setWaiting("")
 	for _, n := range wo.Notices {
 		qr.logf("workspace notice: %s", n)
 	}
 	qr.logf("claimed run %s — %s", wo.RunID, firstLine(wo.Direction))
-	return true, qr.drive(ctx, wo)
+	if prio == prioWrangler && !wranglerCycle(qr.q, wo.RequiredCapabilities) {
+		// The front of the line was spent on a build. Lend it back until
+		// another claim on this machine has had a slot, so a queue that is
+		// both the Wrangler and a busy build queue cannot take every turn.
+		qr.lent, qr.lentAt = true, hold.grant
+		qr.logf("run %s is not a Wrangler cycle; this queue's next claim waits its turn behind other queues", wo.RunID)
+	}
+	return true, "", qr.drive(ctx, wo)
+}
+
+// claimPriority is where this queue's next claim stands in line for a slot
+// (ark:rein#60).
+//
+// A Wrangler queue goes first. That is decided by the QUEUE, not the run,
+// because the run is not known until it is claimed — Elk's claim_run hands
+// over the next run on a queue and the heartbeat says only how many there are
+// — and mac-claude is both Elk Scout's Wrangler and an ordinary Claude build
+// queue. So a Wrangler queue's place at the front can be spent on a build.
+// When it is, the queue lends it back: its next claim stands in line like any
+// build until some other claim has been granted a slot, and then it is first
+// again. At worst a Wrangler queue that is also a busy build queue takes every
+// other turn; it never takes every turn.
+//
+// The alternative ark:rein#60 offered — a slot kept free for Wrangler cycles
+// even at headroom one — was not taken for the same reason: the run that slot
+// claimed could be a build, and a build in a slot the machine was measured not
+// to afford is the 2026-08-20 freeze.
+func (qr *queueRunner) claimPriority() slotPriority {
+	if !qr.q.IsWrangler() {
+		return prioBuild
+	}
+	if qr.lent && qr.r.gate.grantCount() > qr.lentAt {
+		qr.lent = false
+	}
+	if qr.lent {
+		return prioBuild
+	}
+	return prioWrangler
+}
+
+// releaseSlot gives back whatever slot the current run holds. Safe when the
+// slot was already given back for a review wait.
+func (qr *queueRunner) releaseSlot() {
+	qr.slot.release()
+	qr.slot = nil
+}
+
+// noteClaimOutcome records why work Elk counted on this queue was not
+// started, so it rides the next beat instead of going unsaid (ark:rein#59).
+//
+// Three outcomes need a sentence. A claim that failed: Elk refused it (a
+// parked agent says so in its own words) or could not be reached. And a claim
+// that came back empty while the heartbeat had just counted runs waiting —
+// the shape of the 2026-10-06 report, where a queue said "2 waiting" for hours
+// while claiming other, newer work. Claim ORDER within a queue is Elk's:
+// Rein never names a run, it asks claim_run for the queue's next one, and Elk
+// hands over the oldest group first. When the count and the claim disagree,
+// Rein cannot see which runs were passed over, but it can say that some were.
+func (qr *queueRunner) noteClaimOutcome(claimed bool, clear string, err error, depth int, known bool) {
+	switch {
+	case err != nil:
+		why := claimFailure(err)
+		if why != qr.claimErr || time.Since(qr.claimErrAt) >= LeaseDuration {
+			// The local log keeps the whole error; Elk gets the safe sentence.
+			qr.logf("%v", err)
+			qr.claimErr, qr.claimErrAt = why, time.Now()
+		}
+		qr.setWaiting(why)
+		return
+	case qr.claimErr != "":
+		qr.logf("claim_run is answering again")
+		qr.claimErr = ""
+	}
+	if !claimed && clear != "" && known && depth > 0 {
+		why := fmt.Sprintf("Elk's heartbeat counted %d waiting on this queue, but claim_run handed none over: %s",
+			depth, clear)
+		if qr.setWaiting(why) {
+			qr.logf("%s", why)
+		}
+		return
+	}
+	qr.setWaiting("")
+}
+
+// claimFailure is a claim error as a sentence Elk may be shown.
+//
+// Only words Elk itself wrote, or Rein's own, ever leave the machine: a
+// transport error carries the connector URL, and the connector URL carries the
+// queue's token. The full error still goes to the local log.
+func claimFailure(err error) string {
+	var (
+		tier *elk.TierRefusalError
+		tool *elk.ToolError
+		rpc  *elk.RPCError
+		hErr *elk.HTTPError
+	)
+	switch {
+	case errors.As(err, &tier):
+		return fmt.Sprintf("claim_run refused this queue's token: it is %s, and claim_run needs %s — re-enrol the queue",
+			tier.Held, tier.Required)
+	case errors.As(err, &tool):
+		return "claim_run refused: " + clip(firstLine(tool.Text), 300)
+	case errors.As(err, &rpc):
+		return fmt.Sprintf("claim_run failed: Elk answered error %d: %s", rpc.Code, clip(firstLine(rpc.Message), 200))
+	case errors.As(err, &hErr):
+		return "claim_run failed: Elk answered " + hErr.Status
+	case errors.As(err, new(*elk.UnknownToolError)):
+		return "claim_run is not offered by this Elk"
+	}
+	return "claim_run failed: Elk could not be reached"
+}
+
+// clip shortens s to at most n bytes for a one-line reason, on a rune
+// boundary, marking the cut.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ func testRunner(m Machine) *Runner {
 			Version:       "v0.1.1",
 			Machine:       func(string) Machine { return m },
 			Headroom:      func(string) Headroom { return m.Headroom },
+			Out:           io.Discard,
 		},
 		sessions: newSessionRegistry(),
 	}
