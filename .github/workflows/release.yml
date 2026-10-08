@@ -1,0 +1,126 @@
+# Rein's release: on a v* tag, build one static binary per platform and upload
+# it to the GitHub release with a checksum beside it.
+#
+# Same shape as elk-work/ark's .github/workflows/release.yml, because Rein is
+# consumed the same way ark is — a pinned released binary, never built from
+# source by a session (elk's CLAUDE.md). Plain `go build` in a matrix rather
+# than goreleaser: five targets, no packaging, no signing yet, and one fewer
+# tool to pin.
+#
+# Action versions match .github/workflows/ci.yml so the two gates move together.
+# Nothing here runs on a self-hosted runner — docs/ci-runners.md rule 3 in
+# elk-work/elk.
+#
+# Cross-building every target on one Linux runner is only safe because ci.yml
+# now compiles, vets and TESTS on ubuntu, macOS and Windows for every pull
+# request (ark:rein#11). Before that, a darwin-only or windows-only compile
+# error would have reached this workflow first — at tag time, hours after the
+# merge, with the tag already pushed.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: existing tag to (re)build assets for
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: ensure a release exists for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --title "$TAG" --generate-notes
+
+  binaries:
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          # Linux on ARM is not hypothetical: a cloud sandbox or a CI box is as
+          # likely to be arm64 as amd64 now, and a runner nobody can install is
+          # a runner nobody uses. One more matrix leg, no cgo, no packaging.
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-go@v7
+        with:
+          cache-dependency-path: go.sum
+          go-version-file: go.mod
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # No cgo: the keychain backends go-keyring uses are the OS APIs on
+          # Windows (wincred) and D-Bus on Linux, neither of which needs cgo,
+          # and macOS reaches Keychain through the `security` CLI.
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          name="rein_${TAG}_${GOOS}_${GOARCH}"
+          mkdir -p "dist/${name}"
+          bin=rein
+          if [ "$GOOS" = windows ]; then bin=rein.exe; fi
+          go build -trimpath -ldflags "-s -w -X main.Version=${TAG}" -o "dist/${name}/${bin}" ./cmd/rein
+          cp README.md LICENSE "dist/${name}/"
+          # sha256sum, not `shasum -a 256`: identical output, but coreutils
+          # rather than a side effect of Perl being on the image. Every leg of
+          # this job runs on Linux, so there is no portability argument for the
+          # Perl one — and this workflow has never been exercised by a real
+          # tag, which is the wrong time to find out.
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "${name}.zip" "${name}")
+            (cd dist && sha256sum "${name}.zip" > "${name}.zip.sha256")
+            echo "ASSET=dist/${name}.zip" >> "$GITHUB_ENV"
+            echo "SUM=dist/${name}.zip.sha256" >> "$GITHUB_ENV"
+          else
+            tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+            echo "ASSET=dist/${name}.tar.gz" >> "$GITHUB_ENV"
+            echo "SUM=dist/${name}.tar.gz.sha256" >> "$GITHUB_ENV"
+          fi
+      - name: check the version is stamped
+        # A binary that reports "dev" cannot be pinned, and a release that
+        # ships one is worse than no release: scripts/rein-version would
+        # compare against a string the binary never prints. Only the native
+        # build can run, which is enough to catch a broken -ldflags path.
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          got=$(./dist/rein_${TAG}_linux_amd64/rein version)
+          test "$got" = "rein ${TAG}" || {
+            echo "version reported '$got', want 'rein ${TAG}'"
+            exit 1
+          }
+      - name: upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" "$SUM" --clobber

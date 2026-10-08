@@ -1,0 +1,12 @@
+--- width 100
+QUEUE       RUN       DIRECTION                                  ELAPSED  LAST                TOKENS
+mac-claude  a1b2c3d4  Fix the flaky due-date test in ElkKit        4m12s  reaped               12.4k
+mac-codex   9f8e7d6c  Write docs/tail.md and a line in the REA…      58s  ▸ Write               3.1k
+win-grok    00112233  Triage the Windows service failure           2h00m  attached              1.2M
+--- width 60
+QUEUE       RUN       DIRECTION            ELAPSED    TOKENS
+mac-claude  a1b2c3d4  Fix the flaky due-…    4m12s     12.4k
+mac-codex   9f8e7d6c  Write docs/tail.md…      58s      3.1k
+win-grok    00112233  Triage the Windows…    2h00m      1.2M
+--- nothing in flight
+no runs in flight

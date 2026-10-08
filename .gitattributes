@@ -1,0 +1,19 @@
+# LF in the working tree on every platform, Windows included.
+#
+# Git for Windows checks out with `core.autocrlf=true` by default, which is
+# what `actions/checkout` gets on a windows-latest runner. `gofmt` treats a
+# file with CRLF line endings as unformatted, so the first Windows leg of
+# .github/workflows/ci.yml reported every single .go file in the repository as
+# needing `gofmt -w` — a wall of noise with one cause and nothing to do with
+# the code (ark:rein#11).
+#
+# `eol=lf` overrides autocrlf, so this fixes the developer's checkout too: Go
+# source is LF, and a Windows contributor should not have to know that.
+* text=auto eol=lf
+
+# Except things that are not text. `text=auto` already leaves detected binaries
+# alone; these are named so a new one is not misdetected the day it lands.
+*.png binary
+*.jpg binary
+*.gz  binary
+*.zip binary

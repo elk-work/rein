@@ -1,0 +1,179 @@
+# Rein's per-PR gate, on plain hosted runners — docs/ci-runners.md rule 3 in
+# elk-work/elk: every repository with code carries a gate, and it never asks
+# for a self-hosted runner.
+#
+# **All three platforms, because Rein is a cross-platform binary and the
+# platform-specific code is where its risk is.** Until 2026-08-29 this gate ran
+# on ubuntu-latest alone (ark:rein#11) while the product shipped a launchd
+# agent, a Windows service, ConPTY plans, three per-OS keychain backends and
+# three per-OS memory probes — none of which ubuntu compiles, let alone runs.
+# A cross-build in a release job would have caught the compile errors, hours
+# after the merge and on nobody's screen.
+#
+# The check a merge rule can require is `ci-gate`, not the three legs: it
+# reports on EVERY pull request, including docs-only ones the legs skip, so a
+# required check can never strand a PR waiting for a run that will not come.
+# A workflow-level `paths:` filter cannot do that — when it excludes a PR, no
+# check reports at all — which is why pull_request carries no filter below and
+# the `changes` job makes the same decision inside the run instead.
+#
+# **Budget, per docs/ci-runners.md rule 4 in elk-work/elk (ark:rein#41).**
+# Hosted macOS bills at roughly ten times Linux, and Windows above Linux too,
+# against the org's hard-stop budget. The matrix stays on every PR — cross-OS
+# breakage has to show before the merge, and at Rein's rate the whole gate is
+# a couple of dollars a month — but it runs only when something it reads
+# changed, and a superseded PR run is cancelled instead of paid for twice.
+name: ci
+
+# The paths below are everything gofmt, vet, build and test read. Markdown is
+# excluded — the docs are not compiled — except internal/runner/prompt.md and
+# the two landing sections beside it (landing_pr.md, landing_branch.md), which
+# runner.go and landing.go pull in with //go:embed; a new //go:embed of a .md
+# file must be added here the same way. .gitattributes is here because its eol=lf
+# is what keeps the Windows leg's gofmt and golden files honest. cmd/** and
+# internal/** are listed whole, not by extension, so a new embedded asset or
+# fixture outside a testdata/ directory is covered without anyone remembering
+# this list. Keep this list and the `relevant()` function in the `changes` job
+# identical.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+      - "cmd/**"
+      - "internal/**"
+      - "**/testdata/**"
+      - "!**/*.md"
+      - internal/runner/prompt.md
+      - internal/runner/landing_pr.md
+      - internal/runner/landing_branch.md
+      - .gitattributes
+      - .github/workflows/ci.yml
+  pull_request:
+  workflow_dispatch:
+
+# One run per PR: a new push or a force-push cancels the run it supersedes.
+# Runs on main are never cancelled, and are grouped by commit rather than by
+# ref: GitHub keeps at most one *pending* run per group and cancels the older
+# one even with cancel-in-progress off, so a shared main group would silently
+# drop the run for any merge that lands while another is still testing.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Declare the environment capability list instead of probing for it. The
+  # probes shell out to `gh auth status` and `xcodebuild -version`, which on a
+  # hosted runner are slow, meaningless, or both — and a test whose result
+  # depends on whether the runner image happens to ship a logged-in `gh` is not
+  # a test. Empty means "this box holds nothing beyond Rein's built-ins".
+  REIN_HOST_CAPABILITIES: ""
+
+  # Never touch a real keychain. macOS runners have a login keychain that is
+  # locked, Windows runners have a Credential Manager, and a test that reached
+  # either would hang on a prompt no one can answer. `file` is the documented
+  # CI backend (internal/keyring): a 0600 JSON file under $REIN_HOME.
+  REIN_KEYRING: file
+
+jobs:
+  # Decides whether the matrix has anything to read. Asks the API for the PR's
+  # file list rather than checking out, so a docs-only PR costs one short
+  # ubuntu job. Push and workflow_dispatch always run: the push trigger keeps
+  # its own paths filter, and a manual dispatch means "run it".
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Same rules, same order, as the push trigger's paths list above.
+          relevant() {
+            case "$1" in
+              internal/runner/prompt.md|internal/runner/landing_pr.md|internal/runner/landing_branch.md|.gitattributes|.github/workflows/ci.yml) return 0 ;;
+              *.md) return 1 ;;
+              *.go|go.mod|go.sum|cmd/*|internal/*|testdata/*|*/testdata/*) return 0 ;;
+            esac
+            return 1
+          }
+          code=false
+          while IFS= read -r f; do
+            if relevant "$f"; then echo "relevant: $f"; code=true; break; fi
+          done < <(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" --jq '.[].filename')
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      # Every leg runs. A Windows-only failure is exactly the thing this matrix
+      # exists to surface, and cancelling it because Linux went red first would
+      # hide it.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          cache-dependency-path: go.sum
+          go-version-file: go.mod
+      - name: gofmt
+        # bash on all three: the Windows runner's default shell is PowerShell,
+        # where this is not the same script.
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean; run gofmt -w . on:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+      # The race detector needs a C toolchain, which is reliably present on the
+      # Linux image and is one more thing to get wrong on the other two. One
+      # leg is enough: a data race in shared code is not platform-specific, and
+      # the two places Rein has concurrency — the queue fan-out and the
+      # concurrency gate — are in files that compile everywhere.
+      - name: go test -race
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race ./...
+
+  # The one check a merge rule requires. Always runs (even when the run is
+  # cancelled, so a cancelled run reads red, never as a skipped-therefore-
+  # passing check) and passes only when every leg passed or was skipped
+  # because nothing it reads changed.
+  ci-gate:
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "changes=$CHANGES test=$TEST"
+          [ "$CHANGES" = success ] || { echo "::error::changes job $CHANGES"; exit 1; }
+          case "$TEST" in success|skipped) ;; *) echo "::error::test $TEST"; exit 1 ;; esac
