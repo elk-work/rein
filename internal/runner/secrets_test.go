@@ -157,7 +157,7 @@ func TestAScopedQueueRunGetsExactlyItsSecrets(t *testing.T) {
 	}
 
 	// The prompt names what the run holds — names only.
-	if strings.Contains(spec.SystemPrompt, "vault-run -- <cmd>") {
+	if strings.Contains(spec.SystemPrompt, "vault-run --only KEY -- <cmd>") {
 		t.Error("a scoped run's prompt still tells it to use the machine's vault")
 	}
 	for _, name := range []string{"`AWS_ACCESS_KEY_ID`", "`POSTHOG_API_KEY`", "This queue's credentials are scoped"} {
@@ -218,7 +218,7 @@ func TestAQueueWithoutAMapIsScopedByName(t *testing.T) {
 	if len(items.readKeys()) != 0 {
 		t.Errorf("an unscoped queue read the keychain: %v", items.readKeys())
 	}
-	if !strings.Contains(spec.SystemPrompt, "vault-run -- <cmd>") {
+	if !strings.Contains(spec.SystemPrompt, "vault-run --only KEY -- <cmd>") {
 		t.Error("an unscoped queue lost the vault paragraph")
 	}
 	caps := declared(h)
@@ -346,7 +346,7 @@ func TestAnEmptyScopedQueueGetsNoCredentials(t *testing.T) {
 	if len(spec.Env) != 0 || len(spec.PassEnv) != 0 {
 		t.Errorf("Env=%v PassEnv=%v; want no variables at all", keys(spec.Env), spec.PassEnv)
 	}
-	if !strings.Contains(spec.SystemPrompt, "it holds none") || strings.Contains(spec.SystemPrompt, "vault-run -- <cmd>") {
+	if !strings.Contains(spec.SystemPrompt, "it holds none") || strings.Contains(spec.SystemPrompt, "vault-run --only KEY -- <cmd>") {
 		t.Error("an empty scoped queue's prompt does not say it holds no credentials")
 	}
 	if has(declared(h), "supabase-vault") {
@@ -521,7 +521,7 @@ func TestAScopedWranglerCycleGetsExactlyItsSecrets(t *testing.T) {
 	}
 
 	// The prompt names what the run holds — names only.
-	if strings.Contains(spec.SystemPrompt, "vault-run -- <cmd>") {
+	if strings.Contains(spec.SystemPrompt, "vault-run --only KEY -- <cmd>") {
 		t.Error("a scoped run's prompt still tells it to use the machine's vault")
 	}
 	for _, name := range []string{"`AWS_ACCESS_KEY_ID`", "`POSTHOG_API_KEY`", "This queue's credentials are scoped"} {

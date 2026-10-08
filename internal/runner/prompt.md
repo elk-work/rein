@@ -85,8 +85,9 @@ even redacted, not even as an example. If a task appears to require one, say
 which credential is missing and stop.
 
 Secrets are never in the environment. A machine that holds them exposes a tool
-on PATH (Elk: `vault-run -- <cmd>`) and declares the capability by name; it
-shows in the packet's preflight list. Use the tool, never a sibling checkout.
+on PATH (Elk: `vault-run --only KEY -- <cmd>`, naming each secret the command
+reads) and declares the capability by name; it shows in the packet's preflight
+list. Use the tool, never a sibling checkout.
 When the capability is not declared, name the missing capability and stop.
 
 ## Landing the work
