@@ -177,3 +177,25 @@ func TestHostedEmptyQueueDoesNotPretendToSubmit(t *testing.T) {
 		t.Fatal("submitted nonexistent run")
 	}
 }
+
+func TestHostedRepositorySelectionIgnoresURLsAndLocalMappings(t *testing.T) {
+	cfg := config.Config{Hosted: config.Hosted{Enabled: true, AllowRepos: []string{"acme/repo", "acme/.github"}}, DefaultRepo: "acme/repo", Repos: map[string]string{"acme/repo": "/some/local/path"}}
+	for _, tc := range []struct {
+		text, queue, want string
+		ok                bool
+	}{
+		{"repo: acme/repo", "other/repo", "acme/repo", true},
+		{"https://github.com/other/repo/pull/1", "acme/repo", "acme/repo", true},
+		{"repo: acme/.github", "", "acme/.github", true},
+		{"repo: /some/local/path", "acme/repo", "", false},
+		{"repo: acme/..", "acme/repo", "", false},
+		{"repo: other/repo", "acme/repo", "", false},
+		{"https://github.com/acme/repo", "", "", false},
+		{"no repository hint", "", "", false},
+	} {
+		got, err := runner.ResolveHostedRepo(cfg, config.Queue{Repo: tc.queue}, tc.text)
+		if tc.ok && (err != nil || got.Name != tc.want) || !tc.ok && err == nil {
+			t.Fatalf("selection %q: got %q err=%v", tc.text, got.Name, err)
+		}
+	}
+}

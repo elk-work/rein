@@ -191,9 +191,12 @@ func (h Hosted) RunCap() time.Duration {
 	return h.MaxRun.Duration()
 }
 
-var hostedRepoRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+var hostedRepoRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$`)
 
-func HostedRepoName(name string) bool { return hostedRepoRE.MatchString(name) }
+func HostedRepoName(name string) bool {
+	_, repo, ok := strings.Cut(name, "/")
+	return ok && repo != "." && repo != ".." && hostedRepoRE.MatchString(name)
+}
 
 // CheckHosted requires agreement between the config and the invocation.
 func (c Config) CheckHosted(flag bool) error {
