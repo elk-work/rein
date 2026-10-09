@@ -96,6 +96,7 @@ Work records live in Ark, repository 01M17TTM53XJKBZW2M9E04HHYP.`,
 		newStatusCommand(),
 		newVersionCommand(version),
 		newServiceCommand(),
+		newConfigCommand(),
 	)
 	return root
 }

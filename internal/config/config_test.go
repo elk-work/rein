@@ -731,3 +731,69 @@ func fmtBool(b bool) string {
 	}
 	return "legacy"
 }
+
+// TestRepositoryCompatibility loads the three shapes a config's repository
+// rules can take (ark:rein#67): one workspace with no lists, several
+// workspaces with no lists — the shape v0.8.4 stranded — and lists.
+func TestRepositoryCompatibility(t *testing.T) {
+	const head = `workspace = "Elk Scout"
+default_repo = "/dev/elk"
+[repos]
+"elk-work/scout" = "/dev/scout"
+signal = "/dev/signal"
+[[queues]]
+name = "mac-claude"
+agent_kind = "claude"
+`
+	const signalQueue = `[[queues]]
+name = "mac-codex"
+agent_kind = "codex"
+workspace = "Signal"
+`
+	for _, tc := range []struct {
+		name, text, mode string
+		warn, scoped     bool
+		scout, signal    int // repositories each workspace's queue sees
+	}{
+		{"single workspace, no lists", head, "unscoped", false, false, 2, 2},
+		{"several workspaces, no lists", head + signalQueue, "compatibility", true, false, 2, 2},
+		{"several workspaces, one list", head + `repos = ["elk-work/scout"]
+` + signalQueue, "scoped", false, true, 1, 0},
+		{"several workspaces, every list", head + `repos = ["elk-work/scout"]
+` + signalQueue + `repos = ["signal"]
+`, "scoped", false, true, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.RepositoryMode(); got != tc.mode {
+				t.Errorf("mode = %q, want %q", got, tc.mode)
+			}
+			warning := cfg.RepositoryCompatibilityWarning()
+			if (warning != "") != tc.warn || cfg.RepositoryCompatibility() != tc.warn {
+				t.Errorf("warning = %q, compatibility = %v; want a warning: %v", warning, cfg.RepositoryCompatibility(), tc.warn)
+			}
+			if tc.warn && !strings.Contains(warning, "add repos = [...] to each [[queues]] entry") {
+				t.Errorf("the warning does not name the fix: %q", warning)
+			}
+			for i, want := range []int{tc.scout, tc.signal} {
+				if i >= len(cfg.Queues) {
+					continue
+				}
+				q := cfg.Queues[i]
+				if got := cfg.RepositoriesFor(q); len(got) != want {
+					t.Errorf("%s sees %v, want %d repositories", cfg.QueueLabel(q), got, want)
+				}
+				if got := cfg.RepositoryScopeRequired(q); got != tc.scoped {
+					t.Errorf("%s scoped = %v, want %v", cfg.QueueLabel(q), got, tc.scoped)
+				}
+			}
+		})
+	}
+}

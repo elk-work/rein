@@ -65,6 +65,7 @@ rein run   [--queue mac-claude] [--once] [--dry-run] [--keep-worktrees]
            [--max-concurrent 4] [--log-file PATH] [--service]
 rein tail   [run|queue] [--raw] [--since 10m]
 rein status [--online]
+rein config check [--json]
 rein version
 rein attach [run|queue] [--read-only]
 rein service install | uninstall | start | stop | status
@@ -190,7 +191,15 @@ On machines serving multiple workspaces, add `repos = ["owner/repository"]`
 to each workspace's queue entries, selecting keys from `[repos]`. Queues in a
 workspace share the union of those lists and advertise only those repositories.
 An undeclared repository ends the run stuck; it never uses `default_repo`.
-Existing single-workspace configs without lists still use the top-level map.
+Configs with no list on any queue keep the old rules: every queue sees the
+top-level map and `default_repo` applies. On a multi-workspace machine that is
+**compatibility mode** — the shape every such config had before v0.8.4, which
+v0.8.4 read as "no repositories anywhere" and stranded every run
+(`ark:rein#67`). Rein logs a warning naming the fix at every start until the
+lists are added. The first list on any queue scopes the whole config, so add
+one to every queue in a single edit, give a Wrangler queue a `repo`, and run
+`rein config check` before restarting: it prints each queue's repositories and
+default and exits 1 when a queue would strand its runs.
 
 Queues are keyed by workspace and name. A second workspace may enrol the same
 name without replacing the first; re-enrol keeps local settings. Use
@@ -487,6 +496,15 @@ reopened, then everything else in arrival order; a run under review gives its
 slot back while Elk thinks. A queue whose work is not starting says why on its
 heartbeat, as `session.waiting_on`. [`docs/run-loop.md`](docs/run-loop.md)
 has the rules.
+
+**A self-upgrade checks the config first.** When a new binary is installed the
+service asks it `rein config check --json` against the live config before
+draining into it, and stays on the running version — logging why and saying so
+in `session.waiting_on` — if the new version would take a repository or a
+default away from any queue. Fixing `config.toml` releases the upgrade on the
+next check; restarting the service takes the new version as it is. A binary
+too old to have the check is restarted into unchecked.
+[`docs/service.md`](docs/service.md#upgrading) has the detail.
 
 ### Telling Elk what the machine looks like
 

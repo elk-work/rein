@@ -351,6 +351,31 @@ drain timeout. Rein exits with code 75 once idle; the service manager launches
 the new binary. Reinstalling the same version does not restart it. A missing
 binary or a failed version probe leaves the daemon running.
 
+Before it drains, the daemon asks the new binary how it reads the live config —
+`<new binary> config check --json --config <config.toml>` — and compares that
+with its own reading of the same file (`ark:rein#67`). If the new version would
+fail to load the file, drop a queue, take a repository away from a queue, or
+leave a queue with no default where it has one now, the upgrade is refused:
+the daemon keeps serving on the running version, logs `upgrade: NOT restarting
+into …` with each queue affected, and every queue's heartbeat carries the
+reason as `session.waiting_on` when it has nothing more pressing to say. This
+is the check v0.8.4 needed: it stranded every run on multi-workspace machines
+whose configs had no `repos` lists, and nothing looked before restarting into
+it.
+
+A refusal is not sticky. Fix `config.toml` — `rein config check`, run with the
+new binary, shows how it reads the file — and the daemon checks again when the
+file changes and restarts into the new version once nothing is stranded.
+Restarting the service by hand takes the new version as it is, because the
+binary on disk already is the new one; so does any other restart, a reboot
+included. A queue that is already broken on the running version does not hold
+an upgrade: only what the upgrade itself would take away counts.
+
+The check fails open. A binary with no `config check` (anything released before
+it), one that does not answer within 15 seconds, or one whose report uses a
+newer schema than the running version reads is restarted into unchecked, and
+the log says so.
+
 To opt out, set `self_restart = false` at the top level of `config.toml` and
 restart once to load that setting. Upgrades then require a manual
 `rein service stop && rein service start`. Automatic restart defaults to on,

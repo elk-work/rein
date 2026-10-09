@@ -39,10 +39,84 @@ Lists for queues in the same workspace combine into that workspace's repository
 set. Only that set becomes `repo:` capabilities on heartbeats and is available
 to runs. Repository capability names added manually cannot bypass this filter.
 
-An omitted or empty list inherits the top-level map only when there is one
-workspace and no explicit lists in that workspace. On multi-workspace machines,
-a workspace with no lists has no declared repositories. Add explicit lists
-before using queues in a second workspace.
+Until a queue declares a list, the config is unscoped: every queue sees the
+whole top-level map, and machine-wide `default_repo` applies to a queue with no
+`repo`. The first list on any queue scopes the whole config: each queue then
+sees only the lists declared in its own workspace, and a workspace with no
+lists has no declared repositories. Add lists to every queue in one edit.
+
+## Configs written before lists
+
+Before v0.8.4 there were no lists, so a machine serving several workspaces had
+a config like this:
+
+```toml
+workspace = "Elk Scout"
+default_repo = "/Users/you/dev/elk"
+
+[repos]
+"elk-work/scout" = "/Users/you/dev/elk/scout"
+signal = "/Users/you/dev/signal"
+
+[[queues]]
+name = "mac-claude"
+agent_kind = "claude"
+wrangler = true
+
+[[queues]]
+name = "mac-codex"
+agent_kind = "codex"
+workspace = "Signal"
+```
+
+v0.8.4 read that as "no workspace declares a repository" and dropped
+`default_repo`, so after the service restarted into it every run on every
+queue ended stuck at preflight — `repository "elk-work/scout" is not declared
+for queue "mac-codex" in workspace "Elk Scout"`, and a Wrangler cycle "does
+not say which repository it is in" (`ark:rein#67`).
+
+Rein now reads a multi-workspace config with no list on any queue in
+**compatibility mode**, by the rules it was written for: every queue sees the
+whole `[repos]` map, names resolve by last segment and by local path as before,
+and `default_repo` applies to a queue with no `repo`. Nothing is scoped by
+workspace, so a run in one workspace can reach another workspace's checkout —
+which is why the mode is loud: `rein run` logs a `WARNING` at every start,
+and `rein status` and `rein config check` print the same warning.
+
+To leave it, give every queue a list in one edit, and a `repo` to any queue
+whose runs name no repository — a Wrangler queue in particular, because a
+cycle never names one:
+
+```toml
+[[queues]]
+name = "mac-claude"
+agent_kind = "claude"
+wrangler = true
+repos = ["elk-work/scout"]
+repo = "elk-work/scout"
+
+[[queues]]
+name = "mac-codex"
+agent_kind = "codex"
+workspace = "Signal"
+repos = ["signal"]
+repo = "signal"
+```
+
+Then run `rein config check` before restarting. It prints each queue's
+repositories and the checkout a run that names none is cut from, and exits 1
+with a `PROBLEM` line for a queue that would strand its runs: a scoped queue
+with no repositories and no default, a `repo` its workspace does not declare,
+or a Wrangler queue with no default. Adding a list to some queues and not
+others is the trap the check exists for — the first list ends compatibility
+mode for every workspace at once.
+
+A running service makes the same check before it restarts into a newly
+installed binary, and stays on the running version if the new one would take
+a repository or a default away from any queue. See
+[service.md](service.md#upgrading).
+
+## Scoped resolution
 
 A scoped run must name an exact declared repository (case-insensitive), or its
 mapped checkout path. Names with another owner and the same last segment do

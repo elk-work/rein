@@ -112,6 +112,9 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 	if err := qw.Flush(); err != nil {
 		return err
 	}
+	if w := cfg.RepositoryCompatibilityWarning(); w != "" {
+		fmt.Fprintf(out, "\nWARNING: %s\n", w)
+	}
 
 	if online {
 		printOnline(ctx, out, cmd.Root().Version, cfg, store)

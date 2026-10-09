@@ -142,6 +142,7 @@ func runRun(cmd *cobra.Command) error {
 	}
 	r, err := runner.New(runner.Options{
 		Config:          cfg,
+		ConfigPath:      absPath(path),
 		UnderService:    asService && !service.Interactive(),
 		Store:           store,
 		Secrets:         items,
@@ -214,6 +215,15 @@ func driveRunner(ctx context.Context, r *runner.Runner, out io.Writer) error {
 		return nil
 	}
 	return err
+}
+
+// absPath makes a --config path absolute, so the binary a service later asks
+// to check it (upgrade.go) reads the same file whatever its directory.
+func absPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // mustString reads a string flag, ignoring the "no such flag" error that

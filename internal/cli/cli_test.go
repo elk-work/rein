@@ -37,7 +37,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	for _, want := range []string{"enrol", "run", "attach", "tail", "status", "version", "service"} {
+	for _, want := range []string{"enrol", "run", "attach", "tail", "status", "version", "service", "config"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help does not mention %q:\n%s", want, out)
 		}
@@ -55,7 +55,7 @@ func TestBareInvocationPrintsHelp(t *testing.T) {
 }
 
 func TestPerCommandHelp(t *testing.T) {
-	for _, cmd := range []string{"enrol", "run", "attach", "tail", "status", "version", "service"} {
+	for _, cmd := range []string{"enrol", "run", "attach", "tail", "status", "version", "service", "config"} {
 		t.Run(cmd, func(t *testing.T) {
 			out, _, code := run(t, cmd, "--help")
 			if code != 0 {

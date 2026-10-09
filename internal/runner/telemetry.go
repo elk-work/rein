@@ -360,6 +360,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		}
 		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault()}
 		putWaiting(s, tel)
+		qr.r.putRefusal(s)
 		// No session, but the subscription is still there: the last reading,
 		// carried forward, and whether the queue is holding (ark:rein#40).
 		qr.fillHeadroom(s, nil)
@@ -384,6 +385,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		s.State = string(StateAsked)
 	}
 	putWaiting(s, tel)
+	qr.r.putRefusal(s)
 
 	// The live session, if there is one. There is not, between a submit and
 	// Elk's review verdict — the run is still this queue's, so the state above
