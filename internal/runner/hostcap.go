@@ -537,3 +537,17 @@ func githubOriginRepo(remote string) string {
 	}
 	return path
 }
+
+// ForQueue replaces repository declarations with this workspace's declarations.
+func (h *HostCapabilities) ForQueue(cfg config.Config, q config.Queue) *HostCapabilities {
+	out := h.withExtra("config.toml, this queue", q.Capabilities...)
+	for name := range out.how {
+		if strings.HasPrefix(name, "repo:") {
+			delete(out.how, name)
+		}
+	}
+	for _, name := range RepoCapabilities(context.Background(), cfg.RepositoriesFor(q)) {
+		out.add(name, "workspace configured checkout")
+	}
+	return out
+}

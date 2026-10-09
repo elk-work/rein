@@ -28,7 +28,7 @@ func (qr *queueRunner) openLog(wo *elk.WorkOrder) {
 	qr.startRun(wo.RunID)
 	qr.log = qr.r.opts.Logs.Create(runlog.Meta{
 		RunID:          wo.RunID,
-		Queue:          qr.q.Name,
+		Queue:          qr.r.opts.Config.QueueLabel(qr.q),
 		Workspace:      qr.workspace,
 		AgentKind:      qr.q.AgentKind,
 		Direction:      firstLine(wo.Direction),

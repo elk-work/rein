@@ -293,7 +293,7 @@ func (qr *queueRunner) retakeSlot(ctx context.Context, wo *elk.WorkOrder, round 
 		reported  time.Time
 		cancelled bool
 	)
-	hold, ok := qr.r.gate.enter(waitCtx, slotRequest{queue: qr.q.Name, prio: prioRevision}, func(reason string) {
+	hold, ok := qr.r.gate.enter(waitCtx, slotRequest{queue: qr.r.opts.Config.QueueLabel(qr.q), prio: prioRevision}, func(reason string) {
 		if qr.setWaiting(reason) && reported.IsZero() {
 			qr.logf("run %s: %s", wo.RunID, reason)
 		}
@@ -495,7 +495,7 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 		// something to take over. Unregistered before the outcome is decided:
 		// a session that has ended cannot be driven by anybody.
 		qr.live = &liveSession{
-			runID: wo.RunID, queue: qr.q.Name, agentKind: a.Name(),
+			runID: wo.RunID, queue: qr.r.opts.Config.QueueLabel(qr.q), agentKind: a.Name(),
 			direction: firstLine(wo.Direction), started: time.Now(),
 			sess: sess, manifest: a.Manifest(), log: qr.log,
 			logf:      qr.logf,

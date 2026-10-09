@@ -31,7 +31,9 @@ import (
 //  4. `default_repo` in config.toml.
 //
 // A name from (1) or (2) is looked up in the config's `[repos]` table, then by
-// its last path segment, and finally treated as a path if one exists. A
+// its last path segment, and finally treated as a path if one exists on
+// legacy single-workspace configs. Scoped configs require an exact declared
+// name or mapped checkout path. A
 // resolution that fails is not a guess: the run is submitted `stuck` naming
 // what it looked for and how to tell it, because a runner that picks the wrong
 // repository does the work in the wrong place and reports success.
@@ -110,26 +112,34 @@ func (e *UnresolvedRepoError) Error() string {
 // ResolveRepo picks the repository for a work order. See the commentary at the
 // top of this file for the order and why there is one at all.
 func ResolveRepo(cfg config.Config, q config.Queue, workOrder string) (RepoResolution, error) {
+	scoped := cfg.RepositoryScopeRequired(q)
+	cfg.Repos = cfg.RepositoriesFor(q)
 	if name := hintedRepo(workOrder); name != "" {
-		path, ok := lookupRepo(cfg, name)
+		path, ok := lookupRepoScoped(cfg, name, scoped)
 		if !ok {
+			if scoped {
+				return RepoResolution{}, fmt.Errorf("repository %q is not declared for queue %q in workspace %q", name, q.Name, cfg.WorkspaceFor(q))
+			}
 			return RepoResolution{}, &UnresolvedRepoError{Name: name, Queue: q.Name, Known: repoNames(cfg)}
 		}
 		return RepoResolution{Path: path, Name: name, Source: RepoFromHint}, nil
 	}
 	if name := githubRepo(workOrder); name != "" {
-		if path, ok := lookupRepo(cfg, name); ok {
+		if path, ok := lookupRepoScoped(cfg, name, scoped); ok {
 			return RepoResolution{Path: path, Name: name, Source: RepoFromURL}, nil
 		}
-		// A cited PR in a repository this machine has no checkout of is not
-		// necessarily where the work is — a work order often links a PR in
-		// another repo as context. Fall through to the configured defaults
-		// rather than failing on it.
+		return RepoResolution{}, fmt.Errorf("repository %q is not declared for queue %q in workspace %q", name, q.Name, cfg.WorkspaceFor(q))
 	}
 	if q.Repo != "" {
+		if scoped {
+			if path, ok := lookupRepoScoped(cfg, q.Repo, true); ok {
+				return RepoResolution{Path: path, Source: RepoFromQueue}, nil
+			}
+			return RepoResolution{}, fmt.Errorf("queue repository is not declared for workspace %q", cfg.WorkspaceFor(q))
+		}
 		return RepoResolution{Path: expand(q.Repo), Source: RepoFromQueue}, nil
 	}
-	if cfg.DefaultRepo != "" {
+	if cfg.DefaultRepo != "" && !scoped {
 		return RepoResolution{Path: expand(cfg.DefaultRepo), Source: RepoFromDefault}, nil
 	}
 	return RepoResolution{}, &UnresolvedRepoError{Name: githubRepo(workOrder), Queue: q.Name, Known: repoNames(cfg)}
@@ -155,7 +165,15 @@ func githubRepo(text string) string {
 // table first by exact key, then case-insensitively, then by last path
 // segment ("elk-work/scout" finds a `scout` entry), and finally the name
 // itself if it is a directory that exists.
-func lookupRepo(cfg config.Config, name string) (string, bool) {
+func lookupRepoScoped(cfg config.Config, name string, scoped bool) (string, bool) {
+	if scoped {
+		for k, v := range cfg.Repos {
+			if strings.EqualFold(k, name) || expand(v) == expand(name) {
+				return expand(v), true
+			}
+		}
+		return "", false
+	}
 	if p, ok := cfg.Repos[name]; ok {
 		return expand(p), true
 	}

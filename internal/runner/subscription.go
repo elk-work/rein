@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ type persistedSubscription struct {
 
 // subscriptionFile is where one queue's state lives under a state directory.
 func subscriptionFile(stateDir, queue string) string {
-	return filepath.Join(stateDir, "headroom", queue+".json")
+	return filepath.Join(stateDir, "headroom", url.PathEscape(queue)+".json")
 }
 
 // subscriptionPath is where this queue's state lives, or "" when the runner
@@ -110,7 +111,7 @@ func (qr *queueRunner) subscriptionPath() string {
 	if dir == "" {
 		return ""
 	}
-	return subscriptionFile(dir, qr.q.Name)
+	return subscriptionFile(dir, qr.r.opts.Config.QueueLabel(qr.q))
 }
 
 func readPersisted(path string) (persistedSubscription, bool) {

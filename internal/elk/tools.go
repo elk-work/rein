@@ -277,6 +277,8 @@ type ConnectRequest struct {
 
 // ConnectResult is what an enrolment learned.
 type ConnectResult struct {
+	// Workspace is the workspace named by the claim exchange, when supplied.
+	Workspace string
 	// Queue is the queue name Elk actually bound — on the claim-code path
 	// this comes from the claim, not from the request.
 	Queue string
@@ -295,9 +297,10 @@ type ConnectResult struct {
 }
 
 var (
-	connectQueueRE    = regexp.MustCompile(`queue "([^"]+)"`)
-	connectExecutorRE = regexp.MustCompile("executor `([^`]+)`")
-	connectorURLRE    = regexp.MustCompile(`durable connector URL: (https://\S+)`)
+	connectWorkspaceRE = regexp.MustCompile(`workspace "([^"]+)"`)
+	connectQueueRE     = regexp.MustCompile(`queue "([^"]+)"`)
+	connectExecutorRE  = regexp.MustCompile("executor `([^`]+)`")
+	connectorURLRE     = regexp.MustCompile(`durable connector URL: (https://\S+)`)
 )
 
 // ConnectExecutor binds a queue, and on the claim-code path exchanges the
@@ -356,6 +359,9 @@ func (c *Client) ConnectExecutor(ctx context.Context, req ConnectRequest) (*Conn
 	}
 
 	out := &ConnectResult{Text: res.Text}
+	if m := connectWorkspaceRE.FindStringSubmatch(res.Text); m != nil {
+		out.Workspace = m[1]
+	}
 	if m := connectQueueRE.FindStringSubmatch(res.Text); m != nil {
 		out.Queue = m[1]
 	}

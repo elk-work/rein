@@ -186,6 +186,19 @@ capabilities    = ["xcode"]     # added to the top-level list
 base_ref        = "origin/main" # rarely needed: the remote default is resolved
 ```
 
+On machines serving multiple workspaces, add `repos = ["owner/repository"]`
+to each workspace's queue entries, selecting keys from `[repos]`. Queues in a
+workspace share the union of those lists and advertise only those repositories.
+An undeclared repository ends the run stuck; it never uses `default_repo`.
+Existing single-workspace configs without lists still use the top-level map.
+
+Queues are keyed by workspace and name. A second workspace may enrol the same
+name without replacing the first; re-enrol keeps local settings. Use
+`--queue 'Workspace/mac-claude'` when names collide, and use `--workspace` for
+revoke. Claim enrol takes the workspace from Elk's reply and refuses a conflicting
+flag. See [workspace configuration](docs/workspace-repositories.md) for a complete
+example and compatibility details.
+
 **Each queue has a landing policy** — how far a run takes its change
 (`ark:rein#47`):
 

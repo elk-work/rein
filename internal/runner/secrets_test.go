@@ -237,8 +237,8 @@ func TestTwoScopedQueuesNeverShareASecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.cfg.Queues = []config.Queue{
-		{Name: queue, AgentKind: kind, Secrets: map[string]string{"POSTHOG_API_KEY": "elk-posthog"}},
-		{Name: other, AgentKind: kind, Workspace: otherSpace, Secrets: map[string]string{"AWS_ACCESS_KEY_ID": "acme-aws"}},
+		{Name: queue, AgentKind: kind, Repo: "scout", Repos: []string{"scout"}, Secrets: map[string]string{"POSTHOG_API_KEY": "elk-posthog"}},
+		{Name: other, AgentKind: kind, Workspace: otherSpace, Repo: "scout", Repos: []string{"scout"}, Secrets: map[string]string{"AWS_ACCESS_KEY_ID": "acme-aws"}},
 	}
 	items := newFakeItems("elk-posthog/rein", posthogValue, "acme-aws/rein", awsValue)
 	h.elk.Text("claim_run", order("run-1"))

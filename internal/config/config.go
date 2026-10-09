@@ -289,6 +289,8 @@ func (d Duration) MarshalText() ([]byte, error) {
 // Queue is one named queue: a (host, agent kind) pair this machine claims runs
 // for. Elk's durable identity is host_id + agent_kind; Name is a label.
 type Queue struct {
+	// Repos lists keys in the top-level repository map served by this queue.
+	Repos []string `toml:"repos,omitempty"`
 	// Wrangler opts this Claude or Codex queue into running the Wrangler, Elk's PM agent
 	// (elk docs/wrangler.md). Read it through [Queue.IsWrangler], which also
 	// honours the old spelling below.
@@ -988,7 +990,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("queues[%d]: name %q: must be lowercase letters, digits and hyphens, starting with a letter or digit", i, q.Name)
 		case q.AgentKind == "":
 			return fmt.Errorf("queues[%d] (%s): agent_kind is required", i, q.Name)
-		case seen[q.Name]:
+		case seen[c.WorkspaceFor(q)+"/"+q.Name]:
 			return fmt.Errorf("queues[%d]: name %q appears twice", i, q.Name)
 		case q.PermissionMode != "" && !knownPermissionMode(q.PermissionMode):
 			return fmt.Errorf("queues[%d] (%s): permission_mode %q: want read_only, ask, accept_edits or full",
@@ -1020,6 +1022,11 @@ func (c Config) Validate() error {
 		if _, _, err := ParseWeeklyReset(q.WeeklyReset); err != nil {
 			return fmt.Errorf("queues[%d] (%s): %w", i, q.Name, err)
 		}
+		for _, name := range q.Repos {
+			if _, ok := c.Repos[name]; !ok {
+				return fmt.Errorf("queues[%d]: repos names undeclared repository %q", i, name)
+			}
+		}
 		for _, name := range q.MCPServers {
 			if _, ok := c.MCPServers[name]; !ok {
 				return fmt.Errorf("queues[%d] (%s): mcp_servers names %q, which has no [mcp_servers.%s] definition",
@@ -1029,7 +1036,7 @@ func (c Config) Validate() error {
 		if err := q.validateSecrets(i); err != nil {
 			return err
 		}
-		seen[q.Name] = true
+		seen[c.WorkspaceFor(q)+"/"+q.Name] = true
 	}
 	return nil
 }
@@ -1048,22 +1055,83 @@ func knownPermissionMode(m string) bool {
 	return false
 }
 
-// Queue returns the queue with the given name.
+// Queue accepts a unique name or a workspace/name selector. Ambiguity is refused.
 func (c Config) Queue(name string) (Queue, bool) {
+	var found Queue
+	count := 0
 	for _, q := range c.Queues {
-		if q.Name == name {
+		if q.Name == name || c.WorkspaceFor(q)+"/"+q.Name == name {
+			found = q
+			count++
+		}
+	}
+	return found, count == 1
+}
+
+// QueueIn finds an exact workspace and name pair.
+func (c Config) QueueIn(workspace, name string) (Queue, bool) {
+	for _, q := range c.Queues {
+		if q.Name == name && c.WorkspaceFor(q) == workspace {
 			return q, true
 		}
 	}
 	return Queue{}, false
 }
 
-// SetQueue adds a queue, or replaces the one with the same name. It reports
+// RepositoriesFor returns only repositories declared for this workspace.
+// Unspecified lists inherit the old map only on a single-workspace machine.
+func (c Config) RepositoriesFor(q Queue) map[string]string {
+	out := map[string]string{}
+	ws := c.WorkspaceFor(q)
+	explicit := false
+	for _, peer := range c.Queues {
+		if c.WorkspaceFor(peer) == ws && len(peer.Repos) > 0 {
+			explicit = true
+			for _, name := range peer.Repos {
+				if path, ok := c.Repos[name]; ok {
+					out[name] = path
+				}
+			}
+		}
+	}
+	if len(q.Repos) > 0 {
+		explicit = true
+		for _, name := range q.Repos {
+			if path, ok := c.Repos[name]; ok {
+				out[name] = path
+			}
+		}
+	}
+	if explicit {
+		return out
+	}
+	for _, peer := range c.Queues {
+		if c.WorkspaceFor(peer) != ws {
+			return out
+		}
+	}
+	return c.Repos
+}
+
+// RepositoryScopeRequired says whether unrestricted legacy paths are disabled.
+func (c Config) RepositoryScopeRequired(q Queue) bool {
+	if len(q.Repos) > 0 {
+		return true
+	}
+	for _, peer := range c.Queues {
+		if len(peer.Repos) > 0 || c.WorkspaceFor(peer) != c.WorkspaceFor(q) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetQueue adds a queue, or replaces the same workspace/name pair. It reports
 // whether an existing queue was replaced, so `rein enrol` can say "attached"
 // rather than "created" without a second lookup.
 func (c *Config) SetQueue(q Queue) (replaced bool) {
 	for i := range c.Queues {
-		if c.Queues[i].Name == q.Name {
+		if c.Queues[i].Name == q.Name && c.WorkspaceFor(c.Queues[i]) == c.WorkspaceFor(q) {
 			c.Queues[i] = q
 			return true
 		}
@@ -1079,8 +1147,12 @@ func (c *Config) SetQueue(q Queue) (replaced bool) {
 // index of what tokens exist: a queue removed from the config first leaves its
 // token in the keychain with nothing left that knows to ask for it.
 func (c *Config) RemoveQueue(name string) bool {
+	target, ok := c.Queue(name)
+	if !ok {
+		return false
+	}
 	for i, q := range c.Queues {
-		if q.Name == name {
+		if q.Name == target.Name && c.WorkspaceFor(q) == c.WorkspaceFor(target) {
 			c.Queues = append(c.Queues[:i], c.Queues[i+1:]...)
 			return true
 		}
@@ -1109,4 +1181,14 @@ func (c Config) SuggestQueueName(agentKind string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// QueueLabel qualifies local selectors when multiple workspaces are configured.
+func (c Config) QueueLabel(q Queue) string {
+	for _, peer := range c.Queues {
+		if c.WorkspaceFor(peer) != c.WorkspaceFor(q) {
+			return c.WorkspaceFor(q) + "/" + q.Name
+		}
+	}
+	return q.Name
 }

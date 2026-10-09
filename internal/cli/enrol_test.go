@@ -437,3 +437,99 @@ func TestStatusReportsAdapterReadiness(t *testing.T) {
 		t.Errorf("an unregistered kind must say so rather than look broken:\n%s", out)
 	}
 }
+
+func TestEnrolSameNameAcrossWorkspacesPreservesSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	registerAs(t, "claude")
+	s := enrolServer(t)
+	cfg := config.Config{Workspace: "Scout", Queues: []config.Queue{{Name: "mac-claude", AgentKind: "claude", Repo: "/dev/scout", Land: config.LandPR, ScopedSecrets: true, Secrets: map[string]string{"EXAMPLE": "example-service"}}}}
+	if err := cfg.SaveFile(filepath.Join(home, config.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	s.Text("connect_executor", `Created named queue "mac-claude" in workspace "Gallery" (executor `+"`exec-1`).")
+	out, errb, code := run(t, "enrol", "--workspace", "Gallery", "--agent-kind", "claude", "--token", enrolToken, "--mcp-url", s.URL)
+	if code != 0 {
+		t.Fatalf("%s %s", out, errb)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Queues) != 2 {
+		t.Fatalf("queues: %+v", cfg.Queues)
+	}
+	q, _ := cfg.QueueIn("Scout", "mac-claude")
+	if q.Repo != "/dev/scout" || !q.ScopedSecrets {
+		t.Fatal("overwrote other workspace")
+	}
+	s.Text("connect_executor", `Created named queue "mac-claude" in workspace "Scout" (executor `+"`exec-1`).")
+	out, errb, code = run(t, "enrol", "--workspace", "Scout", "--agent-kind", "claude", "--force", "--token", enrolToken, "--mcp-url", s.URL)
+	if code != 0 {
+		t.Fatalf("%s %s", out, errb)
+	}
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, _ = cfg.QueueIn("Scout", "mac-claude")
+	if q.Repo != "/dev/scout" || q.Land != config.LandPR || !q.ScopedSecrets || q.Secrets["EXAMPLE"] != "example-service" {
+		t.Fatalf("settings lost: %+v", q)
+	}
+	store := keyring.NewFileStore(filepath.Join(home, keyring.FileName))
+	for _, ws := range []string{"Scout", "Gallery"} {
+		if _, err := store.Get(ws, "mac-claude"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, errb, code = run(t, "status")
+	if code != 0 || !strings.Contains(out, "Scout/mac-claude") || !strings.Contains(out, "Gallery/mac-claude") {
+		t.Fatalf("status does not distinguish queues: %s %s", out, errb)
+	}
+	out, errb, code = run(t, "enrol", "--revoke", "--queue", "mac-claude")
+	if code == 0 {
+		t.Fatalf("ambiguous revoke accepted: %s %s", out, errb)
+	}
+}
+
+func TestClaimWorkspaceWinsAndMismatchRefused(t *testing.T) {
+	for _, mismatch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "claim workspace", true: "mismatch"}[mismatch], func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv(config.EnvHome, home)
+			registerAs(t, "claude")
+			cfg := config.Default()
+			cfg.Workspace = "Scout"
+			cfg.Queues = []config.Queue{{Name: "mac-claude", AgentKind: "claude"}}
+			if err := cfg.SaveFile(filepath.Join(home, config.FileName)); err != nil {
+				t.Fatal(err)
+			}
+			s := enrolServer(t)
+			args := []string{"enrol", "--claim-code", enrolToken, "--agent-kind", "claude", "--mcp-url", s.URL}
+			s.Text("connect_executor", `Created named queue "mac-claude" in workspace "Gallery" (executor `+"`exec-1`). durable connector URL: https://example.invalid/elk-mcp/test-durable.")
+			if mismatch {
+				args = append(args, "--workspace", "Scout")
+			}
+			out, errb, code := run(t, args...)
+			if mismatch {
+				if code == 0 || !strings.Contains(errb, "disagrees") {
+					t.Fatalf("%s %s", out, errb)
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("%s %s", out, errb)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := cfg.QueueIn("Gallery", "mac-claude"); !ok {
+				t.Fatal("claim filed under default workspace")
+			}
+			if len(cfg.Queues) != 2 {
+				t.Fatal("overwrote queue")
+			}
+		})
+	}
+}
