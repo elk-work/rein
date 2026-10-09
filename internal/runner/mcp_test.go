@@ -186,7 +186,7 @@ func TestWranglerQueueDeclaresCapabilityAndNamedOwnerBinding(t *testing.T) {
 			if has(caps, "wrangler") {
 				t.Fatal("declared wrangler, which is not a capability Elk knows")
 			}
-			if !strings.Contains(specs[0].SystemPrompt, "docs/wrangler.md") {
+			if !strings.Contains(specs[0].SystemPrompt, "Follow the playbook") {
 				t.Fatal("Wrangler rule not used by runner")
 			}
 		})

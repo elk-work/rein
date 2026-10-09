@@ -16,12 +16,12 @@ func TestWranglerQueuePrompt(t *testing.T) {
 		t.Fatal("pm = true and wrangler = true render different prompts")
 	}
 	p := runSystemPrompt(config.Queue{Wrangler: true}, true)
-	for _, want := range []string{"This run is a Wrangler cycle", "Wrangler queue is authorized", "supabase/README.md rule 5", "verify by object", "scripts/deploy-functions.sh", "between refresh passes", "-- HOLD:", "Never merge anything in elk-work/website", "docs/wrangler.md", "Never capture the screen"} {
+	for _, want := range []string{"This run is a Wrangler cycle", "Follow the playbook in this run's work order", "Never force-push or rewrite history", "Never send mail or messages", "Never install\nor run unfamiliar scripts", "-- HOLD:", "Hold anything gated", "Never capture the screen"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("missing %s", want)
 		}
 	}
-	for _, bad := range []string{"rewrite history, touch production", "history, touching production", "docs/pm-driver.md", "PM queue", "PM loop", "PM rule"} {
+	for _, bad := range []string{"rewrite history, touch production", "history, touching production", "docs/pm-driver.md", "PM queue", "PM loop", "PM rule", "supabase/README.md", "deploy-functions.sh", "Signal", "elk-work/website", "docs/wrangler.md", "elk-pm"} {
 		if strings.Contains(p, bad) {
 			t.Errorf("Wrangler prompt still says %q", bad)
 		}

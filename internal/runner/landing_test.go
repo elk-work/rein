@@ -139,7 +139,7 @@ func TestAWranglerQueueKeepsItsRuleUnderEveryPolicy(t *testing.T) {
 	// still find its seams whichever section is in place.
 	for _, land := range []string{config.LandMerge, config.LandPR, config.LandBranch} {
 		p := runSystemPrompt(config.Queue{Wrangler: true, AgentKind: "claude", Land: land}, true)
-		if !strings.Contains(p, "docs/wrangler.md") || !strings.Contains(p, "Wrangler production work") {
+		if !strings.Contains(p, "Follow the playbook") || !strings.Contains(p, "Wrangler production work") {
 			t.Errorf("land %s: the Wrangler rule did not land", land)
 		}
 		if strings.Contains(p, "history, touching production") {
