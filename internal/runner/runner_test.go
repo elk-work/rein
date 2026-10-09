@@ -1014,6 +1014,11 @@ func TestUpgradeDrainsServeLoop(t *testing.T) {
 			return oldInfo, nil
 		},
 		UpgradeVersion: func(context.Context, string) (string, error) { return "v2", nil },
+		// The installed binary's config check, answered in-process: the
+		// default would exec os.Executable(), which here is this test binary.
+		UpgradeCheck: func(context.Context, string, string) (runner.ConfigReport, error) {
+			return runner.CheckConfig(h.cfg, "v2"), nil
+		},
 	}, 5*time.Second)
 	if !errors.Is(err, runner.ErrRestartForUpgrade) {
 		t.Fatalf("Run = %v", err)
@@ -1029,5 +1034,30 @@ func TestUpgradeDrainsServeLoop(t *testing.T) {
 	}
 	if !strings.Contains(h.log.String(), "draining 1 in-flight runs") {
 		t.Fatalf("log: %s", h.log)
+	}
+}
+
+// TestCompatibilityModeServesTheV084Incident replays ark:rein#67 end to end:
+// a machine serving two workspaces from a config with no repos lists claims a
+// run that names no repository. v0.8.4 ended it stuck; it is cut from
+// default_repo, and the start-up log says once how to leave the mode.
+func TestCompatibilityModeServesTheV084Incident(t *testing.T) {
+	h := newHarness(t)
+	home := filepath.Dir(h.cfg.Repos["scout"])
+	h.cfg.DefaultRepo = filepath.Join(home, "elk")
+	h.cfg.Queues = append(h.cfg.Queues, config.Queue{Name: "mac-codex", AgentKind: "codex", Workspace: "Signal"})
+	h.elk.Text("claim_run", strings.Replace(order("run-1"), "repo: scout\n", "", 1))
+
+	if err := h.run(runner.Options{Queues: []string{space + "/" + queue}}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if sub := h.submitted(); sub.Arg("status") != "ready" {
+		t.Fatalf("status = %q, want ready\n%s", sub.Arg("status"), sub.Arg("deliverable"))
+	}
+	if got := h.wts.lastRequest().Repo; got != h.cfg.DefaultRepo {
+		t.Errorf("worktree cut from %q, want default_repo %q", got, h.cfg.DefaultRepo)
+	}
+	if n := strings.Count(h.log.String(), "WARNING: repository compatibility mode"); n != 1 {
+		t.Errorf("compatibility warnings = %d, want 1\nlog:\n%s", n, h.log)
 	}
 }

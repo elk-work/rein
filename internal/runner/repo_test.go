@@ -136,10 +136,41 @@ func TestWorkspaceRepositoryBoundary(t *testing.T) {
 	if _, err := runner.ResolveRepo(cfg, gallery, "no repo"); err == nil {
 		t.Fatal("used machine default")
 	}
-	cfg.Queues[0].Repos = nil
+	// One list anywhere scopes the whole config: Gallery, with none of its
+	// own, has no repositories and no default.
 	cfg.Queues[1].Repos = nil
-	if _, err := runner.ResolveRepo(cfg, scout, "repo: friend/gallery"); err == nil {
-		t.Fatal("unscoped multi-workspace config allowed")
+	gallery.Repos = nil
+	if _, err := runner.ResolveRepo(cfg, gallery, "repo: friend/gallery"); err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("a workspace without a list reached a repository: %v", err)
+	}
+	if _, err := runner.ResolveRepo(cfg, gallery, "no repo"); err == nil {
+		t.Fatal("a scoped config used the machine default")
+	}
+}
+
+// TestCompatibilityModeKeepsTheOldRules is ark:rein#67: a multi-workspace
+// config with no list anywhere is read the way it was written, before v0.8.4 —
+// the top-level map for every queue and default_repo for a run that names no
+// repository — instead of stranding every run.
+func TestCompatibilityModeKeepsTheOldRules(t *testing.T) {
+	scout := config.Queue{Name: "mac-codex"}
+	signal := config.Queue{Name: "mac-claude", Workspace: "Signal"}
+	cfg := config.Config{Workspace: "Elk Scout", DefaultRepo: "/dev/elk",
+		Repos:  map[string]string{"elk-work/scout": "/dev/scout", "signal": "/dev/signal"},
+		Queues: []config.Queue{scout, signal}}
+	for _, tc := range []struct {
+		q          config.Queue
+		text, want string
+	}{
+		{scout, "repo: elk-work/scout", "/dev/scout"},
+		{signal, "repo: signal", "/dev/signal"},
+		{scout, "**Direction:** run the Wrangler cycle", "/dev/elk"},
+		{signal, "repo: elk-work/signal", "/dev/signal"},
+	} {
+		got, err := runner.ResolveRepo(cfg, tc.q, tc.text)
+		if err != nil || got.Path != tc.want {
+			t.Errorf("%s %q = %+v, %v; want %s", cfg.QueueLabel(tc.q), tc.text, got, err, tc.want)
+		}
 	}
 }
 

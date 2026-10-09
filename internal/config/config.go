@@ -1078,52 +1078,96 @@ func (c Config) QueueIn(workspace, name string) (Queue, bool) {
 	return Queue{}, false
 }
 
-// RepositoriesFor returns only repositories declared for this workspace.
-// Unspecified lists inherit the old map only on a single-workspace machine.
+// RepositoriesFor returns the repositories a queue's runs may use.
+//
+// A config where no queue declares a `repos` list is unscoped: every queue
+// sees the whole top-level map, on one workspace or several. Once any queue
+// declares a list, the config is scoped: a queue sees the union of the lists
+// declared in its own workspace, and a workspace with no lists sees nothing.
 func (c Config) RepositoriesFor(q Queue) map[string]string {
+	if len(q.Repos) == 0 && !c.repositoryListsDeclared() {
+		return c.Repos
+	}
 	out := map[string]string{}
 	ws := c.WorkspaceFor(q)
-	explicit := false
-	for _, peer := range c.Queues {
-		if c.WorkspaceFor(peer) == ws && len(peer.Repos) > 0 {
-			explicit = true
-			for _, name := range peer.Repos {
-				if path, ok := c.Repos[name]; ok {
-					out[name] = path
-				}
-			}
+	for _, peer := range append([]Queue{q}, c.Queues...) {
+		if c.WorkspaceFor(peer) != ws {
+			continue
 		}
-	}
-	if len(q.Repos) > 0 {
-		explicit = true
-		for _, name := range q.Repos {
+		for _, name := range peer.Repos {
 			if path, ok := c.Repos[name]; ok {
 				out[name] = path
 			}
 		}
 	}
-	if explicit {
-		return out
-	}
-	for _, peer := range c.Queues {
-		if c.WorkspaceFor(peer) != ws {
-			return out
-		}
-	}
-	return c.Repos
+	return out
 }
 
-// RepositoryScopeRequired says whether unrestricted legacy paths are disabled.
+// RepositoryScopeRequired says whether unrestricted legacy paths are disabled:
+// true once any queue declares a `repos` list. See [Config.RepositoriesFor].
 func (c Config) RepositoryScopeRequired(q Queue) bool {
-	if len(q.Repos) > 0 {
-		return true
-	}
-	for _, peer := range c.Queues {
-		if len(peer.Repos) > 0 || c.WorkspaceFor(peer) != c.WorkspaceFor(q) {
+	return len(q.Repos) > 0 || c.repositoryListsDeclared()
+}
+
+// repositoryListsDeclared reports whether any queue declares a `repos` list,
+// which is what switches the whole config to the scoped rules.
+func (c Config) repositoryListsDeclared() bool {
+	for _, q := range c.Queues {
+		if len(q.Repos) > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+// MultiWorkspace reports whether the queues span more than one workspace.
+func (c Config) MultiWorkspace() bool {
+	for _, q := range c.Queues {
+		if c.WorkspaceFor(q) != c.WorkspaceFor(c.Queues[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+// RepositoryCompatibility reports a config in compatibility mode (ark:rein#67):
+// queues in several workspaces, and no `repos` list on any of them.
+//
+// v0.8.4 read such a config as "no workspace declares a repository" and
+// dropped default_repo, which stranded every run on a machine that had been
+// working the day before. A config in this shape was written before lists
+// existed, so it keeps the rules it was written for — every queue sees the
+// top-level map and default_repo still applies — and the runner warns at every
+// start until lists are added. The first list anywhere ends compatibility for
+// the whole config, so add them to every queue in one edit.
+func (c Config) RepositoryCompatibility() bool {
+	return c.MultiWorkspace() && !c.repositoryListsDeclared()
+}
+
+// RepositoryCompatibilityWarning is the warning a config in compatibility mode
+// earns, or "" for any other config.
+func (c Config) RepositoryCompatibilityWarning() string {
+	if !c.RepositoryCompatibility() {
+		return ""
+	}
+	return "repository compatibility mode: this config serves several workspaces and no queue declares a repos list, " +
+		"so every queue can reach every repository in [repos] and default_repo still applies, as before v0.8.4. " +
+		"Fix: add repos = [...] to each [[queues]] entry, naming keys from [repos], and a repo to any queue " +
+		"whose runs name no repository (Wrangler cycles name none). Add every list in one edit: once one queue " +
+		"has a list, a workspace without one has no repositories. See docs/workspace-repositories.md."
+}
+
+// RepositoryMode names which repository rules a config is under, for
+// `rein config check` and `rein status`: "unscoped" (one workspace, no
+// lists), "compatibility" (several workspaces, no lists) or "scoped".
+func (c Config) RepositoryMode() string {
+	switch {
+	case c.repositoryListsDeclared():
+		return "scoped"
+	case c.MultiWorkspace():
+		return "compatibility"
+	}
+	return "unscoped"
 }
 
 // SetQueue adds a queue, or replaces the same workspace/name pair. It reports

@@ -309,11 +309,13 @@ An unresolved `repo:` hint or GitHub URL ends the run `stuck`; neither falls
 through to a queue or machine default. The reason names the repository that
 could not be resolved.
 
-With explicit queue `repos` lists, or multiple workspaces, resolution uses only
-the repositories declared for the queue's workspace. It accepts exact names
-(case-insensitive) or mapped checkout paths; last-segment guesses and arbitrary
-local paths are disabled. Machine-wide `default_repo` is disabled for scoped
-queues. See [workspace repository configuration](workspace-repositories.md).
+Once any queue declares a `repos` list, resolution uses only the repositories
+declared for the queue's workspace. It accepts exact names (case-insensitive)
+or mapped checkout paths; last-segment guesses and arbitrary local paths are
+disabled. Machine-wide `default_repo` is disabled for scoped queues. A config
+with no list on any queue resolves by the rules above, on one workspace or
+several — on several, that is compatibility mode, and Rein warns at every
+start. See [workspace repository configuration](workspace-repositories.md).
 
 ## The worktree
 

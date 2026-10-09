@@ -130,6 +130,16 @@ type Options struct {
 	UpgradeStat     func(string) (os.FileInfo, error)
 	UpgradeVersion  func(context.Context, string) (string, error)
 
+	// UpgradeCheck asks a newly installed binary how it reads ConfigPath,
+	// before the runner drains and restarts into it (ark:rein#67). Nil means
+	// [ExecConfigCheck], `<binary> config check --json`; tests replace it.
+	UpgradeCheck func(ctx context.Context, binary, configPath string) (ConfigReport, error)
+
+	// ConfigPath is the file Config was loaded from — what a newly installed
+	// binary is asked to read before the runner restarts into it. Empty
+	// compares against Config alone, which is what tests want.
+	ConfigPath string
+
 	// Config is the loaded config.toml.
 	Config config.Config
 
@@ -293,6 +303,9 @@ type Runner struct {
 	inFlight       int
 	upgradeDone    chan struct{}
 	upgradeStarted chan struct{}
+	// refusal is the installed version this runner would not restart into,
+	// and why (upgrade.go). Guarded by upgradeMu.
+	refusal *upgradeRefusal
 
 	opts   Options
 	queues []config.Queue
@@ -448,6 +461,12 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.logf("attach: the control plane stopped: %v", err)
 			}
 		}()
+	}
+
+	// Once per start, before anything else is said about the queues: a config
+	// still on the pre-v0.8.4 repository rules (ark:rein#67).
+	if w := r.opts.Config.RepositoryCompatibilityWarning(); w != "" {
+		r.logf("WARNING: %s", w)
 	}
 
 	r.startUpgradeWatch(inner)
