@@ -73,6 +73,21 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		}
 	}
 
+	// A hosted run has exactly its selected allowlisted repository. Local
+	// checkout probes cannot establish this capability before the clone exists.
+	if qr.r.opts.Hosted {
+		target, err := ResolveHostedRepo(qr.r.opts.Config, qr.q, wo.Text)
+		if err != nil {
+			return qr.stuck(ctx, wo, "Rein could not tell which repository this run is in", err.Error())
+		}
+		host = host.withExtra("hosted target repository", "repo:"+target.Name)
+		var names []string
+		for name := range hosted.Values() {
+			names = append(names, name)
+		}
+		host = host.withExtra("hosted environment", names...)
+	}
+
 	advisory := AdvisoryRequirements(hostNames, host)
 	for _, name := range advisory {
 		qr.log.Runner(runlog.KindNote, "Unknown environment capability %q is advisory; proceeding", name)

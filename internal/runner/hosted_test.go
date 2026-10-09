@@ -41,7 +41,7 @@ func hostedHarness(t *testing.T) (*harness, runner.Options) {
 }
 func TestHostedOneRunClaimsDrivesSubmitsAndExits(t *testing.T) {
 	h, opts := hostedHarness(t)
-	h.elk.Text("claim_run", strings.ReplaceAll(order("run-1"), "repo: scout", "repo: acme/scout"))
+	h.elk.Text("claim_run", strings.ReplaceAll(order("run-1", "repo:acme/scout", "git push access to acme/scout"), "repo: scout", "repo: acme/scout"))
 	r, err := runner.New(h.prepare(opts)) // Once deliberately false: hosted implies it.
 	if err != nil {
 		t.Fatal(err)
@@ -197,5 +197,21 @@ func TestHostedRepositorySelectionIgnoresURLsAndLocalMappings(t *testing.T) {
 		if tc.ok && (err != nil || got.Name != tc.want) || !tc.ok && err == nil {
 			t.Fatalf("selection %q: got %q err=%v", tc.text, got.Name, err)
 		}
+	}
+}
+
+func TestHostedNeverDeclaresASecondRepositoryAvailable(t *testing.T) {
+	h, opts := hostedHarness(t)
+	h.cfg.Hosted.AllowRepos = append(h.cfg.Hosted.AllowRepos, "acme/other")
+	opts.HostedClone = func(context.Context, string, string, map[string]string) (*worktree.Worktree, error) {
+		t.Fatal("clone called despite missing second repo")
+		return nil, nil
+	}
+	h.elk.Text("claim_run", strings.ReplaceAll(order("run-1", "repo:acme/other"), "repo: scout", "repo: acme/scout"))
+	if err := h.run(opts); err == nil {
+		t.Fatal("second repository requirement accepted")
+	}
+	if !strings.Contains(h.submitted().Arg("deliverable"), "repo:acme/other") {
+		t.Fatal("missing capability not explained")
 	}
 }
