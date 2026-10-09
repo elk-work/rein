@@ -56,6 +56,7 @@ import (
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/control"
 	"github.com/elk-work/rein/internal/elk"
+	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/secretenv"
@@ -124,6 +125,9 @@ const (
 
 // Options configure a [Runner].
 type Options struct {
+	Hosted bool
+	// HostedClone is the clone seam; nil uses worktree.Manager.Clone.
+	HostedClone func(context.Context, string, string, map[string]string) (*worktree.Worktree, error)
 	// UnderService permits draining when a replacement binary is installed.
 	UnderService    bool
 	UpgradeInterval time.Duration
@@ -333,6 +337,31 @@ func (r *Runner) HostCapabilities() *HostCapabilities { return r.host }
 
 // New builds a runner over the configured queues.
 func New(opts Options) (*Runner, error) {
+	if err := opts.Config.CheckHosted(opts.Hosted); err != nil {
+		return nil, err
+	}
+	if opts.Hosted {
+		if err := opts.Config.Validate(); err != nil {
+			return nil, err
+		}
+		opts.Once = true
+		opts.TelemetryOff = true
+		opts.UnderService = false
+		opts.ControlListener = nil
+		values := hosted.Values()
+		for _, name := range secretenv.MeteredNames() {
+			if hosted.Forbidden(name, true) && os.Getenv(name) != "" {
+				return nil, &adapter.APIAuthError{Because: "hosted environment sets forbidden " + name}
+			}
+		}
+
+		for _, name := range []string{"REIN_ELK_TOKEN", "REIN_GITHUB_TOKEN"} {
+			if strings.TrimSpace(values[name]) == "" || strings.ContainsAny(values[name], "\r\n") {
+				return nil, fmt.Errorf("hosted: %s is missing or invalid", name)
+			}
+		}
+	}
+
 	if opts.Out == nil {
 		opts.Out = io.Discard
 	}
@@ -345,7 +374,17 @@ func New(opts Options) (*Runner, error) {
 		opts.Worktrees = &worktree.Manager{Root: opts.Config.WorkDir}
 	}
 	if opts.Landing == nil {
-		opts.Landing = GitHubLanding{}
+		g := GitHubLanding{}
+		if opts.Hosted {
+			executable, err := os.Executable()
+			if err != nil {
+				return nil, err
+			}
+			g.Env = hosted.GitEnv(executable)
+			g.Env["REIN_GITHUB_TOKEN"] = os.Getenv("REIN_GITHUB_TOKEN")
+			g.Env["GH_TOKEN"] = os.Getenv("REIN_GITHUB_TOKEN")
+		}
+		opts.Landing = g
 	}
 	if opts.PollInterval <= 0 {
 		opts.PollInterval = DefaultPollInterval
@@ -372,6 +411,14 @@ func New(opts Options) (*Runner, error) {
 	queues, err := selectQueues(opts.Config, opts.Queues)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Hosted {
+		if len(queues) != 1 {
+			return nil, errors.New("hosted mode requires exactly one selected queue")
+		}
+		if queues[0].Land == "" {
+			queues[0].Land = config.LandPR
+		}
 	}
 	rnd := opts.Rand
 	if rnd == nil {
@@ -439,7 +486,11 @@ func (r *Runner) jitter(d time.Duration) time.Duration {
 func (r *Runner) logf(format string, args ...any) {
 	r.logMu.Lock()
 	defer r.logMu.Unlock()
-	fmt.Fprintf(r.opts.Out, time.Now().Format("15:04:05")+" "+format+"\n", args...)
+	line := fmt.Sprintf(format, args...)
+	if r.opts.Hosted {
+		line = secretenv.NewRedactor(hosted.Values()).String(line)
+	}
+	fmt.Fprintf(r.opts.Out, "%s %s\n", time.Now().Format("15:04:05"), line)
 }
 
 // Run serves every selected queue until ctx is cancelled, or — with
@@ -486,6 +537,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		go func(i int, qr *queueRunner) {
 			defer wg.Done()
 			errs[i] = qr.serve(ctx)
+			if r.opts.Hosted && errs[i] == nil && !qr.hostedSubmitted {
+				errs[i] = errors.New("hosted run exited without submitting a deliverable")
+			}
 		}(i, qr)
 	}
 
@@ -510,7 +564,13 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 	if ws == "" {
 		return nil, errors.New("no workspace — set `workspace` in the config or re-enrol")
 	}
-	token, err := r.opts.Store.Get(ws, q.Name)
+	var token string
+	var err error
+	if r.opts.Hosted {
+		token = os.Getenv("REIN_ELK_TOKEN")
+	} else {
+		token, err = r.opts.Store.Get(ws, q.Name)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("no stored token: %w — run `rein enrol`", err)
 	}
@@ -551,7 +611,11 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 			qr.host = qr.host.withExtra("config.toml mcp_servers, this queue", qr.mcp.declared...)
 		}
 	}
-	qr.loadSubscription()
+	if r.opts.Hosted {
+		qr.redact.Store(secretenv.NewRedactor(hosted.Values()))
+	} else {
+		qr.loadSubscription()
+	}
 	return qr, nil
 }
 
@@ -562,12 +626,14 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 // rather than being threaded through every method that might want to record
 // something. The concurrency in this loop is between queues, never within one.
 type queueRunner struct {
-	r         *Runner
-	q         config.Queue
-	workspace string
-	elk       *elk.Client
-	mode      adapter.PermissionMode
-	host      *HostCapabilities
+	hostedSubmitted bool
+	hostedDeadline  time.Time
+	r               *Runner
+	q               config.Queue
+	workspace       string
+	elk             *elk.Client
+	mode            adapter.PermissionMode
+	host            *HostCapabilities
 
 	// live is the session being driven right now, registered so `rein attach`
 	// can reach it, and nil between runs.
@@ -636,12 +702,14 @@ func (qr *queueRunner) logf(format string, args ...any) {
 }
 
 func (qr *queueRunner) serve(ctx context.Context) error {
-	qr.checkAgentSetup(ctx)
+	if !qr.r.opts.Hosted {
+		qr.checkAgentSetup(ctx)
+	}
 	qr.logf("serving %s in %q, permission mode %s, landing policy %s",
 		qr.q.AgentKind, qr.workspace, qr.mode, qr.q.LandOrDefault())
 	qr.logf("model %s, effort %s", orCLIDefault(qr.q.Model), orCLIDefault(qr.q.Effort))
 	qr.logf("host capabilities: %s", strings.Join(qr.host.Describe(), ", "))
-	if !qr.q.Scoped() {
+	if !qr.q.Scoped() && !qr.r.opts.Hosted {
 		if names := qr.passEnv(len(qr.mcp.servers) > 0); len(names) > 0 {
 			qr.logf("environment: system variables plus %s", strings.Join(names, ", "))
 		} else {
@@ -658,7 +726,7 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	for _, s := range qr.mcp.skipped {
 		qr.logf("MCP server left out: %s", s)
 	}
-	if qr.q.Scoped() {
+	if qr.q.Scoped() && !qr.r.opts.Hosted {
 		names := secretNames(qr.q)
 		if len(names) == 0 {
 			qr.logf("scoped secrets: none — runs get no credentials from this machine")
@@ -697,7 +765,9 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 			return nil
 		default:
 		}
-		qr.refreshHeadroom(ctx)
+		if !qr.r.opts.Hosted {
+			qr.refreshHeadroom(ctx)
+		}
 
 		// The heartbeat is the poll. It is what puts this queue in
 		// `list_executors` as online — Elk does not itself refuse to hand

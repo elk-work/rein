@@ -114,16 +114,21 @@ func newPrivateHome(runID string) (*privateHome, error) { return newHome(runID, 
 // withHistory is set. A session needs it — for its transcript and for resume.
 // A headroom read (headroom.go) does not, and without it Codex has nothing to
 // index before it answers initialize.
-func newHome(runID string, withHistory bool) (*privateHome, error) {
-	real, err := realCodexHome()
-	if err != nil {
-		return nil, err
+func newHome(runID string, withHistory bool, api ...bool) (*privateHome, error) {
+	hosted := len(api) > 0 && api[0]
+	real := ""
+	var err error
+	links := map[string]string{}
+	if !hosted {
+		real, err = realCodexHome()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(filepath.Join(real, "auth.json")); err != nil {
+			return nil, fmt.Errorf("%w: no Codex login at %s/auth.json; run `codex login`", adapter.ErrPreflight, real)
+		}
+		links["auth.json"] = filepath.Join(real, "auth.json")
 	}
-	if _, err := os.Stat(filepath.Join(real, "auth.json")); err != nil {
-		return nil, fmt.Errorf("%w: no Codex login at %s/auth.json; run `codex login`",
-			adapter.ErrPreflight, real)
-	}
-	links := map[string]string{"auth.json": filepath.Join(real, "auth.json")}
 	var history string
 	if withHistory {
 		history, err = historyDir()
@@ -200,7 +205,7 @@ func (h *privateHome) remove() {
 // rotatedLogin reports a warning when the private home holds a login that is
 // no longer a link to the real one, and "" when there is nothing wrong.
 func (h *privateHome) rotatedLogin() string {
-	if h == nil || h.dir == "" {
+	if h == nil || h.dir == "" || h.real == "" {
 		return ""
 	}
 	link := filepath.Join(h.dir, "auth.json")

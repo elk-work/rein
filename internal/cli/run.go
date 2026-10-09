@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -49,6 +50,7 @@ in docs/run-loop.md.`,
 	}
 	f := cmd.Flags()
 	f.StringSlice("queue", nil, "queue(s) to serve (default: every queue in the config)")
+	f.Bool("hosted", false, "run once on the workspace API key; requires hosted.enabled in config")
 	f.Bool("once", false, "claim and drive at most one run per queue, then exit")
 	f.Duration("poll-interval", 0, "how often to poll for dispatched runs (default: 30s, jittered)")
 	f.Int("max-concurrent", 0, "ceiling on runs driven at once across every queue (default: 4, and lower whenever the machine cannot afford it)")
@@ -78,20 +80,27 @@ func runRun(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	store, err := keyring.Open(dir)
-	if err != nil {
+	flag, _ := cmd.Flags().GetBool("hosted")
+	if err := cfg.CheckHosted(flag); err != nil {
 		return err
 	}
-	// The keychain items scoped queues' secrets maps name (ark:rein#48). Read
-	// per run, never here: opening the reader touches no item.
-	items, err := keyring.OpenItems(dir)
-	if err != nil {
-		return err
+	var store keyring.Store
+	var items keyring.ItemReader
+	if !flag {
+		store, err = keyring.Open(dir)
+		if err != nil {
+			return err
+		}
+		items, err = keyring.OpenItems(dir)
+		if err != nil {
+			return err
+		}
 	}
 
 	f := cmd.Flags()
 	queues, _ := f.GetStringSlice("queue")
 	once, _ := f.GetBool("once")
+	once = once || flag
 	dryRun, _ := f.GetBool("dry-run")
 	keep, _ := f.GetBool("keep-worktrees")
 	maxConcurrent, _ := f.GetInt("max-concurrent")
@@ -104,6 +113,12 @@ func runRun(cmd *cobra.Command) error {
 	logFile, _ := f.GetString("log-file")
 
 	out := cmd.OutOrStdout()
+	if flag && logFile != "" {
+		return errors.New("hosted run logs must go to stdout")
+	}
+	if flag && asService {
+		return errors.New("hosted mode cannot run as a service")
+	}
 	if logFile != "" {
 		// A Windows service has no stdout to redirect and a launchd agent's
 		// is a file nobody remembers the name of, so the loop writes its own
@@ -118,6 +133,9 @@ func runRun(cmd *cobra.Command) error {
 	workDir := cfg.WorkDir
 	if workDir == "" {
 		workDir = dir
+		if flag {
+			workDir = filepath.Join(dir, "work")
+		}
 	}
 	// The per-run event log — what `rein tail` watches. A store that cannot be
 	// opened is reported and then ignored: a runner that refused to serve
@@ -132,16 +150,21 @@ func runRun(cmd *cobra.Command) error {
 	// when it cannot be opened — usually because another `rein run` already
 	// holds this Rein home, in which case the right thing is to keep serving
 	// the queues rather than to refuse over a hatch nobody may use.
-	controlLn, err := control.Listen(dir)
-	if err != nil {
-		fmt.Fprintf(out, "attach unavailable: %v\n", err)
-		controlLn = nil
-	} else {
-		defer controlLn.Close()
-		fmt.Fprintf(out, "attach ready on %s\n", control.Endpoint(dir))
+	var controlLn net.Listener
+	if !flag {
+		controlLn, err = control.Listen(dir)
+		if err != nil {
+			fmt.Fprintf(out, "attach unavailable: %v\n", err)
+			controlLn = nil
+		} else {
+			defer controlLn.Close()
+			fmt.Fprintf(out, "attach ready on %s\n", control.Endpoint(dir))
+		}
 	}
+
 	r, err := runner.New(runner.Options{
 		Config:          cfg,
+		Hosted:          flag,
 		ConfigPath:      absPath(path),
 		UnderService:    asService && !service.Interactive(),
 		Store:           store,
@@ -201,6 +224,9 @@ func runRun(cmd *cobra.Command) error {
 	// would be reporting work that did not finish.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if flag {
+		return r.Run(ctx)
+	}
 	return driveRunner(ctx, r, out)
 }
 

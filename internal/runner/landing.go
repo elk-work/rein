@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/runlog"
+	"github.com/elk-work/rein/internal/secretenv"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -167,6 +169,7 @@ type PullRequest struct {
 // which is still there when the check runs, because the worktree is reaped
 // after the deliverable is submitted, not before.
 type GitHubLanding struct {
+	Env map[string]string
 	// Git and GH are the binaries; empty means "git" and "gh" on PATH.
 	Git, GH string
 	// Retry is the pause before the one retry of a failed `gh` call; zero
@@ -185,7 +188,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 	var st LandingState
 
 	if wt.BaseSHA != "" {
-		out, err := runIn(ctx, wt.Dir, git, "rev-list", "--count", wt.BaseSHA+"..HEAD")
+		out, err := g.runIn(ctx, wt.Dir, git, "rev-list", "--count", wt.BaseSHA+"..HEAD")
 		if n, convErr := strconv.Atoi(strings.TrimSpace(out)); err == nil && convErr == nil {
 			st.Commits, st.CommitsKnown = n, true
 		} else {
@@ -193,7 +196,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 		}
 	}
 
-	out, err := runIn(ctx, wt.Dir, git, "ls-remote", "--heads", "origin", "refs/heads/"+wt.Branch)
+	out, err := g.runIn(ctx, wt.Dir, git, "ls-remote", "--heads", "origin", "refs/heads/"+wt.Branch)
 	if err != nil {
 		st.Problems = append(st.Problems, "could not read origin: "+errLine(err, out))
 	} else {
@@ -216,7 +219,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 		retry = 5 * time.Second
 	}
 	for attempt := 1; ; attempt++ {
-		out, err = runIn(ctx, wt.Dir, gh, "pr", "list", "--head", wt.Branch, "--state", "all",
+		out, err = g.runIn(ctx, wt.Dir, gh, "pr", "list", "--head", wt.Branch, "--state", "all",
 			"--json", "number,url,state,isDraft", "--limit", "50")
 		if err == nil {
 			var prs []PullRequest
@@ -241,10 +244,19 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 
 // runIn runs one command in dir and returns its combined output.
 func runIn(ctx context.Context, dir, bin string, args ...string) (string, error) {
+	return (GitHubLanding{}).runIn(ctx, dir, bin, args...)
+}
+func (g GitHubLanding) runIn(ctx context.Context, dir, bin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, landingTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	if g.Env != nil {
+		cmd.Env = secretenv.Filter(os.Environ())
+		for k, v := range g.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

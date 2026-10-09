@@ -245,6 +245,12 @@ func DetectHostCapabilities(ctx context.Context, cfg config.Config, extra ...str
 		if _, err := exec.LookPath(p.binary); err != nil {
 			continue
 		}
+		if cfg.Hosted.Enabled && p.name == "github-cli" {
+			if os.Getenv("REIN_GITHUB_TOKEN") != "" {
+				h.add(p.name, "gh on PATH, hosted repository token")
+			}
+			continue
+		}
 		if len(p.verify) == 0 {
 			h.add(p.name, p.binary+" on PATH")
 			continue
@@ -260,8 +266,10 @@ func DetectHostCapabilities(ctx context.Context, cfg config.Config, extra ...str
 }
 
 func withConfig(h *HostCapabilities, cfg config.Config, extra []string) *HostCapabilities {
-	for _, n := range RepoCapabilities(context.Background(), cfg.Repos) {
-		h.add(n, "configured checkout")
+	if !cfg.Hosted.Enabled {
+		for _, n := range RepoCapabilities(context.Background(), cfg.Repos) {
+			h.add(n, "configured checkout")
+		}
 	}
 	for _, n := range cfg.Capabilities {
 		h.add(n, "config.toml")
@@ -454,7 +462,7 @@ func MissingQueueRequirements(required []string, m adapter.Manifest, h *HostCapa
 			}
 			return false
 		case "repo":
-			return h.Has(name) && h.how[name] == "configured checkout"
+			return h.Has(name) && (h.how[name] == "configured checkout" || h.how[name] == "hosted target repository")
 		case "mcp":
 			for _, allowed := range mcps {
 				if name == allowed {
@@ -545,6 +553,9 @@ func (h *HostCapabilities) ForQueue(cfg config.Config, q config.Queue) *HostCapa
 		if strings.HasPrefix(name, "repo:") {
 			delete(out.how, name)
 		}
+	}
+	if cfg.Hosted.Enabled {
+		return out
 	}
 	for _, name := range RepoCapabilities(context.Background(), cfg.RepositoriesFor(q)) {
 		out.add(name, "workspace configured checkout")

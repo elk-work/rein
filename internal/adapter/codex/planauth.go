@@ -16,7 +16,14 @@ import (
 // planAccountType is `account.type` on a ChatGPT sign-in.
 const planAccountType = "chatgpt"
 
-func checkPlanAccount(r accountReadResponse) error {
+func checkPlanAccount(r accountReadResponse, api ...bool) error {
+	if len(api) > 0 && api[0] {
+		if r.Account != nil && r.Account.Type == "apiKey" {
+			return nil
+		}
+		return &adapter.APIAuthError{Because: "Codex did not report an apiKey account"}
+	}
+
 	got := "(no account)"
 	if r.Account != nil {
 		if r.Account.Type == planAccountType {

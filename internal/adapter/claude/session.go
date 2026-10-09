@@ -324,7 +324,7 @@ func (s *Session) run(stdout io.ReadCloser) {
 		// spending on the account it should never have used (planauth.go).
 		if s.dec.sawInit && !authChecked {
 			authChecked = true
-			if err := checkPlanInit(s.dec.apiKeySource); err != nil {
+			if err := checkPlanInit(s.dec.apiKeySource, s.spec.Hosted); err != nil {
 				s.mu.Lock()
 				s.authRefused = err
 				s.mu.Unlock()

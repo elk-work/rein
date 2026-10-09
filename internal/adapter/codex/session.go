@@ -111,13 +111,34 @@ func (s *session) handshake(ctx context.Context) error {
 		return s.startupError("initialized", err)
 	}
 
+	// Hosted API-key login is scoped to this process's private home. Never
+	// consult or modify the developer's subscription credentials.
+	if s.spec.Hosted {
+		key := s.spec.Env["OPENAI_API_KEY"]
+		if key == "" {
+			key = s.spec.Env["CODEX_API_KEY"]
+		}
+		var login struct {
+			Type string `json:"type"`
+		}
+		if err := s.conn.call(ctx, "account/login/start", struct {
+			Type   string `json:"type"`
+			APIKey string `json:"apiKey"`
+		}{Type: "apiKey", APIKey: key}, &login); err != nil {
+			return &adapter.APIAuthError{Because: "Codex API-key login failed"}
+		}
+		if login.Type != "apiKey" {
+			return &adapter.APIAuthError{Because: "Codex did not accept API-key login"}
+		}
+	}
+
 	// The plan-login check, before any thread exists: a session on an API
 	// key or a cloud provider never gets a turn (planauth.go).
 	var acct accountReadResponse
 	if err := s.conn.call(ctx, methodAccountRead, accountReadParams{}, &acct); err != nil {
 		return s.startupError(methodAccountRead, err)
 	}
-	if err := checkPlanAccount(acct); err != nil {
+	if err := checkPlanAccount(acct, s.spec.Hosted); err != nil {
 		return err
 	}
 

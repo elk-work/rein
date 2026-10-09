@@ -2,8 +2,11 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
+	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/worktree"
 )
@@ -23,8 +27,14 @@ import (
 // things would leave a claim to lapse and the run to be handed to somebody
 // else fifteen minutes later, having already been worked.
 func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
+	if qr.r.opts.Hosted {
+		qr.hostedDeadline = time.Now().Add(qr.r.opts.Config.Hosted.RunCap())
+	}
 	qr.openLog(wo)
 	defer qr.closeLog()
+	if qr.r.opts.Hosted {
+		qr.applySecrets(hosted.Values())
+	}
 
 	a, err := adapter.Get(qr.q.AgentKind)
 	if err != nil {
@@ -63,6 +73,21 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		}
 	}
 
+	// A hosted run has exactly its selected allowlisted repository. Local
+	// checkout probes cannot establish this capability before the clone exists.
+	if qr.r.opts.Hosted {
+		target, err := ResolveHostedRepo(qr.r.opts.Config, qr.q, wo.Text)
+		if err != nil {
+			return qr.stuck(ctx, wo, "Rein could not tell which repository this run is in", err.Error())
+		}
+		host = host.withExtra("hosted target repository", "repo:"+target.Name)
+		var names []string
+		for name := range hosted.Values() {
+			names = append(names, name)
+		}
+		host = host.withExtra("hosted environment", names...)
+	}
+
 	advisory := AdvisoryRequirements(hostNames, host)
 	for _, name := range advisory {
 		qr.log.Runner(runlog.KindNote, "Unknown environment capability %q is advisory; proceeding", name)
@@ -71,6 +96,8 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 
 	spec := adapter.RunSpec{
 		RunID:          wo.RunID,
+		Hosted:         qr.r.opts.Hosted,
+		AgentKind:      qr.q.AgentKind,
 		Prompt:         wo.Text,
 		SystemPrompt:   runSystemPrompt(qr.q, cycle),
 		PermissionMode: qr.mode,
@@ -86,6 +113,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		MCPServers: qr.mcpServersForRun(),
 	}
 
+	if qr.r.opts.Hosted {
+		spec.Timeouts.Total = qr.r.opts.Config.Hosted.RunCap()
+	}
 	if cycle {
 		spec.MCPServers = nil
 		spec.WranglerConnectorAccount = qr.q.WranglerAccount()
@@ -118,9 +148,25 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 				"capabilities = ["+quoteList(missing)+"]\n```\n\n"+
 				"No work was started and no worktree was created.")
 	}
-	if err := a.Preflight(ctx); err != nil {
+	var preflightErr error
+	if qr.r.opts.Hosted {
+		spec.Env = hosted.Values()
+		preflightErr = spec.CheckPlanEnv()
+		if preflightErr == nil {
+			if p, ok := a.(interface{ PreflightHosted(context.Context) error }); ok {
+				preflightErr = p.PreflightHosted(ctx)
+			}
+		}
+	} else {
+		preflightErr = a.Preflight(ctx)
+	}
+	if err := preflightErr; err != nil {
 		qr.setPreflightState(agentSetupFailure(err))
-		return qr.stuck(ctx, wo, "The agent is not ready on this machine", err.Error()+
+		title := "The agent is not ready on this machine"
+		if errors.Is(err, adapter.ErrNotAPIAuth) {
+			title = notAPITitle
+		}
+		return qr.stuck(ctx, wo, title, err.Error()+
 			"\n\nThis is a local problem on the machine serving queue "+qr.q.Name+
 			" — a missing binary or an expired vendor login. Nothing was started.")
 	}
@@ -130,7 +176,17 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	// A scoped queue's secrets, read fresh for this run so a rotated item
 	// takes effect without a restart, and before the worktree so a missing
 	// one leaves nothing behind (secrets.go, ark:rein#48).
-	if qr.q.Scoped() {
+	if qr.r.opts.Hosted {
+		spec.Env = hosted.Values()
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		for k, v := range hosted.GitEnv(executable) {
+			spec.Env[k] = v
+		}
+		spec.Env["GH_TOKEN"] = spec.Env["REIN_GITHUB_TOKEN"]
+	} else if qr.q.Scoped() {
 		env, err := qr.resolveSecrets()
 		if err != nil {
 			qr.log.Runner(runlog.KindNote, "a scoped secret could not be read; nothing started")
@@ -145,16 +201,44 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
 	}
 
-	repo, err := ResolveRepo(qr.r.opts.Config, qr.q, wo.Text)
+	var repo RepoResolution
+	var wt *worktree.Worktree
+	if qr.r.opts.Hosted {
+		repo, err = ResolveHostedRepo(qr.r.opts.Config, qr.q, wo.Text)
+	} else {
+		repo, err = ResolveRepo(qr.r.opts.Config, qr.q, wo.Text)
+	}
 	if err != nil {
 		qr.setPreflightState("Rein could not tell which repository this run is in")
 		return qr.stuck(ctx, wo, "Rein could not tell which repository this run is in", err.Error())
 	}
 	qr.logf("run %s: repository %s", wo.RunID, repo)
+	if qr.r.opts.Hosted {
+		clone := qr.r.opts.HostedClone
+		if clone == nil {
+			root := qr.r.opts.Config.WorkDir
+			if root == "" {
+				home, e := config.Dir()
+				if e != nil {
+					return e
+				}
+				root = filepath.Join(home, "work")
+			}
+			clone = (&worktree.Manager{Root: root}).Clone
+		}
+		cloneCtx, cancel := context.WithDeadline(ctx, qr.hostedDeadline)
+		wt, err = clone(cloneCtx, repo.Name, wo.RunID, spec.Env)
+		cancel()
+		if err != nil && !time.Now().Before(qr.hostedDeadline) {
+			return qr.submitStuck(ctx, wo, "The run hit the hosted run cap", fmt.Sprintf("hit the hosted run cap of %s", qr.r.opts.Config.Hosted.RunCap()), &elk.Usage{})
+		}
+		if wt != nil {
+			repo.Path = wt.Dir
+		}
+	} else {
+		wt, err = qr.r.opts.Worktrees.Create(ctx, worktree.Request{Repo: repo.Path, RunID: wo.RunID, BaseRef: qr.baseRefFor(repo)})
+	}
 
-	wt, err := qr.r.opts.Worktrees.Create(ctx, worktree.Request{
-		Repo: repo.Path, RunID: wo.RunID, BaseRef: qr.baseRefFor(repo),
-	})
 	if err != nil {
 		qr.setPreflightState("Could not create a worktree")
 		return qr.stuck(ctx, wo, "Could not create a worktree", err.Error()+
@@ -163,6 +247,16 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	defer qr.reap(wt)
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
+	if qr.r.opts.Hosted {
+		var names []string
+		for _, name := range hosted.Names {
+			if spec.Env[name] != "" {
+				names = append(names, name)
+			}
+		}
+		spec.SystemPrompt = scopedSecretsPromptNames(spec.SystemPrompt, names)
+		spec.SystemPrompt = strings.ReplaceAll(spec.SystemPrompt, "from this machine's keychain", "from the hosted environment")
+	}
 	if len(advisory) > 0 {
 		spec.SystemPrompt += "\n\nPreflight treated these unknown packet requirements as advisory: " + strings.Join(advisory, ", ") + ". Proceed; these names do not block this run."
 	}
@@ -448,6 +542,12 @@ func (qr *queueRunner) reap(wt *worktree.Worktree) {
 	// worktree still has to go.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	if qr.r.opts.Hosted {
+		if err := os.RemoveAll(wt.Dir); err != nil {
+			qr.logf("reaping hosted clone: %v", err)
+		}
+		return
+	}
 	if err := qr.r.opts.Worktrees.Reap(ctx, wt); err != nil {
 		qr.logf("reaping %s: %v", wt.Dir, err)
 	}
@@ -468,7 +568,19 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 	restarted := false
 
 	for {
+		if qr.r.opts.Hosted {
+			spec.Timeouts.Total = time.Until(qr.hostedDeadline)
+			if spec.Timeouts.Total < 90*time.Second {
+				spec.Timeouts.Startup = spec.Timeouts.Total
+			}
+			if spec.Timeouts.Total <= 0 {
+				return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run hit the hosted run cap", fmt.Sprintf("hit the hosted run cap of %s", qr.r.opts.Config.Hosted.RunCap()), pending)
+			}
+		}
 		sess, err := a.Start(ctx, spec)
+		if err != nil && qr.r.opts.Hosted && !time.Now().Before(qr.hostedDeadline) {
+			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run hit the hosted run cap", fmt.Sprintf("hit the hosted run cap of %s", qr.r.opts.Config.Hosted.RunCap()), pending)
+		}
 		if err != nil {
 			// The reason goes to both local logs as well as to Elk. Until
 			// ark:rein#38 only the title did, so the one machine that could
@@ -478,6 +590,9 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			title := "The agent would not start"
 			if errors.Is(err, adapter.ErrNotPlanAuth) {
 				title = notPlanTitle
+			}
+			if errors.Is(err, adapter.ErrNotAPIAuth) {
+				title = notAPITitle
 			}
 			return sessionResult{done: true}, qr.stuck(ctx, wo, title, err.Error()+
 				"\n\n"+qr.runDetails(wt, repo, spec, ""))
@@ -543,6 +658,12 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run stalled", why+
 				"\n\n"+partial(out)+"\n"+qr.runDetails(wt, repo, spec, sess.ID()), pending)
 
+		case out.capped || qr.r.opts.Hosted && out.result != nil && out.result.Status == adapter.StatusTimedOut && !time.Now().Before(qr.hostedDeadline):
+			qr.interrupt(sess)
+			why := fmt.Sprintf("hit the hosted run cap of %s", qr.r.opts.Config.Hosted.RunCap())
+			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run hit the hosted run cap", why, pending)
+		case out.err != nil && errors.Is(out.err, adapter.ErrNotAPIAuth):
+			return sessionResult{done: true}, qr.submitStuck(ctx, wo, notAPITitle, out.err.Error(), pending)
 		case out.err != nil && errors.Is(out.err, adapter.ErrNotPlanAuth):
 			// Stopped at its start-up line, before any work: said as such,
 			// and never mistaken for an exhausted subscription.
@@ -574,8 +695,10 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 	}
 }
 
-// notPlanTitle heads the stuck report of a run refused for not being on the
-// developer's plan login (adapter.ErrNotPlanAuth).
+// notAPITitle identifies a hosted API-key refusal.
+const notAPITitle = "The agent was not on an API key, so Rein stopped it"
+
+// notPlanTitle identifies a subscription-login refusal.
 const notPlanTitle = "The agent was not on the plan login, so Rein stopped it"
 
 // sessionResult is what one drive of the agent produced.
@@ -689,6 +812,7 @@ func drain(sess adapter.Session) {
 
 // watchOutcome is what one session run produced.
 type watchOutcome struct {
+	capped    bool
 	result    *adapter.Result
 	text      string // assistant text, for a deliverable an adapter did not summarise
 	err       error
@@ -716,6 +840,12 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		lastToolT time.Time
 		live      = qr.live
 	)
+	var capC <-chan time.Time
+	if qr.r.opts.Hosted {
+		timer := time.NewTimer(time.Until(qr.hostedDeadline))
+		defer timer.Stop()
+		capC = timer.C
+	}
 	defer stall.Stop()
 	defer lease.Stop()
 
@@ -735,6 +865,10 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 
 	for {
 		select {
+		case <-capC:
+			out.capped = true
+			out.text = text.String()
+			return out
 		case <-ctx.Done():
 			out.text = text.String()
 			return out
@@ -774,6 +908,11 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			// it. The log is the only complete account there is: Elk sees a
 			// throttled sample, and the deliverable sees a summary.
 			qr.log.Event(ev)
+			if qr.r.opts.Hosted {
+				if blob, err := json.Marshal(ev); err == nil {
+					qr.logf("event %s", blob)
+				}
+			}
 			if out.events == 1 {
 				// Most adapters learn their vendor session id from the first
 				// message rather than at Start, and it is what `rein attach`
@@ -1056,7 +1195,11 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 // stopped it, and what to do about it.
 func (qr *queueRunner) stuck(ctx context.Context, wo *elk.WorkOrder, title, why string) error {
 	var pending elk.Usage
-	return qr.submitStuck(ctx, wo, title, why, &pending)
+	err := qr.submitStuck(ctx, wo, title, why, &pending)
+	if qr.r.opts.Hosted && err == nil {
+		return errors.New(qr.redactString("hosted refusal: " + title))
+	}
+	return err
 }
 
 func (qr *queueRunner) submitStuck(ctx context.Context, wo *elk.WorkOrder, title, why string, pending *elk.Usage) error {
@@ -1085,6 +1228,10 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 	s.Deliverable = qr.redactString(s.Deliverable)
 	s.Title = qr.redactString(s.Title)
 	s.Summary = qr.redactString(s.Summary)
+	for i := range s.Links {
+		s.Links[i].Title = qr.redactString(s.Links[i].Title)
+		s.Links[i].URL = qr.redactString(s.Links[i].URL)
+	}
 	if pending.Valid() && !pending.Empty() {
 		u := *pending
 		s.Usage = &u
@@ -1099,6 +1246,13 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 	case err != nil:
 		qr.log.Runner(runlog.KindSubmit, "submitting failed: %v", err)
 		return nil, fmt.Errorf("submitting run %s: %w", wo.RunID, err)
+	}
+	qr.hostedSubmitted = true
+	if qr.r.opts.Hosted && s.Status == elk.StatusStuck && s.Title != "The run hit the hosted run cap" {
+		if s.Title == notAPITitle {
+			return res, adapter.ErrNotAPIAuth
+		}
+		return res, errors.New("hosted run refused or failed: " + s.Title)
 	}
 	*pending = elk.Usage{}
 	qr.logf("run %s: submitted %s", wo.RunID, res.Status)

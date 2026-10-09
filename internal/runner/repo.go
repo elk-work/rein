@@ -228,3 +228,20 @@ func expand(p string) string {
 	}
 	return p
 }
+
+// ResolveHostedRepo considers only explicit hints and the queue fallback.
+func ResolveHostedRepo(cfg config.Config, q config.Queue, text string) (RepoResolution, error) {
+	name, source := hintedRepo(text), RepoFromHint
+	if name == "" {
+		name, source = q.Repo, RepoFromQueue
+	}
+	if !config.HostedRepoName(name) {
+		return RepoResolution{}, fmt.Errorf("hosted repository must be owner/name from repo: or the queue repo")
+	}
+	for _, allow := range cfg.Hosted.AllowRepos {
+		if name == allow {
+			return RepoResolution{Name: name, Source: source}, nil
+		}
+	}
+	return RepoResolution{}, fmt.Errorf("hosted repository %q is outside hosted.allow_repos", name)
+}

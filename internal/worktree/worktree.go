@@ -91,6 +91,7 @@ type Request struct {
 
 // Worktree is one checkout Rein owns.
 type Worktree struct {
+	Hosted bool
 	// Dir is the working directory the agent runs in.
 	Dir string
 	// Repo is the repository it was cut from.
@@ -413,6 +414,9 @@ func (m *Manager) runInitScript(ctx context.Context, dir string) (bool, error) {
 // the repository's entire work-record database, and "the tool I am about to run
 // recursively does not follow links" is not a thing to be merely fairly sure of.
 func (m *Manager) Reap(ctx context.Context, wt *Worktree) error {
+	if wt != nil && wt.Hosted {
+		return os.RemoveAll(wt.Dir)
+	}
 	if wt == nil || wt.Dir == "" {
 		return nil
 	}
