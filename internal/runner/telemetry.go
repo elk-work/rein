@@ -388,7 +388,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	// The live session, if there is one. There is not, between a submit and
 	// Elk's review verdict — the run is still this queue's, so the state above
 	// stands, and there is simply nothing more to say about it.
-	live := qr.r.sessions.byQueue(qr.q.Name)
+	live := qr.r.sessions.byQueue(qr.r.opts.Config.QueueLabel(qr.q))
 	if live == nil {
 		qr.fillHeadroom(s, nil)
 		return s

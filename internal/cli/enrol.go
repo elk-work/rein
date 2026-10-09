@@ -154,13 +154,14 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	}
 
 	workspace, _ := f.GetString("workspace")
-	if workspace == "" {
-		workspace = cfg.Workspace
-	}
 
 	flagCode, _ := f.GetString("claim-code")
 	flagToken, _ := f.GetString("token")
 	claimCode := firstNonEmpty(flagCode, os.Getenv(EnvClaimCode))
+	if workspace == "" && claimCode == "" {
+		workspace = cfg.Workspace
+	}
+
 	token := firstNonEmpty(flagToken, os.Getenv(EnvToken))
 	switch {
 	case claimCode != "" && token != "":
@@ -193,7 +194,13 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	// environment list. One source each, so the declaration and the preflight
 	// cannot drift apart — and Pace sees the half that actually varies between
 	// machines rather than only the runtime half.
-	host := runner.DetectHostCapabilities(cmdContext(cmd), cfg)
+	enrolQueue, _ := cfg.QueueIn(workspace, queue)
+	enrolQueue.Name = queue
+	enrolQueue.Workspace = workspace
+	host := runner.DetectHostCapabilities(cmdContext(cmd), cfg).ForQueue(cfg, enrolQueue)
+	if claimCode != "" {
+		host = host.ForQueue(config.Config{}, config.Queue{})
+	}
 	var declared []string
 	if a, ok := adapter.Lookup(agentKind); ok {
 		declared = runner.DeclaredCapabilities(a.Manifest(), host)
@@ -255,6 +262,13 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	if res.Queue != "" {
 		queue = res.Queue
 	}
+	if res.Workspace != "" {
+		requested, _ := f.GetString("workspace")
+		if requested != "" && requested != res.Workspace {
+			return fmt.Errorf("claim workspace %q disagrees with --workspace %q", res.Workspace, requested)
+		}
+		workspace = res.Workspace
+	}
 	if workspace == "" {
 		ws, err := resolveSoleWorkspace(ctx, client)
 		if err != nil {
@@ -264,6 +278,11 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 		workspace = ws
 	}
 
+	if !force {
+		if _, err := store.Get(workspace, queue); err == nil {
+			return fmt.Errorf("queue %q in workspace %q already has a stored token; pass --force to replace it", queue, workspace)
+		}
+	}
 	stored := firstNonEmpty(res.Token, token)
 	if stored == "" {
 		return fmt.Errorf("Elk bound queue %q but returned no durable credential.\n"+
@@ -276,7 +295,9 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	// config row without a token is visible in `rein status` as
 	// "missing — run `rein enrol`" and costs one re-run.
 	cfg.Workspace = firstNonEmpty(cfg.Workspace, workspace)
-	q := config.Queue{Name: queue, AgentKind: agentKind}
+	q, _ := cfg.QueueIn(workspace, queue)
+	q.Name = queue
+	q.AgentKind = agentKind
 	if workspace != cfg.Workspace {
 		q.Workspace = workspace
 	}
@@ -320,8 +341,13 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	if err != nil {
 		return err
 	}
+	host = host.ForQueue(cfg, q)
+	declared = host.Names()
+	if a, ok := adapter.Lookup(agentKind); ok {
+		declared = runner.DeclaredCapabilities(a.Manifest(), host)
+	}
 	verifyEnrolment(ctx, out, live, workspace, queue, cfg.MachineID, agentKind, declared)
-	fmt.Fprintf(out, "\nNext: rein status, then rein run --queue %s --once\n", queue)
+	fmt.Fprintf(out, "\nNext: rein status, then rein run --queue %q --once\n", cfg.QueueLabel(q))
 	return nil
 }
 
@@ -401,10 +427,16 @@ func runRevoke(cmd *cobra.Command, path string, cfg config.Config, store keyring
 	if queue == "" {
 		return errors.New("--revoke needs --queue <name>")
 	}
-	q, ok := cfg.Queue(queue)
-	if !ok {
-		return fmt.Errorf("no queue %q in %s", queue, path)
+	selector := queue
+	requestedWorkspace, _ := f.GetString("workspace")
+	if requestedWorkspace != "" {
+		selector = requestedWorkspace + "/" + queue
 	}
+	q, ok := cfg.Queue(selector)
+	if !ok {
+		return fmt.Errorf("no queue uniquely matching %q in %s; pass --workspace to select it", queue, path)
+	}
+	queue = q.Name
 	workspace, _ := f.GetString("workspace")
 	if workspace == "" {
 		workspace = cfg.WorkspaceFor(q)
@@ -422,7 +454,7 @@ func runRevoke(cmd *cobra.Command, path string, cfg config.Config, store keyring
 		return fmt.Errorf("refusing to drop queue %q from the config: its token could not be deleted (%w) "+
 			"and the config is the only record that it exists", queue, err)
 	}
-	cfg.RemoveQueue(queue)
+	cfg.RemoveQueue(workspace + "/" + queue)
 	if err := cfg.SaveFile(path); err != nil {
 		return err
 	}

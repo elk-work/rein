@@ -305,16 +305,15 @@ scout           = "/Users/you/dev/elk/scout"
 "elk-work/rein" = "/Users/you/dev/rein"
 ```
 
-Two deliberate asymmetries:
+An unresolved `repo:` hint or GitHub URL ends the run `stuck`; neither falls
+through to a queue or machine default. The reason names the repository that
+could not be resolved.
 
-- **A `repo:` hint that resolves to nothing is a `stuck`**, not a fallback. The
-  person writing it meant a specific repository, and a runner that quietly used
-  a different one would do the work in the wrong place and report success.
-- **A github.com URL that resolves to nothing falls through** to (3) and (4). A
-  work order cites another repo's PR as context far more often than it means
-  "the work is there".
-
-The `stuck` reason names what it looked for and both ways to fix it.
+With explicit queue `repos` lists, or multiple workspaces, resolution uses only
+the repositories declared for the queue's workspace. It accepts exact names
+(case-insensitive) or mapped checkout paths; last-segment guesses and arbitrary
+local paths are disabled. Machine-wide `default_repo` is disabled for scoped
+queues. See [workspace repository configuration](workspace-repositories.md).
 
 ## The worktree
 

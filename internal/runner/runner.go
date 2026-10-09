@@ -403,7 +403,7 @@ func selectQueues(cfg config.Config, want []string) ([]config.Queue, error) {
 	for _, name := range want {
 		q, ok := cfg.Queue(name)
 		if !ok {
-			return nil, fmt.Errorf("runner: no queue %q in the config", name)
+			return nil, fmt.Errorf("runner: no queue %q uniquely matches the config; use workspace/name to select it", name)
 		}
 		out = append(out, q)
 	}
@@ -503,7 +503,7 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 	if !mode.Valid() {
 		return nil, fmt.Errorf("permission_mode %q is not one of read_only, ask, accept_edits, full", mode)
 	}
-	host := r.host.withExtra("config.toml, this queue", q.Capabilities...)
+	host := r.host.ForQueue(r.opts.Config, q)
 	// The Wrangler's routing capability is reserved for the opt-in, even if
 	// the environment lists it. On the wire it is still `pm` — Elk's
 	// api_set_pm_executor checks that name and declared_capabilities persists
@@ -612,7 +612,7 @@ type queueRunner struct {
 // logf writes one line to the daemon's log, through the current run's
 // redactor: an error a session surfaces can carry the agent's own output.
 func (qr *queueRunner) logf(format string, args ...any) {
-	line := fmt.Sprintf(qr.q.Name+": "+format, args...)
+	line := fmt.Sprintf(qr.r.opts.Config.QueueLabel(qr.q)+": "+format, args...)
 	qr.r.logf("%s", qr.redactString(line))
 }
 
@@ -915,7 +915,7 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	}()
 	prio := qr.claimPriority()
 	logged := false
-	hold, ok := qr.r.gate.enter(gateCtx, slotRequest{queue: qr.q.Name, prio: prio}, func(reason string) {
+	hold, ok := qr.r.gate.enter(gateCtx, slotRequest{queue: qr.r.opts.Config.QueueLabel(qr.q), prio: prio}, func(reason string) {
 		qr.setWaiting(reason)
 		if !logged {
 			qr.logf("%s", reason)

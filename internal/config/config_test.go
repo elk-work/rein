@@ -672,3 +672,62 @@ func TestLandRoundTrips(t *testing.T) {
 		t.Errorf("an unset policy did not survive a round trip as merge")
 	}
 }
+
+func TestWorkspaceQueueConfig(t *testing.T) {
+	for _, multi := range []bool{false, true} {
+		t.Run(fmtBool(multi), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			text := `workspace = "Scout"
+[repos]
+"elk-work/scout" = "/dev/scout"
+"friend/gallery" = "/dev/gallery"
+[[queues]]
+name = "mac-claude"
+agent_kind = "claude"
+`
+			if multi {
+				text += `repos = ["elk-work/scout"]
+[[queues]]
+name = "mac-claude"
+agent_kind = "claude"
+workspace = "Gallery"
+repos = ["friend/gallery"]
+`
+			}
+			if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, ok := cfg.QueueIn("Scout", "mac-claude")
+			if !ok {
+				t.Fatal("missing queue")
+			}
+			repos := cfg.RepositoriesFor(q)
+			want := 2
+			if multi {
+				want = 1
+				if _, ok := cfg.Queue("mac-claude"); ok {
+					t.Fatal("ambiguous name accepted")
+				}
+			}
+			if len(repos) != want {
+				t.Fatalf("repos = %v", repos)
+			}
+			if err := cfg.SaveFile(path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.LoadFile(path); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+func fmtBool(b bool) string {
+	if b {
+		return "scoped"
+	}
+	return "legacy"
+}

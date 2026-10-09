@@ -106,8 +106,8 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 	for _, q := range cfg.Queues {
 		ws := cfg.WorkspaceFor(q)
 		fmt.Fprintf(qw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			q.Name, q.AgentKind, orDash(ws), q.LandOrDefault(), tokenState(store, ws, q.Name),
-			preflightState(ctx, q.AgentKind), subscriptionState(dir, q.Name))
+			cfg.QueueLabel(q), q.AgentKind, orDash(ws), q.LandOrDefault(), tokenState(store, ws, q.Name),
+			preflightState(ctx, q.AgentKind), subscriptionState(dir, cfg.QueueLabel(q)))
 	}
 	if err := qw.Flush(); err != nil {
 		return err
