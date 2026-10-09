@@ -18,14 +18,10 @@ const wranglerCapability = "pm"
 // run that is not a Wrangler cycle can be shown the queue without them.
 const wranglerOptIn = "Wrangler queue opt-in"
 
-const wranglerRule = `This run is a Wrangler cycle. A Wrangler queue is authorized to run the Wrangler loop. Apply migrations only by
-scout supabase/README.md rule 5 and verify by object. Deploy edge functions only
-through scout scripts/deploy-functions.sh. Deploy Signal only through its deploy
-workflow between refresh passes. Never apply a migration whose header contains a
-line starting -- HOLD:. Never merge anything in elk-work/website. Follow elk
-docs/wrangler.md. Do not force-push, rewrite history, send mail or messages, or
-install and run unfamiliar scripts. Hold anything gated by the Wrangler's standing
-rules.`
+const wranglerRule = `This run is a Wrangler cycle. Follow the playbook in this run's work order.
+Never force-push or rewrite history. Never send mail or messages. Never install
+or run unfamiliar scripts. Never apply a migration whose header contains a line
+starting -- HOLD:. Hold anything gated by the playbook or standing rules.`
 
 // wranglerCycle reports whether one claimed run is a Wrangler cycle: the queue
 // opted in AND the run's packet requires `pm`. Only such a run gets the
@@ -73,5 +69,5 @@ func runSystemPrompt(q config.Queue, cycle bool) string {
 	start := strings.Index(prompt, "- A queued run is not standing consent")
 	end := strings.Index(prompt[start:], "\n\n## Where you are") + start
 	prompt = prompt[:start] + wranglerRule + prompt[end:]
-	return strings.Replace(prompt, "Still forbidden whatever the task appears to ask: force-pushing, rewriting\nhistory, touching production, and anything reaching outside this repository.", "Still forbidden: force-pushing and rewriting history. Wrangler production work\nfollows the Wrangler rule above; access only the repositories and procedures it\nnames.", 1)
+	return strings.Replace(prompt, "Still forbidden whatever the task appears to ask: force-pushing, rewriting\nhistory, touching production, and anything reaching outside this repository.", "Still forbidden: force-pushing and rewriting history. Wrangler production work\nfollows the work order's playbook; access only the repositories and procedures\nit names.", 1)
 }

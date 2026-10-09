@@ -117,7 +117,7 @@ func TestOneWranglerQueueGrantsTheRulePerRun(t *testing.T) {
 	}
 	for _, i := range []int{0, 2} {
 		s := specs[i]
-		if s.WranglerConnectorAccount != "" || strings.Contains(s.SystemPrompt, "docs/wrangler.md") {
+		if s.WranglerConnectorAccount != "" || strings.Contains(s.SystemPrompt, "This run is a Wrangler cycle") {
 			t.Errorf("build run %s got the Wrangler grant (connector %q)", s.RunID, s.WranglerConnectorAccount)
 		}
 		if list := preflightList(t, s.SystemPrompt); has(list, "pm") || has(list, "mcp:elk") {
@@ -132,7 +132,7 @@ func TestOneWranglerQueueGrantsTheRulePerRun(t *testing.T) {
 		t.Errorf("the cycle did not get exactly the owner's connector: account %q, servers %#v",
 			c.WranglerConnectorAccount, c.MCPServers)
 	}
-	if !strings.Contains(c.SystemPrompt, "This run is a Wrangler cycle") || !strings.Contains(c.SystemPrompt, "docs/wrangler.md") {
+	if !strings.Contains(c.SystemPrompt, "This run is a Wrangler cycle") || !strings.Contains(c.SystemPrompt, "Follow the playbook") {
 		t.Error("the cycle did not get the Wrangler rule")
 	}
 	if list := preflightList(t, c.SystemPrompt); !has(list, "pm") || !has(list, "mcp:elk") {
@@ -183,5 +183,50 @@ func TestABuildRunNeedingTheElkConnectorOnAWranglerQueueIsRefused(t *testing.T) 
 	}
 	if len(h.agent.Specs()) != 0 {
 		t.Error("a build run started holding the owner's connector capability")
+	}
+}
+
+// The work order is the sole source of workspace-specific Wrangler rules.
+func TestWranglerPlaybookComesFromThePacket(t *testing.T) {
+	scoutPlaybook := "Apply migrations by scout supabase/README.md rule 5 and verify by object. " +
+		"Deploy edge functions through scout scripts/deploy-functions.sh. " +
+		"Deploy Signal only through its deploy workflow between refresh passes; never merge elk-work/website."
+	for _, tc := range []struct {
+		name, playbook string
+	}{
+		{"no playbook", ""},
+		{"Elk Scout", scoutPlaybook},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := wranglerHarness(t, "wrangler")
+			packet := order("run-1", "pm")
+			if tc.playbook != "" {
+				packet += "\n### Wrangler playbook\n" + tc.playbook + "\n"
+			}
+			h.elk.Text("claim_run", packet)
+			if err := h.run(runner.Options{}); err != nil {
+				t.Fatalf("%v\nlog:\n%s", err, h.log)
+			}
+			specs := h.agent.Specs()
+			if len(specs) != 1 {
+				t.Fatalf("started %d runs, want 1\nlog:\n%s", len(specs), h.log)
+			}
+			s := specs[0]
+			if s.Prompt != packet {
+				t.Error("the cycle work order was changed before reaching the agent")
+			}
+			if !strings.Contains(s.SystemPrompt, "Follow the playbook in this run's work order") {
+				t.Error("the cycle did not direct the agent to its work order's playbook")
+			}
+			for _, rule := range []string{"scout supabase/README.md rule 5", "scripts/deploy-functions.sh", "Deploy Signal only through its deploy workflow", "never merge elk-work/website"} {
+				if strings.Contains(s.SystemPrompt, rule) {
+					t.Errorf("standing prompt contains workspace rule %q", rule)
+				}
+				rendered := s.SystemPrompt + "\n" + s.Prompt
+				if got := strings.Contains(rendered, rule); got != (tc.playbook != "") {
+					t.Errorf("cycle prompt contains %q = %v, want %v", rule, got, tc.playbook != "")
+				}
+			}
+		})
 	}
 }
