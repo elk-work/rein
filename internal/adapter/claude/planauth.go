@@ -36,7 +36,14 @@ const planAPIKeySource = "none"
 // checkPlanInit refuses an init line whose apiKeySource is anything but the
 // plan login, including an absent one: a line that does not say is not
 // evidence of the plan.
-func checkPlanInit(apiKeySource string) error {
+func checkPlanInit(apiKeySource string, api ...bool) error {
+	if len(api) > 0 && api[0] {
+		if apiKeySource == "ANTHROPIC_API_KEY" {
+			return nil
+		}
+		return &adapter.APIAuthError{Because: "Claude Code did not report ANTHROPIC_API_KEY as its apiKeySource"}
+	}
+
 	if apiKeySource == planAPIKeySource {
 		return nil
 	}

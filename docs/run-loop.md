@@ -276,6 +276,17 @@ run yet. So the settlement is `--review-timeout` (20 minutes), not a signal.
 
 ## Choosing the repository
 
+In hosted mode, Rein uses only an explicit `repo:` hint from the work order,
+then the queue's `repo` as a fallback. The name must be `owner/name` and match
+`[hosted] allow_repos` exactly. A GitHub URL, `default_repo`, local paths and
+`[repos]` mappings never choose a hosted repository. Rein shallow-clones it
+(`--depth 50`) into `$REIN_HOME/work/<run>` and cuts the usual `rein/run-`
+branch from the remote default branch. The agent may unshallow if it needs
+history. The environment-only credential helper serves the clone and pushes;
+no token is stored in a remote URL or Git config. The clone is removed after
+submission, so the run must push its work and open its PR first.
+
+
 **Elk's work order names no repository.** This is the single biggest gap
 between what a runner needs and what `claim_run` provides: the reply carries
 the handoff packet, the action's identity, the requester, camp and goal

@@ -302,6 +302,7 @@ func permissionFlag(m adapter.PermissionMode) (string, error) {
 
 // Start implements [adapter.Adapter].
 func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Session, error) {
+	spec.AgentKind = "claude"
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
@@ -323,6 +324,9 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		return nil, err
 	}
 	if err := checkSettingsAuth(spec.WorktreeDir, a.settingSources()); err != nil {
+		if spec.Hosted {
+			return nil, &adapter.APIAuthError{Because: "repository settings supply authentication; remove apiKeyHelper and metered env settings"}
+		}
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -546,4 +550,13 @@ func childEnv(base []string, over map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+// PreflightHosted checks the binary without requiring a subscription login.
+// The session's initialization verifies the actual API-key account.
+func (a *Adapter) PreflightHosted(ctx context.Context) error {
+	if _, err := exec.LookPath(a.binary()); err != nil {
+		return fmt.Errorf("%w: hosted agent binary is not on PATH", adapter.ErrPreflight)
+	}
+	return nil
 }

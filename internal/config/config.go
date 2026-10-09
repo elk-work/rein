@@ -38,6 +38,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/secretenv"
 )
 
@@ -55,6 +56,7 @@ const QueueNameMax = 12
 
 // Config is the whole of ~/.rein/config.toml.
 type Config struct {
+	Hosted Hosted `toml:"hosted"`
 	// SelfRestart defaults to true; false leaves upgrades to the operator.
 	SelfRestart *bool `toml:"self_restart,omitempty"`
 
@@ -175,6 +177,32 @@ type Config struct {
 	Queues []Queue `toml:"queues"`
 }
 
+// Hosted fixes billing and repository scope for a one-run process.
+type Hosted struct {
+	Enabled    bool     `toml:"enabled"`
+	MaxRun     Duration `toml:"max_run"`
+	AllowRepos []string `toml:"allow_repos"`
+}
+
+func (h Hosted) RunCap() time.Duration {
+	if h.MaxRun == 0 {
+		return 120 * time.Minute
+	}
+	return h.MaxRun.Duration()
+}
+
+var hostedRepoRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+func HostedRepoName(name string) bool { return hostedRepoRE.MatchString(name) }
+
+// CheckHosted requires agreement between the config and the invocation.
+func (c Config) CheckHosted(flag bool) error {
+	if flag != c.Hosted.Enabled {
+		return errors.New("hosted mode requires both --hosted and [hosted] enabled = true")
+	}
+	return nil
+}
+
 // MCPServer is one [Config.MCPServers] definition, in Rein's vendor-neutral
 // shape. Exactly one of URL and Command. It holds no secret: a token or key is
 // named by the environment variable that carries it, and the vendor binary
@@ -195,7 +223,8 @@ var mcpNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // validate reports what makes a definition unusable. Refusing it here, at
 // load, means a typo stops `rein run` with the line to fix rather than
 // quietly leaving a server out of every run.
-func (s MCPServer) validate(name string) error {
+func (s MCPServer) validate(name string, api ...bool) error {
+	enabled := len(api) > 0 && api[0]
 	where := "mcp_servers." + name
 	switch {
 	case !mcpNameRE.MatchString(name):
@@ -212,7 +241,7 @@ func (s MCPServer) validate(name string) error {
 		return fmt.Errorf("%s: url %q is not http(s)", where, s.URL)
 	}
 	for _, env := range append(append([]string(nil), s.EnvVars...), s.BearerTokenEnvVar) {
-		if secretenv.Metered(env) {
+		if hosted.Forbidden(env, enabled) {
 			// The server runs inside the agent's process tree, so its key is
 			// in the agent's environment too.
 			return fmt.Errorf("%s: %s %s", where, env, meteredWhy)
@@ -443,12 +472,13 @@ var effortRE = regexp.MustCompile(`^[a-z][a-z_-]{0,31}$`)
 const meteredWhy = "would move the agent off the developer's plan login onto metered API billing; Rein refuses it on every queue"
 
 // validateInheritEnv checks one inherit_env list.
-func validateInheritEnv(where string, names []string) error {
+func validateInheritEnv(where string, names []string, api ...bool) error {
+	enabled := len(api) > 0 && api[0]
 	for _, name := range names {
 		switch {
 		case !envNameRE.MatchString(name):
 			return fmt.Errorf("%s: inherit_env: %q is not an environment variable name", where, name)
-		case secretenv.Metered(name):
+		case hosted.Forbidden(name, enabled):
 			return fmt.Errorf("%s: inherit_env: %s %s", where, name, meteredWhy)
 		}
 	}
@@ -572,7 +602,8 @@ var credentialNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 func LooksLikeEnvName(name string) bool { return credentialNameRE.MatchString(name) }
 
 // validateSecrets reports what is wrong with one queue's secrets map.
-func (q Queue) validateSecrets(i int) error {
+func (q Queue) validateSecrets(i int, api ...bool) error {
+	enabled := len(api) > 0 && api[0]
 	where := fmt.Sprintf("queues[%d] (%s)", i, q.Name)
 	if !q.Scoped() {
 		return nil
@@ -593,7 +624,7 @@ func (q Queue) validateSecrets(i int) error {
 			return fmt.Errorf("%s: secrets: %s is a system variable every run already inherits; it cannot come from the keychain", where, name)
 		case strings.HasPrefix(strings.ToUpper(name), "REIN_"):
 			return fmt.Errorf("%s: secrets: %s: the REIN_ prefix is Rein's own", where, name)
-		case secretenv.Metered(name):
+		case hosted.Forbidden(name, enabled):
 			// Every adapter refuses it at Start; saying so at load is kinder
 			// than a stuck run.
 			return fmt.Errorf("%s: secrets: %s %s", where, name, meteredWhy)
@@ -944,6 +975,34 @@ func (c Config) SaveFile(path string) error {
 // An empty config is valid — a machine that has not enrolled yet has nothing to
 // be wrong about — but any queue present must be complete and well formed.
 func (c Config) Validate() error {
+	enabled := c.Hosted.Enabled
+	if c.Hosted.MaxRun < 0 {
+		return errors.New("hosted.max_run must not be negative")
+	}
+	for _, repo := range c.Hosted.AllowRepos {
+		if !HostedRepoName(repo) {
+			return errors.New("hosted.allow_repos requires owner/name")
+		}
+	}
+	if enabled {
+		if len(c.Hosted.AllowRepos) == 0 {
+			return errors.New("hosted.allow_repos must name at least one repository")
+		}
+		for _, q := range c.Queues {
+			if q.AgentKind != "claude" && q.AgentKind != "codex" {
+				return errors.New("hosted queues require Claude Code or Codex; Grok is not supported")
+			}
+			if q.IsWrangler() {
+				return errors.New("hosted queues cannot use keychain Wrangler connectors")
+			}
+			for name := range q.Secrets {
+				if !hosted.ModelKey(name) {
+					return errors.New("hosted queues take credentials from the environment; only model API-key names may appear in secrets")
+				}
+			}
+		}
+	}
+
 	if c.HostID != "" && !hostIDRE.MatchString(c.HostID) {
 		return fmt.Errorf("host_id %q: must be lowercase letters and digits, no hyphen", c.HostID)
 	}
@@ -958,15 +1017,15 @@ func (c Config) Validate() error {
 		if reservedCapability(name) {
 			return fmt.Errorf("capabilities: %s cannot be listed; enable the Wrangler per queue with wrangler = true", name)
 		}
-		if secretenv.Metered(name) {
+		if hosted.Forbidden(name, enabled) {
 			return fmt.Errorf("capabilities: %s %s", name, meteredWhy)
 		}
 	}
-	if err := validateInheritEnv("config", c.InheritEnv); err != nil {
+	if err := validateInheritEnv("config", c.InheritEnv, enabled); err != nil {
 		return err
 	}
 	for name, s := range c.MCPServers {
-		if err := s.validate(name); err != nil {
+		if err := s.validate(name, enabled); err != nil {
 			return err
 		}
 	}
@@ -1006,7 +1065,7 @@ func (c Config) Validate() error {
 		case q.Effort != "" && !effortRE.MatchString(q.Effort):
 			return fmt.Errorf("queues[%d] (%s): effort %q: want one lower-case word such as low, medium or high", i, q.Name, q.Effort)
 		}
-		if err := validateInheritEnv(fmt.Sprintf("queues[%d] (%s)", i, q.Name), q.InheritEnv); err != nil {
+		if err := validateInheritEnv(fmt.Sprintf("queues[%d] (%s)", i, q.Name), q.InheritEnv, enabled); err != nil {
 			return err
 		}
 		for _, name := range q.Capabilities {
@@ -1015,7 +1074,7 @@ func (c Config) Validate() error {
 				return fmt.Errorf("queues[%d]: wrangler is not a capability; enable the Wrangler with wrangler = true", i)
 			case name == "pm" && !q.IsWrangler():
 				return fmt.Errorf("queues[%d]: capability pm requires wrangler = true", i)
-			case secretenv.Metered(name):
+			case hosted.Forbidden(name, enabled):
 				return fmt.Errorf("queues[%d] (%s): capabilities: %s %s", i, q.Name, name, meteredWhy)
 			}
 		}
@@ -1033,7 +1092,7 @@ func (c Config) Validate() error {
 					i, q.Name, name, name)
 			}
 		}
-		if err := q.validateSecrets(i); err != nil {
+		if err := q.validateSecrets(i, enabled); err != nil {
 			return err
 		}
 		seen[c.WorkspaceFor(q)+"/"+q.Name] = true

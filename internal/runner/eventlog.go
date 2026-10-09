@@ -2,7 +2,9 @@ package runner
 
 import (
 	"github.com/elk-work/rein/internal/elk"
+	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/runlog"
+	"github.com/elk-work/rein/internal/secretenv"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -31,10 +33,13 @@ func (qr *queueRunner) openLog(wo *elk.WorkOrder) {
 		Queue:          qr.r.opts.Config.QueueLabel(qr.q),
 		Workspace:      qr.workspace,
 		AgentKind:      qr.q.AgentKind,
-		Direction:      firstLine(wo.Direction),
+		Direction:      qr.redactString(firstLine(wo.Direction)),
 		PermissionMode: string(qr.mode),
 		Version:        qr.r.opts.Version,
 	})
+	if qr.r.opts.Hosted {
+		qr.log.SetRedactor(secretenv.NewRedactor(hosted.Values()))
+	}
 	qr.log.Runner(runlog.KindClaimed, "claimed on queue %s — %s", qr.q.Name, firstLine(wo.Direction))
 }
 

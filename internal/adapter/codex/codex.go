@@ -176,6 +176,7 @@ func (a *Adapter) Preflight(ctx context.Context) error {
 
 // Start implements [adapter.Adapter].
 func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Session, error) {
+	spec.AgentKind = "codex"
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
@@ -292,12 +293,16 @@ func (a *Adapter) spawnProcess(ctx context.Context, spec adapter.RunSpec) (*proc
 	// Every session gets a CODEX_HOME of its own, so the developer's
 	// config.toml — MCP servers above all — does not reach the agent. A
 	// session that cannot be isolated does not start (ark:rein#21, home.go).
-	home, err := newPrivateHome(spec.RunID)
+	home, err := newHome(spec.RunID, true, spec.Hosted)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(a.binary, "app-server")
+	args := []string{"app-server"}
+	if spec.Hosted {
+		args = append(args, "-c", `cli_auth_credentials_store="ephemeral"`)
+	}
+	cmd := exec.Command(a.binary, args...)
 	cmd.Dir = spec.WorktreeDir
 	cmd.Env = mergeEnv(spec.InheritedEnv(), mergeMaps(home.env(), spec.Env))
 
@@ -447,4 +452,13 @@ func firstLine(s string) string {
 // tests; the run loop goes through [adapter.CheckSupport].
 func hostSupported(m adapter.Manifest) bool {
 	return m.SupportsPlatform(runtime.GOOS, runtime.GOARCH)
+}
+
+// PreflightHosted checks the binary without requiring a subscription login.
+// The session's initialization verifies the actual API-key account.
+func (a *Adapter) PreflightHosted(ctx context.Context) error {
+	if _, err := exec.LookPath(a.binary); err != nil {
+		return fmt.Errorf("%w: hosted agent binary is not on PATH", adapter.ErrPreflight)
+	}
+	return nil
 }

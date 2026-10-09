@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/elk-work/rein/internal/config"
@@ -150,6 +151,13 @@ func (qr *queueRunner) applySecrets(env map[string]string) {
 	qr.redact.Store(red)
 	qr.log.SetRedactor(red)
 	names := secretNames(qr.q)
+	if qr.r.opts.Hosted {
+		names = nil
+		for name := range env {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
 	what := "none — this queue's runs get no credentials from this machine"
 	if len(names) > 0 {
 		what = strings.Join(names, ", ")
@@ -171,7 +179,11 @@ const vaultParagraphStart = "Secrets are never in the environment."
 // scopedSecretsPrompt swaps the vault paragraph for the scoped one. NAMES
 // only: a value never enters a prompt, which a test asserts.
 func scopedSecretsPrompt(prompt string, q config.Queue) string {
-	para := scopedSecretsParagraph(secretNames(q))
+	return scopedSecretsPromptNames(prompt, secretNames(q))
+}
+
+func scopedSecretsPromptNames(prompt string, names []string) string {
+	para := scopedSecretsParagraph(names)
 	start := strings.Index(prompt, vaultParagraphStart)
 	if start < 0 {
 		// prompt.md moved on without this file. Still tell the agent: an

@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/secretenv"
 )
 
@@ -127,6 +128,9 @@ type Session interface {
 // RunSpec is everything an adapter needs to start one session. The run loop
 // builds it from the Elk packet plus the worktree it just created.
 type RunSpec struct {
+	// Hosted is fixed by the runner config, never by the packet.
+	Hosted    bool
+	AgentKind string
 	// RunID is Elk's action_run id. Adapters use it for logging and for
 	// naming anything they persist; it is not the vendor session id.
 	RunID string
@@ -220,6 +224,27 @@ func (s RunSpec) InheritedEnv() []string {
 // the top of Start. InheritedEnv already drops such variables from what the
 // daemon passes down; Env is the one door left, so it is checked here.
 func (s RunSpec) CheckPlanEnv() error {
+	if s.Hosted {
+		if s.AgentKind != "claude" && s.AgentKind != "codex" {
+			return &APIAuthError{Because: "hosted mode requires Claude Code or Codex"}
+		}
+		for name := range s.Env {
+			if hosted.Forbidden(name, true) {
+				return &APIAuthError{Because: "the run environment sets forbidden " + name}
+			}
+		}
+		key := "ANTHROPIC_API_KEY"
+		if s.AgentKind == "codex" {
+			if s.Env["OPENAI_API_KEY"] != "" || s.Env["CODEX_API_KEY"] != "" {
+				return nil
+			}
+			key = "OPENAI_API_KEY or CODEX_API_KEY"
+		} else if s.Env[key] != "" {
+			return nil
+		}
+		return &APIAuthError{Because: key + " is required"}
+	}
+
 	if bad := secretenv.MeteredIn(s.Env); len(bad) > 0 {
 		return &PlanAuthError{Because: "the run's environment sets " + strings.Join(bad, ", ") +
 			", which would switch the agent from the plan login to metered API billing"}
@@ -426,3 +451,11 @@ var (
 	// already ended.
 	ErrSessionClosed = errors.New("adapter: session closed")
 )
+
+// APIAuthError is a refusal of hosted API-key billing.
+type APIAuthError struct{ Because string }
+
+func (e *APIAuthError) Error() string        { return "not on an API key: " + e.Because }
+func (e *APIAuthError) Is(target error) bool { return target == ErrNotAPIAuth }
+
+var ErrNotAPIAuth = errors.New("adapter: not on an API key")

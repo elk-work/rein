@@ -391,7 +391,7 @@ On a scoped queue, prefer the map: it is per queue, it is declared, and it is
 redacted. A wrapper or `credential_process` is per machine — any run that can
 reach the script can use it.
 
-### Watching — `rein tail`
+## Watching — `rein tail`
 
 The run loop reports a throttled sample to Elk and drops the rest, so for a
 long time the only account of a thirty-seven-minute run was two lines in
@@ -690,7 +690,7 @@ land       = "pr"           # optional; merge (the default) | pr | branch
 POSTHOG_API_KEY = "signal-posthog"   # NAME = keychain item, never a value
 ```
 
-**Plan login only.** Every run draws on the developer's own subscription — the
+**Plan login only (without hosted mode).** Every run draws on the developer's own subscription — the
 same limits the terminal uses — and Rein refuses anything that would move it
 onto metered API billing:
 
@@ -704,7 +704,7 @@ onto metered API billing:
   whole environment — harmless under the service, which carries little more
   than `PATH` and `HOME`, but a `rein run` started from a shell handed every
   run that shell, API keys included.
-- **Metered keys are refused everywhere**: `ANTHROPIC_API_KEY`,
+- **Metered keys are refused on non-hosted queues**: `ANTHROPIC_API_KEY`,
   `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `XAI_API_KEY`, and
   the `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY` switches. No run
   inherits one; config naming one in `inherit_env`, `capabilities`, a secrets
@@ -717,6 +717,48 @@ onto metered API billing:
   sign-in. Anything else — including a line that does not say — stops the
   session before its first tool call, and the run is reported `stuck` as
   *"The agent was not on the plan login, so Rein stopped it"* with the reason.
+
+**Hosted mode.**
+
+Hosted mode runs your Claude Code or Codex on the workspace's own API key.
+It requires both `rein run --hosted` and `[hosted] enabled = true` in the
+config; billing is never a per-run choice. Without hosted mode, Rein keeps
+requiring the developer's subscription login.
+
+```toml
+workspace = "your-workspace"
+
+[hosted]
+enabled = true
+max_run = "120m"
+allow_repos = ["your-org/your-repo"]
+
+[elk]
+# Set mcp_url to your Elk endpoint.
+
+[[queues]]
+name = "cloud-claude"
+agent_kind = "claude"
+repo = "your-org/your-repo"
+```
+
+Set `ANTHROPIC_API_KEY` for Claude Code, or `OPENAI_API_KEY` / `CODEX_API_KEY`
+for Codex, plus `REIN_ELK_TOKEN` and `REIN_GITHUB_TOKEN` in the process environment.
+Then run `rein run --hosted --once`. Hosted mode implies `--once`, requires one
+selected queue, and never opens the keychain. Grok and alternate cloud-provider
+or auth-token billing are refused. Claude must report `ANTHROPIC_API_KEY` as its
+key source; repository `apiKeyHelper` settings remain refused.
+
+The run clones only an allowlisted `owner/name`, at depth 50, under
+`$REIN_HOME/work` (or the configured `work_dir`). Git receives the short-lived
+GitHub token through an environment-reading credential helper, including for
+pushes; it never goes into arguments or the stored remote. The same token
+backs `gh` through its environment. Landing defaults to a non-draft PR for the
+repository's owners to merge; an explicit queue `land` overrides that default.
+Logs are retained and also written to stdout, with key and token values
+redacted; `rein attach` is off. The default run cap is 120 minutes. A cap hit
+submits a stuck deliverable; a refusal or crash exits nonzero. This mode also
+works on macOS and Windows for local testing.
 
 **Model and effort, per queue.** `model` and `effort` are passed to the CLI
 verbatim: Claude Code `--model` / `--effort` (low, medium, high, xhigh, max),

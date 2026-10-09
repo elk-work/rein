@@ -89,6 +89,7 @@ Work records live in Ark, repository 01M17TTM53XJKBZW2M9E04HHYP.`,
 	root.PersistentFlags().String("config", "", "path to config.toml (default: $REIN_HOME/config.toml, else ~/.rein/config.toml)")
 
 	root.AddCommand(
+		newHostedCredentialCommand(),
 		newEnrolCommand(),
 		newRunCommand(),
 		newAttachCommand(),
