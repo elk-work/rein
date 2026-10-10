@@ -1,0 +1,50 @@
+name: hosted image
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/image.yml
+      - go.mod
+      - go.sum
+      - 'cmd/**'
+      - 'internal/**'
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/image.yml
+      - go.mod
+      - go.sum
+      - 'cmd/**'
+      - 'internal/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: image-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build locally (never push)
+        env:
+          VERSION: ${{ github.sha }}
+        run: docker build --build-arg "VERSION=$VERSION" --tag rein-hosted:ci .
+      - name: Smoke test without credentials or network
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint sh rein-hosted:ci -ec '
+            test "$(id -u)" = 10001
+            test "$HOME" = /home/rein
+            test -w "$HOME"
+            test -w /home/rein/work
+            test -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${REIN_ELK_TOKEN:-}${REIN_GITHUB_TOKEN:-}"
+          '
+          docker run --rm --network none --entrypoint rein rein-hosted:ci version
+          docker run --rm --network none --entrypoint claude rein-hosted:ci --version
+          docker run --rm --network none --entrypoint codex rein-hosted:ci --version
