@@ -1,0 +1,69 @@
+# Adapted from elk-work/elk's ark-record-landing.yml and its scout copy.
+# The shared recorder closes Ark tasks named by a merged PR and records its
+# landing. Rein's Ark repository is 01M17TTM53XJKBZW2M9E04HHYP.
+# Public repository: only same-repository merges may receive credentials.
+# Cost: one ubuntu-slim job per eligible merge, about $0.002 per billed minute.
+name: ark-record-landing
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  record:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      (github.event.pull_request.user.type != 'Bot' ||
+       contains(format('{0} {1}', github.event.pull_request.title, github.event.pull_request.body), 'ark:'))
+    runs-on: ${{ vars.LINUX_RUNNER != '' && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-slim' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check for an Ark write credential
+        id: credential
+        env:
+          ARK_TOKEN: ${{ secrets.ARK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ARK_TOKEN" ]; then
+            echo "::warning::ARK_TOKEN is absent; this landing will not be recorded until the PM provisions the Ark write credential."
+            exit 0
+          fi
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+
+      - name: Check out the recorder from elk
+        if: steps.credential.outputs.available == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: elk-work/elk
+          ref: main
+          token: ${{ secrets.POINTER_BUMP_TOKEN }}
+          path: elk
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            ark-repos.tsv
+          sparse-checkout-cone-mode: false
+
+      - name: Record the landing
+        if: steps.credential.outputs.available == 'true'
+        env:
+          ARK_TOKEN: ${{ secrets.ARK_TOKEN }}
+          ARK_REMOTE: ${{ secrets.ARK_SERVER_URL }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          # Supply Rein's ID in this disposable checkout until Elk's separate
+          # non-submodule repository support lands. Never join a local clone.
+          if ! awk '$1 == "rein" { found = 1 } END { exit !found }' elk/ark-repos.tsv; then
+            printf '\nrein\t01M17TTM53XJKBZW2M9E04HHYP\n' >> elk/ark-repos.tsv
+          fi
+          exec bash elk/scripts/ark-record-landing-ci.sh "$GITHUB_REPOSITORY" pr "$PR" "$SHA"
