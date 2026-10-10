@@ -720,6 +720,11 @@ onto metered API billing:
 
 **Hosted mode.**
 
+The hosted container packages Rein, Claude Code and Codex for one run as a
+non-root user. See the [first-run runbook](docs/hosted.md) for building the
+image and the steps a person follows to start a Cloud Run job with the
+workspace’s own credentials. CI builds and smoke-tests it without publishing.
+
 Hosted mode runs your Claude Code or Codex on the workspace's own API key.
 It requires both `rein run --hosted` and `[hosted] enabled = true` in the
 config; billing is never a per-run choice. Without hosted mode, Rein keeps
