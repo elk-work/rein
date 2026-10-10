@@ -1,6 +1,5 @@
-# Adapted from elk-work/elk's ark-record-landing.yml and its scout copy.
-# The shared recorder closes Ark tasks named by a merged PR and records its
-# landing. Rein's Ark repository is 01M17TTM53XJKBZW2M9E04HHYP.
+# Recorder vendored from elk-work/elk; no private repository checkout.
+# Closes Ark tasks named by a merged PR and records its landing. Rein's Ark repository is 01M17TTM53XJKBZW2M9E04HHYP.
 # Public repository: only same-repository merges may receive credentials.
 # Cost: one ubuntu-slim job per eligible merge, about $0.002 per billed minute.
 name: ark-record-landing
@@ -8,20 +7,32 @@ name: ark-record-landing
 on:
   pull_request:
     types: [closed]
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Backfill window in hours"
+        default: '48'
+        required: false
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: ark-record-landing
+  cancel-in-progress: false
+
 jobs:
   record:
     if: >-
-      github.event_name == 'pull_request' &&
+      github.repository == 'elk-work/rein' &&
+      (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name &&
       github.event.pull_request.base.ref == github.event.repository.default_branch &&
       (github.event.pull_request.user.type != 'Bot' ||
-       contains(format('{0} {1}', github.event.pull_request.title, github.event.pull_request.body), 'ark:'))
+       contains(format('{0} {1}', github.event.pull_request.title, github.event.pull_request.body), 'ark:'))))
     runs-on: ${{ vars.LINUX_RUNNER != '' && fromJSON(vars.LINUX_RUNNER) || 'ubuntu-slim' }}
     timeout-minutes: 10
     steps:
@@ -37,33 +48,20 @@ jobs:
           fi
           echo 'available=true' >> "$GITHUB_OUTPUT"
 
-      - name: Check out the recorder from elk
+      - name: Check out Rein's recorder
         if: steps.credential.outputs.available == 'true'
         uses: actions/checkout@v7
         with:
-          repository: elk-work/elk
-          ref: main
-          token: ${{ secrets.POINTER_BUMP_TOKEN }}
-          path: elk
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: |
-            scripts
-            ark-repos.tsv
-          sparse-checkout-cone-mode: false
+          sparse-checkout: .github
 
       - name: Record the landing
         if: steps.credential.outputs.available == 'true'
         env:
           ARK_TOKEN: ${{ secrets.ARK_TOKEN }}
-          ARK_REMOTE: ${{ secrets.ARK_SERVER_URL }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.merge_commit_sha }}
-        run: |
-          set -euo pipefail
-          # Supply Rein's ID in this disposable checkout until Elk's separate
-          # non-submodule repository support lands. Never join a local clone.
-          if ! awk '$1 == "rein" { found = 1 } END { exit !found }' elk/ark-repos.tsv; then
-            printf '\nrein\t01M17TTM53XJKBZW2M9E04HHYP\n' >> elk/ark-repos.tsv
-          fi
-          exec bash elk/scripts/ark-record-landing-ci.sh "$GITHUB_REPOSITORY" pr "$PR" "$SHA"
+          HOURS: ${{ inputs.hours || '48' }}
+        run: bash .github/ark-record-landing.sh
