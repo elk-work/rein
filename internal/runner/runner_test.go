@@ -193,6 +193,22 @@ func (h *harness) prepare(opts runner.Options) runner.Options {
 	return opts
 }
 
+// details is the run-details step a successful run puts on its timeline —
+// the last one, as a revision round reports its own. Fatal when there is none.
+func (h *harness) details() string {
+	h.t.Helper()
+	var body string
+	for _, c := range h.elk.CallsTo("report_progress") {
+		if strings.HasPrefix(c.Arg("body"), "**Run details**") {
+			body = c.Arg("body")
+		}
+	}
+	if body == "" {
+		h.t.Fatalf("no run details on the run's timeline\nlog:\n%s", h.log)
+	}
+	return body
+}
+
 func (h *harness) submitted() elktest.Call {
 	h.t.Helper()
 	calls := h.elk.CallsTo("submit_deliverable")
@@ -233,10 +249,16 @@ func TestFullLoopClaimProgressSubmit(t *testing.T) {
 		// Elk would coerce it anyway.
 		t.Errorf("status = %q, want ready", sub.Arg("status"))
 	}
-	deliverable := sub.Arg("deliverable")
-	for _, want := range []string{"fake session completed", "Run details", "Branch:", "Permission mode"} {
-		if !strings.Contains(deliverable, want) {
-			t.Errorf("the deliverable is missing %q:\n%s", want, deliverable)
+	// The deliverable is the agent's account; where the work happened is on
+	// the timeline, so nothing of Rein's follows the agent's last line
+	// (ark:rein#77).
+	if deliverable := sub.Arg("deliverable"); deliverable != "fake session completed" {
+		t.Errorf("the deliverable is not the agent's own account:\n%s", deliverable)
+	}
+	details := h.details()
+	for _, want := range []string{"Run details", "Branch:", "Permission mode"} {
+		if !strings.Contains(details, want) {
+			t.Errorf("the run details are missing %q:\n%s", want, details)
 		}
 	}
 	if u, ok := sub.Args["usage"].(map[string]any); !ok {
@@ -893,7 +915,7 @@ func TestTheOpeningReportSaysWhatTheAgentIsLookingAt(t *testing.T) {
 	}
 }
 
-func TestTheFooterSaysWhatHappenedToTheWorktree(t *testing.T) {
+func TestTheRunDetailsSayWhatHappenedToTheWorktree(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		keep        bool
@@ -909,16 +931,16 @@ func TestTheFooterSaysWhatHappenedToTheWorktree(t *testing.T) {
 			if err := h.run(runner.Options{KeepWorktrees: tc.keep}); err != nil {
 				t.Fatalf("%v\nlog:\n%s", err, h.log)
 			}
-			d := h.submitted().Arg("deliverable")
+			d := h.details()
 			if !strings.Contains(d, tc.want) {
-				t.Errorf("the footer does not say %q:\n%s", tc.want, d)
+				t.Errorf("the run details do not say %q:\n%s", tc.want, d)
 			}
 			if strings.Contains(d, tc.avoid) {
-				t.Errorf("the footer claims %q, which is not what happened:\n%s", tc.avoid, d)
+				t.Errorf("the run details claim %q, which is not what happened:\n%s", tc.avoid, d)
 			}
 			// The base commit is the first question a reviewer asks.
 			if !strings.Contains(d, "based on `origin/main`") {
-				t.Errorf("the footer does not name the base:\n%s", d)
+				t.Errorf("the run details do not name the base:\n%s", d)
 			}
 		})
 	}

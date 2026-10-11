@@ -17,7 +17,7 @@ so silence from the agent is read as you thinking rather than as the agent
 dying. It keeps reporting to Elk throughout, so the run does not lose its
 fifteen-minute lease while you read. When you detach it resumes, and the run
 finishes exactly as it would have — Rein submits the deliverable, with one line
-in the footer saying a person took part.
+in the run details saying a person took part.
 
 ## Why a socket, and not a resume
 
@@ -147,9 +147,10 @@ driving and its watchdog keeps running. Following a run without taking it over
 is exactly `rein tail <run>`, and the daemon must not step back for somebody
 who has no intention of driving.
 
-## What the deliverable says
+## What the run says
 
-One line in the run details footer:
+One line in the run details, which go on the run's timeline beside the
+deliverable (see *submit_deliverable* in run-loop.md):
 
 ```
 - A person attached to this session for 6m12s and sent it 3 messages.

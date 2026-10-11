@@ -137,16 +137,18 @@ func TestAttachOverTheControlSocket(t *testing.T) {
 		t.Errorf("the agent received %v", sent)
 	}
 
-	// One line in the deliverable, and never what they typed: a deliverable is
-	// read by whoever asked for the work, and a takeover transcript is not
-	// theirs.
-	deliverable := h.submitted().Arg("deliverable")
-	if !strings.Contains(deliverable, "A person attached to this session") ||
-		!strings.Contains(deliverable, "sent it one message") {
-		t.Errorf("the deliverable does not record the intervention:\n%s", deliverable)
+	// One line in the run details, and never what they typed: the details
+	// and the deliverable are read by whoever asked for the work, and a
+	// takeover transcript is not theirs.
+	details := h.details()
+	if !strings.Contains(details, "A person attached to this session") ||
+		!strings.Contains(details, "sent it one message") {
+		t.Errorf("the run details do not record the intervention:\n%s", details)
 	}
-	if strings.Contains(deliverable, "stop after the current file") {
-		t.Errorf("the deliverable carries the person's own words:\n%s", deliverable)
+	for _, said := range []string{details, h.submitted().Arg("deliverable")} {
+		if strings.Contains(said, "stop after the current file") {
+			t.Errorf("the run carries the person's own words:\n%s", said)
+		}
 	}
 
 	// The local run log does carry them, because that is the account of the

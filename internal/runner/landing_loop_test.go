@@ -54,9 +54,9 @@ func TestAMergeQueueRunsAsItAlwaysHas(t *testing.T) {
 	if strings.HasPrefix(sub.Arg("title"), "Landing policy breached") {
 		t.Errorf("title = %q", sub.Arg("title"))
 	}
-	d := sub.Arg("deliverable")
+	d := h.details()
 	if !strings.Contains(d, "- Landing policy: `merge`") || strings.Contains(d, "Landing check") {
-		t.Errorf("the merge footer is wrong:\n%s", d)
+		t.Errorf("the merge queue's run details are wrong:\n%s", d)
 	}
 }
 
@@ -92,10 +92,10 @@ func TestAPRQueueIsToldItsPolicyAndCheckedAfterTheRun(t *testing.T) {
 	if sub.Arg("status") != "ready" || strings.HasPrefix(sub.Arg("title"), "Landing policy breached") {
 		t.Errorf("a clean pr run was submitted as %q / %q", sub.Arg("status"), sub.Arg("title"))
 	}
-	d := sub.Arg("deliverable")
+	d := h.details()
 	for _, want := range []string{"- Landing policy: `pr`", "- Landing check: no breach found", "#41", "open and not merged"} {
 		if !strings.Contains(d, want) {
-			t.Errorf("the deliverable is missing %q:\n%s", want, d)
+			t.Errorf("the run details are missing %q:\n%s", want, d)
 		}
 	}
 }
@@ -125,8 +125,8 @@ func TestAMergeOnAPRQueueHeadlinesTheDeliverable(t *testing.T) {
 	if !strings.HasPrefix(d, "## Landing policy breached\n") || !strings.Contains(d, "#41 (https://github.com/acme/app/pull/41) was merged") {
 		t.Errorf("the breach is not the first thing in the deliverable:\n%s", d)
 	}
-	if !strings.Contains(d, "fake session completed") {
-		t.Errorf("the agent's own account was dropped:\n%s", d)
+	if !strings.HasSuffix(d, "\n\nfake session completed") {
+		t.Errorf("the agent's own account is not the end of the deliverable:\n%s", d)
 	}
 	var said bool
 	for _, r := range h.elk.CallsTo("report_progress") {
