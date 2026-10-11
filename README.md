@@ -937,8 +937,12 @@ queue got both).
 
 Wrangler cycle prompts authorize migrations only by scout `supabase/README.md`
 rule 5, verified by object; edge functions only via scout
-`scripts/deploy-functions.sh`; and Signal only through its deploy workflow
-between refresh passes. Migration headers with a line starting `-- HOLD:` are
+`scripts/deploy-functions.sh`; and Signal only through its deploy workflows,
+`deploy-receiverd.yml` and `deploy-refresh-job.yml`. A cycle may run either
+workflow at any time with `execute` off. With `execute` on, the deploy also
+starts a refresh pass, so it runs only between refresh passes; a deploy alone
+does not disturb a pass in flight, because a Cloud Run job execution keeps the
+template it started with. Migration headers with a line starting `-- HOLD:` are
 never applied, and `elk-work/website` is never merged. Wrangler cycles follow
 elk `docs/wrangler.md`. Other queues, and other runs on a Wrangler queue, retain
 their existing prompt and MCP allow-list behavior.

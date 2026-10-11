@@ -467,8 +467,10 @@ Rein's event log and results when a server or tool echoes the URL. Claude's own
 vendor-managed transcript storage remains subject to Claude's behavior.
 
 Wrangler cycles use the Wrangler production rule: scout migration README rule 5
-with object verification, scout's deploy script, Signal's deploy workflow between
-refresh passes, `-- HOLD:` headers respected, no website merges, and elk's
+with object verification, scout's deploy script, either of Signal's deploy
+workflows (`deploy-receiverd.yml` or `deploy-refresh-job.yml`) at any time with
+`execute` off and only between refresh passes with `execute` on, `-- HOLD:`
+headers respected, no website merges, and elk's
 `docs/wrangler.md` playbook. The rule is spliced into the prompt per run, for a
 Wrangler cycle only; every other run on a Wrangler queue, and every run on any
 other queue, keeps the ordinary prompt and its rule against touching production.
