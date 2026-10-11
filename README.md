@@ -161,7 +161,7 @@ which is routinely a stale release branch. The repository's `.ark` is symlinked
 in, so `ark` works in the worktree and the run's records land in the project's
 own history; Rein never runs `ark init`, which would mint a new repository id
 and orphan that history. Both are reported in the run's first progress note and
-in the deliverable's footer.
+in the run details posted beside the deliverable.
 
 **Elk's work order names no repository**, so Rein resolves one from four places
 in order — a `repo:` line in the work order, a github.com URL in it, the

@@ -194,6 +194,18 @@ func TestAutoReviewIsBoundedThenStuck(t *testing.T) {
 	if !strings.Contains(d, "does not say which tests were run") {
 		t.Errorf("the stuck reason does not carry Elk's last verdict:\n%s", d)
 	}
+	// This deliverable replaces the agent's last one, so that one travels
+	// with it — after Rein's explanation and the run details, and last, so
+	// nothing of Rein's follows the agent's final line (ark:rein#77).
+	verdict := strings.Index(d, "does not say which tests were run")
+	details := strings.Index(d, "**Run details**")
+	agent := strings.Index(d, "### What the agent submitted last")
+	if verdict < 0 || details < verdict || agent < details {
+		t.Errorf("want the verdict, then the run details, then the agent's last submission:\n%s", d)
+	}
+	if !strings.HasSuffix(d, "\n\nfake session completed") {
+		t.Errorf("the agent's last submission is not the end of the stuck deliverable:\n%s", d)
+	}
 }
 
 func TestARunWithoutAutoReviewDoesNotWait(t *testing.T) {

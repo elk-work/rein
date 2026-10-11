@@ -349,7 +349,7 @@ arrived as a conflict against work that had already moved.
 So, in order: an explicit ref, then `git fetch origin` followed by
 `git symbolic-ref refs/remotes/origin/HEAD`, then `origin/main` and
 `origin/master`, and only then `HEAD` — which is reported loudly in the log, the
-opening progress report and the deliverable footer, because a run based on it
+opening progress report and the run details, because a run based on it
 may be diffing against the wrong world. A failed fetch is not fatal: stale refs
 beat no run at all.
 
@@ -400,9 +400,9 @@ it the vendored prompt tells the agent what `.ark` is and to leave it alone.
 **Reaping removes the directory and keeps the branch.** `git worktree remove
 --force` discards uncommitted changes, so anything the agent committed stays
 reachable in the repository and anything it did not is gone. That is the trade
-a v0 which reaps immediately after submitting is making, it is why every
-deliverable's footer names the branch and the commit it was based on, and it is
-what `rein run --keep-worktrees` opts out of. The footer says which of the two
+a v0 which reaps immediately after submitting is making, it is why every run's
+details name the branch and the commit it was based on, and it is what
+`rein run --keep-worktrees` opts out of. The details say which of the two
 actually happened, rather than assuming the default.
 
 ## Reporting while it works
@@ -543,7 +543,7 @@ cancellation.
 ```json
 {
   "run_id": "…",
-  "deliverable": "markdown …\n\n---\n\n**Run details** …",
+  "deliverable": "the agent's own account, ending with its own last line",
   "status": "ready",
   "title": "Port the due-date sheet to Windows",
   "usage": { "…": "the final delta" }
@@ -554,10 +554,41 @@ cancellation.
 Never `done` — see the four rules. Never `cancelled` or `failed`: those are not
 an agent's to set.
 
-The deliverable always ends with a **Run details** footer naming the
-repository, the branch, the permission mode and the agent session id. The
-branch is the important line: the worktree is gone by the time anyone reads it,
-and the branch is not.
+Every finished run carries a **Run details** block naming the repository, the
+branch, the permission mode, the landing policy and check, and the agent session
+id. The branch is the important line: the worktree is gone by the time anyone
+reads it, and the branch is not.
+
+**Nothing of Rein's follows the agent's last line** (ark:rein#77). Until then the
+block was a footer after the agent's text, and that broke reviewed runs. Elk's
+review reads the deliverable from its end as closely as from its start: Elk
+Scout work orders routinely say "end the deliverable with the exact Wrangler
+step", and with the footer last the review asked for that line to be moved
+every round until Rein stopped at the round limit and marked the run `stuck` —
+including a run whose work had already merged. So:
+
+- **A successful run's details go on its timeline**, as a `report_progress`
+  step sent just before `submit_deliverable`, and the deliverable is the agent's
+  account alone. `submit_deliverable` has no field for them (`summary` is the
+  one sentence the chat notification uses), and Elk's review reads the
+  deliverable, its links and the work order, never the timeline. The app shows
+  a multi-line step as a headline that opens, so the branch is one tap from the
+  outcome. The deliverable's start stays the agent's too, which matters as much
+  as its end: Elk asks every deliverable to open with a plain-English lead, and
+  the app's collapsed card shows only the first few lines. The final usage delta
+  stays on the submit.
+- **If Elk refuses that step**, the block goes into the deliverable instead — at
+  the top, under its heading, then a rule, then the agent's account — so the
+  branch is never lost and the agent's last line is still last.
+- **A stuck deliverable is Rein's own**: its explanation first, then the run
+  details, then whatever the agent wrote, last. A stalled or failed run keeps
+  what the agent had said before it stopped; a run that hit the review round
+  limit keeps the agent's last submission, because the stuck deliverable
+  replaces it on the run and the person deciding about it needs to see what was
+  done. A refusal before any session started has no agent text and ends with
+  the details.
+- A landing breach (below) still opens the deliverable: it is the one thing a
+  person must read before accepting.
 
 The reply on a last-moment cancellation is again plain text with no `isError`:
 
@@ -836,7 +867,7 @@ pushed, since there is then no branch for one to come from). Then:
   already puts it in front of a person — but the title becomes **Landing policy
   breached: …**, the deliverable opens with a section saying what was found,
   the run's timeline gets a line saying so, and so does the local log;
-- everything else is a note in the deliverable's footer under *Landing check*:
+- everything else is a note in the run details under *Landing check*:
   the PR that is open as it should be, a draft where a non-draft was asked for,
   no PR opened under `pr`, an unpushed branch;
 - a check that could not run — `gh` not logged in, GitHub unreachable after one
@@ -846,7 +877,7 @@ pushed, since there is then no branch for one to come from). Then:
 **The policy is visible before dispatch, too.** It rides every heartbeat as
 `session.land` (Elk stores the session object verbatim, so no server change was
 needed to send it), it is in the run's first progress report and in every
-deliverable footer, and `rein status` has a `LAND` column.
+run's details, and `rein status` has a `LAND` column.
 
 **None of this is a control**, for the reason in *What the prompt cannot
 enforce* above: an agent holding a shell under `full` can run whatever merge

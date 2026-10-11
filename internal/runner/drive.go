@@ -348,13 +348,18 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		}
 
 		if round >= qr.maxReviewRounds() {
+			// This deliverable replaces the agent's last one on the run, so
+			// that one travels with it — last, as the agent wrote it. Work
+			// that merged before the review gave up is otherwise invisible
+			// to the person who now has to decide about it.
 			return qr.submitStuck(ctx, wo,
 				fmt.Sprintf("Elk's review still wants changes after %d rounds", round),
-				"Rein stopped rather than loop. The last thing Elk asked for:\n\n"+
+				stuckBody("Rein stopped rather than loop. The last thing Elk asked for:\n\n"+
 					blockquote(verdict)+"\n\n"+
 					"A person should look at this: either the request is not something the agent can act on, "+
-					"or the work needs a different approach.\n\n"+
-					qr.runDetails(wt, repo, spec, res.sessionID), &pending)
+					"or the work needs a different approach.",
+					qr.runDetails(wt, repo, spec, res.sessionID),
+					"### What the agent submitted last", agentAccount(res.out)), &pending)
 		}
 		if stop, err := qr.retakeSlot(ctx, wo, round+1, &pending); stop {
 			return err
@@ -594,8 +599,8 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			if errors.Is(err, adapter.ErrNotAPIAuth) {
 				title = notAPITitle
 			}
-			return sessionResult{done: true}, qr.stuck(ctx, wo, title, err.Error()+
-				"\n\n"+qr.runDetails(wt, repo, spec, ""))
+			return sessionResult{done: true}, qr.stuck(ctx, wo, title,
+				stuckBody(err.Error(), qr.runDetails(wt, repo, spec, ""), "", ""))
 		}
 		if spec.ResumeID != "" {
 			qr.log.Runner(runlog.KindSession, "restarted %s, resuming session %s", a.Name(), spec.ResumeID)
@@ -655,8 +660,8 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 				why += fmt.Sprintf(" The %s adapter does not declare `resume`, so there was nothing to restart into.",
 					a.Name())
 			}
-			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run stalled", why+
-				"\n\n"+partial(out)+"\n"+qr.runDetails(wt, repo, spec, sess.ID()), pending)
+			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run stalled",
+				stoppedBody(why, qr.runDetails(wt, repo, spec, sess.ID()), out), pending)
 
 		case out.capped || qr.r.opts.Hosted && out.result != nil && out.result.Status == adapter.StatusTimedOut && !time.Now().Before(qr.hostedDeadline):
 			qr.interrupt(sess)
@@ -668,8 +673,8 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			// Stopped at its start-up line, before any work: said as such,
 			// and never mistaken for an exhausted subscription.
 			qr.log.Runner(runlog.KindNote, "stopped: %v", out.err)
-			return sessionResult{done: true}, qr.submitStuck(ctx, wo, notPlanTitle, out.err.Error()+
-				"\n\n"+qr.runDetails(wt, repo, spec, sess.ID()), pending)
+			return sessionResult{done: true}, qr.submitStuck(ctx, wo, notPlanTitle,
+				stuckBody(out.err.Error(), qr.runDetails(wt, repo, spec, sess.ID()), "", ""), pending)
 
 		case out.err != nil:
 			title, why := "The agent failed", out.err.Error()
@@ -680,8 +685,8 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 				// or here after the reset.
 				title, why = "The agent's subscription is exhausted", hold+"\n\n"+why
 			}
-			return sessionResult{done: true}, qr.submitStuck(ctx, wo, title, why+
-				"\n\n"+partial(out)+"\n"+qr.runDetails(wt, repo, spec, sess.ID()), pending)
+			return sessionResult{done: true}, qr.submitStuck(ctx, wo, title,
+				stoppedBody(why, qr.runDetails(wt, repo, spec, sess.ID()), out), pending)
 
 		case ctx.Err() != nil:
 			// The daemon is shutting down. Stop the agent and let the claim
@@ -1143,19 +1148,13 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 	wt *worktree.Worktree, repo RepoResolution, spec adapter.RunSpec, sessionID string,
 	pending *elk.Usage) (*elk.SubmitResult, error) {
 
-	summary := ""
-	if out.result != nil {
-		summary = strings.TrimSpace(out.result.Summary)
-		if sessionID == "" {
-			sessionID = out.result.SessionID
-		}
+	if out.result != nil && sessionID == "" {
+		sessionID = out.result.SessionID
 	}
-	if summary == "" {
-		summary = strings.TrimSpace(out.text)
-	}
+	summary := agentAccount(out)
 	if summary == "" {
 		summary = "The agent finished without producing a written summary. " +
-			"The branch below is what it left behind."
+			"This run's details name the branch it left behind."
 	}
 
 	status := elk.StatusReady
@@ -1164,7 +1163,8 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 		status = elk.StatusStuck
 		title = "Did not finish: " + title
 	}
-	body := summary + "\n\n" + qr.runDetails(wt, repo, spec, sessionID)
+	details := qr.runDetails(wt, repo, spec, sessionID)
+	banner := ""
 
 	// The post-run landing check (landing.go): a `pr` or `branch` queue's
 	// branch is held to its policy before anyone is told the run is done. A
@@ -1172,14 +1172,29 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 	// already puts it in front of a person — but it headlines both the title
 	// and the deliverable, so nobody accepts a merge they did not know about.
 	if verdict, checked := qr.checkLanding(ctx, wt); checked {
-		body += verdict.footer()
+		details += verdict.footer()
 		land := qr.q.LandOrDefault()
 		if len(verdict.Breaches) > 0 {
 			title = "Landing policy breached: " + title
-			body = verdict.banner(land) + body
+			banner = verdict.banner(land)
 			_ = qr.report(ctx, wo.RunID, elk.ProgressStep, "Landing check: the run went past its queue's policy ("+
 				land+"). "+verdict.Breaches[0], pending)
 		}
+	}
+
+	// The deliverable is the agent's own text, and the run details go on the
+	// run's timeline as its last step (ark:rein#77). Elk's review reads the
+	// deliverable and nothing else, and reads its end as closely as its
+	// start: a work order that says "end with the Wrangler step" is checked
+	// against the last line, so a block of Rein's after it sent every such
+	// run back until the round limit made it stuck. Its start is the agent's
+	// too, because Elk asks for a plain-English lead and the app's collapsed
+	// card shows the first few lines. Only if the timeline refuses do the
+	// details go into the deliverable, at the top, so the branch is never
+	// lost.
+	body := banner + summary
+	if !qr.reportDetails(ctx, wo.RunID, details) {
+		body = banner + detailsThen(details, summary)
 	}
 
 	return qr.submit(ctx, wo, elk.Submission{
@@ -1306,17 +1321,22 @@ func (qr *queueRunner) reportLostSubmit(ctx context.Context, wo *elk.WorkOrder, 
 	}
 }
 
-// runDetails is the footer every deliverable carries: where the work happened,
+// runDetails is the block every finished run carries: where the work happened,
 // so a person can go and look at it. The branch is the important line — under
 // the default the worktree directory is gone by the time anyone reads this,
 // and the branch is not.
 //
+// A successful run's details go on its timeline (reportDetails); a stuck
+// one's sit in the deliverable between Rein's explanation and the agent's
+// text (stuckBody). Either way nothing of Rein's follows the agent's last
+// line (ark:rein#77).
+//
 // It says what actually happened to the worktree rather than what usually
-// does: under `--keep-worktrees` the directory is still there, and a footer
+// does: under `--keep-worktrees` the directory is still there, and details
 // claiming it had been removed sent people looking in the wrong place.
 func (qr *queueRunner) runDetails(wt *worktree.Worktree, repo RepoResolution, spec adapter.RunSpec, sessionID string) string {
 	var b strings.Builder
-	b.WriteString("---\n\n**Run details**\n\n")
+	b.WriteString("**Run details**\n\n")
 	fmt.Fprintf(&b, "- Repository: `%s` — chosen from %s\n", repo.Path, repo.Source)
 	if wt != nil {
 		fmt.Fprintf(&b, "- Branch: `%s`, based on `%s` at %s\n", wt.Branch, wt.BaseRef, shortSHA(wt.BaseSHA))
@@ -1349,15 +1369,63 @@ func (qr *queueRunner) runDetails(wt *worktree.Worktree, repo RepoResolution, sp
 	return b.String()
 }
 
-// partial renders whatever the agent managed to say before it stopped. A
-// stalled or failed run that produced real output should not throw it away:
-// it is usually the only account of how far the work got.
-func partial(out watchOutcome) string {
+// reportDetails puts a successful run's details on its timeline, as the last
+// step before the deliverable, and says whether they got there. Elk's review
+// reads the deliverable alone, so details here cannot be mistaken for the end
+// of the agent's work; the app shows a multi-line step as a headline that
+// opens, so a person is one tap from the branch.
+//
+// No usage rides on it: the final delta stays with the submit, where Elk's
+// contract asks for it.
+func (qr *queueRunner) reportDetails(ctx context.Context, runID, details string) bool {
+	err := qr.report(ctx, runID, elk.ProgressStep, details, &elk.Usage{})
+	if err != nil {
+		qr.logf("run %s: the run details did not reach the timeline (%v); they go at the top of the deliverable instead",
+			runID, err)
+	}
+	return err == nil
+}
+
+// detailsThen is Rein's run details, a rule, then the agent's text: the order
+// that keeps the agent's last line the deliverable's last line (ark:rein#77).
+func detailsThen(details, agentText string) string {
+	return details + "\n---\n\n" + agentText
+}
+
+// stuckBody lays out one of Rein's own stuck deliverables: the explanation,
+// then the run details, then — when the agent wrote anything — its text under
+// heading. The agent's text goes last because it is the agent's: a reader, or
+// Elk, looking for how the agent ended finds the agent's own last line, not
+// Rein's.
+func stuckBody(why, details, heading, agentText string) string {
+	if agentText == "" {
+		return why + "\n\n" + details
+	}
+	return why + "\n\n" + detailsThen(details, heading+"\n\n"+truncate(agentText, 20000))
+}
+
+// stoppedBody is stuckBody for a run that stalled or failed: whatever the agent
+// managed to say before it stopped is kept, because it is usually the only
+// account of how far the work got.
+func stoppedBody(why, details string, out watchOutcome) string {
 	text := strings.TrimSpace(out.text)
 	if text == "" {
-		return "The agent produced no output before it stopped."
+		why += "\n\nThe agent produced no output before it stopped."
 	}
-	return "### What the agent had said before it stopped\n\n" + truncate(text, 20000) + "\n"
+	return stuckBody(why, details, "### What the agent had said before it stopped", text)
+}
+
+// agentAccount is what the agent wrote to finish its session: its result's
+// summary, or failing that the text it streamed. Empty when it wrote nothing.
+func agentAccount(out watchOutcome) string {
+	summary := ""
+	if out.result != nil {
+		summary = strings.TrimSpace(out.result.Summary)
+	}
+	if summary == "" {
+		summary = strings.TrimSpace(out.text)
+	}
+	return summary
 }
 
 // capabilityHelp explains the two lists a packet's required_capabilities are
