@@ -68,6 +68,11 @@ type script struct {
 	aClaimed   bool
 	aSubmitted bool
 	bClaimed   bool
+	// bReported is run-b's first progress report. Rein sends it after it has
+	// named the slot run-b holds, which claim_run answering does not promise:
+	// a revision delivered between the claim and the naming found the slot
+	// "in use by mac-codex" with no run to name, and failed under -race.
+	bReported bool
 	// revise, when set, makes the review of run-a ask for revisions once
 	// run-b has its slot.
 	revise  bool
@@ -111,10 +116,18 @@ func (s *script) install(h *harness) {
 		}
 		return elktest.Reply{Text: "Deliverable saved: run `run-b` is `ready`. The user will review it in Elk."}
 	})
+	h.elk.Handle("report_progress", func(args map[string]any) elktest.Reply {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if args["run_id"] == "run-b" {
+			s.bReported = true
+		}
+		return elktest.Reply{Text: "Progress recorded. Lease refreshed."}
+	})
 	h.elk.Handle("ask_elk", func(map[string]any) elktest.Reply {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.revise && s.bClaimed && !s.revised {
+		if s.revise && s.bReported && !s.revised {
 			s.revised = true
 			return elktest.Reply{Text: strings.ReplaceAll(askRevisions, "run-1", "run-a")}
 		}
