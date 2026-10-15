@@ -73,6 +73,10 @@ type Manager struct {
 
 	// Logf receives one line per external command and per decision.
 	Logf func(format string, args ...any)
+
+	// LiveProcesses lists the processes working inside a directory, as
+	// "<pid> <command>". Nil means lsof. Tests replace it.
+	LiveProcesses func(dir string) ([]string, error)
 }
 
 // Request is one worktree to create.
@@ -413,12 +417,18 @@ func (m *Manager) runInitScript(ctx context.Context, dir string) (bool, error) {
 // symlink — that was checked before this design was adopted — but the target is
 // the repository's entire work-record database, and "the tool I am about to run
 // recursively does not follow links" is not a thing to be merely fairly sure of.
+//
+// A worktree some process is still working in is never reaped: Reap returns
+// [ErrInUse] and leaves it (ark:rein#80).
 func (m *Manager) Reap(ctx context.Context, wt *Worktree) error {
 	if wt != nil && wt.Hosted {
 		return os.RemoveAll(wt.Dir)
 	}
 	if wt == nil || wt.Dir == "" {
 		return nil
+	}
+	if err := m.checkLive(wt.Dir); err != nil {
+		return err
 	}
 	m.unlinkArk(wt.Dir)
 	for _, sub := range wt.Ark.Linked {
