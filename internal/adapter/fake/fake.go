@@ -75,6 +75,12 @@ type Adapter struct {
 	// report two readings, the way two real runs do.
 	RateLimit *adapter.RateLimit
 
+	// ScriptFor, when set, chooses each session's script and result in place
+	// of [Adapter.Script] and [Adapter.Result]: n counts sessions from 0. It
+	// is how a test replays a run whose sessions said different things — a
+	// first turn, a resume, a revision round.
+	ScriptFor func(n int, spec adapter.RunSpec) ([]adapter.Event, adapter.Result)
+
 	// RefuseMCP names MCP servers [Adapter.MCPServerConfig] refuses as
 	// unsupported.
 	RefuseMCP []string
@@ -217,10 +223,18 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		return nil, a.StartErr
 	}
 
+	script, result := a.Script, a.Result
+	if a.ScriptFor != nil {
+		a.mu.Lock()
+		n := len(a.specs)
+		a.mu.Unlock()
+		script, result = a.ScriptFor(n, spec)
+	}
+
 	s := &Session{
 		spec:      spec,
 		adapter:   a,
-		sessionID: a.Result.SessionID,
+		sessionID: result.SessionID,
 		events:    make(chan adapter.Event),
 		done:      make(chan struct{}),
 		started:   time.Now(),
@@ -242,7 +256,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	a.sessions = append(a.sessions, s)
 	a.mu.Unlock()
 
-	go s.replay(a.Script, a.Result, a.WaitErr, a.Delay)
+	go s.replay(script, result, a.WaitErr, a.Delay)
 	return s, nil
 }
 

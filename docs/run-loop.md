@@ -414,6 +414,21 @@ under five background lanes of a finished run, and the branch kept nothing they
 had not yet committed. A probe that cannot run fails open, so a missing `lsof`
 never wedges every reap.
 
+**No deliverable leaves without a finished report** (`ark:rein#83`). The end
+of a session is the end of the run, so an agent that closes on "the checks are
+still running, I'll merge once they pass" has handed in a promise nobody will
+keep. When a session that ended normally closes on nothing, or on a short
+message that defers its work to a later turn, Rein resumes it once and says
+why: there is no later turn, wait in the foreground for anything still running,
+then write the report — what was done, links, what is left. One ask, never a
+loop. If the answer is still empty or still a promise, the run is submitted
+`stuck` as *Finished without a report*, saying so, with whatever the agent did
+write kept underneath. A report over 400 characters is taken as written. The
+same check runs after every review round, so a revision session that ends
+without a word is asked too. On 2026-10-14 (`arun-75a2b7d0`) the promise went
+to Elk as `ready`, and the two review rounds then sent two empty deliverables;
+`internal/runner/summary_test.go` replays that run.
+
 ## Reporting while it works
 
 | Event | Call |

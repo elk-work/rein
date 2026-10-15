@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -318,6 +319,10 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		if err != nil || res.done {
 			return err
 		}
+		res, err = qr.insistOnSummary(ctx, a, spec, wo, wt, repo, res, &pending)
+		if err != nil || res.done {
+			return err
+		}
 
 		sub, err := qr.submitReady(ctx, wo, res.out, wt, repo, spec, res.sessionID, &pending)
 		if err != nil || sub == nil || !sub.ReviewPending {
@@ -476,6 +481,106 @@ func (qr *queueRunner) awaitReview(ctx context.Context, wo *elk.WorkOrder) (stri
 		}
 	}
 }
+
+// summaryRequest is what the agent is told when its session ended without a
+// finished report. It is a user message on the resumed session, so it says
+// who is asking.
+const summaryRequest = "Rein: your session ended, but %s. There is no later turn: " +
+	"whatever you say next is handed in as this run's deliverable, and nothing you promise to do " +
+	"afterwards will happen. If anything you started is still running, wait for it in the " +
+	"foreground now. Then write the final report: open with one to three plain sentences on what " +
+	"you did and whether it works, then the detail — what changed, links (pull request URL, merge " +
+	"sha), and anything left undone and why."
+
+// insistOnSummary asks the agent once more for a finished report when its
+// session ended without one (ark:rein#83).
+//
+// On Oct 14 a run handed Elk "The pull request's checks are still running. I'll
+// merge it once they pass." as its deliverable — a promise about a turn that
+// never comes, because the end of the session is the end of the run. Elk's
+// review rightly sent it back, and the two resumes then handed in nothing at
+// all. Asking costs one short resumed turn; not asking costs a person a card
+// that reads as a failure when the work had in fact landed.
+//
+// Only a session that ended normally is asked: a failed one already submits
+// stuck with whatever it said. One ask, never a loop — if the second answer is
+// no better, the run says so rather than spending more.
+func (qr *queueRunner) insistOnSummary(ctx context.Context, a adapter.Adapter, spec adapter.RunSpec,
+	wo *elk.WorkOrder, wt *worktree.Worktree, repo RepoResolution,
+	res sessionResult, pending *elk.Usage) (sessionResult, error) {
+
+	if res.out.result != nil && !res.out.result.OK() {
+		return res, nil
+	}
+	why := unfinishedAccount(agentAccount(res.out))
+	if why == "" {
+		return res, nil
+	}
+	sessionID := res.sessionID
+	if sessionID == "" && res.out.result != nil {
+		sessionID = res.out.result.SessionID
+	}
+	if !a.Manifest().Has(adapter.CapResume) || sessionID == "" {
+		qr.log.Runner(runlog.KindNote, "the agent ended without a finished report (%s), and the %s adapter cannot be resumed to ask for one",
+			why, a.Name())
+		return res, nil
+	}
+
+	qr.logf("run %s: the agent ended without a finished report (%s); asking it once for one", wo.RunID, why)
+	qr.log.Runner(runlog.KindNote, "the agent ended without a finished report (%s); asking it once for one", why)
+	_ = qr.report(ctx, wo.RunID, elk.ProgressStep,
+		"The agent ended without a finished report. Asking it once for a summary of what it did and what is left.", pending)
+
+	next := spec
+	next.ResumeID = sessionID
+	next.Prompt = fmt.Sprintf(summaryRequest, why)
+	again, err := qr.runSession(ctx, a, next, wo, wt, repo, pending)
+	if err != nil || again.done {
+		return again, err
+	}
+	if agentAccount(again.out) == "" {
+		// Nothing new. What the agent said before is still the best account
+		// there is.
+		again.out.result, again.out.text = res.out.result, res.out.text
+		again.sessionID = orDefault(again.sessionID, sessionID)
+	}
+	if still := unfinishedAccount(agentAccount(again.out)); still != "" {
+		// submitReady turns this into a stuck run that says why, rather than
+		// a ready one a person — or Elk's review — has to decode.
+		qr.log.Runner(runlog.KindNote, "asked for a summary, the agent still did not give one (%s)", still)
+		again.out.unfinished = still
+	}
+	return again, nil
+}
+
+// unfinishedAccount says why an agent's closing text is not a finished
+// report, or returns "" when it is. Two shapes fail: nothing at all, and a
+// short message that defers the work to a later turn ("I'll merge it once
+// they pass"). A long report is taken as written even if it mentions later
+// steps — those are what's-left, which a report is meant to have.
+func unfinishedAccount(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "it wrote no closing message"
+	}
+	if len(text) > deferralMaxLen {
+		return ""
+	}
+	if deferralRE.MatchString(text) {
+		return fmt.Sprintf("its last message promises work it has not done (%q)", truncate(firstLine(text), 160))
+	}
+	return ""
+}
+
+// deferralMaxLen bounds what [unfinishedAccount] reads as a status line rather
+// than a report. The Oct 14 lines were 74 and 128 characters.
+const deferralMaxLen = 400
+
+// deferralRE matches a closing line that leaves the work for a turn that will
+// not come: the agent promising a next step, or saying it is waiting on one.
+var deferralRE = regexp.MustCompile(`(?i)\b(i['’]ll|i will|i['’]m (going to|waiting)|let me (check|wait|watch|merge|look|see|confirm|verify)|still (running|pending|in progress)|` +
+	`(waiting|wait) (for|on|until)|once (they|it|the|ci|checks?)\b[^.]*\b(pass|finish|complete|land|merge|green)|` +
+	`when (they|it|the|ci|checks?)\b[^.]*\b(pass|finish|complete|land|merge|green))`)
 
 // revisionSpec turns Elk's verdict into the next session.
 //
@@ -828,6 +933,9 @@ type watchOutcome struct {
 	stalled   bool
 	events    int
 	tools     []string
+	// unfinished is why the agent's closing text is still not a finished
+	// report after Rein asked it for one (insistOnSummary); "" when it is.
+	unfinished string
 }
 
 // watch consumes a session's events and reports to Elk as it goes.
@@ -1155,16 +1263,27 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 		sessionID = out.result.SessionID
 	}
 	summary := agentAccount(out)
-	if summary == "" {
-		summary = "The agent finished without producing a written summary. " +
-			"This run's details name the branch it left behind."
-	}
-
 	status := elk.StatusReady
 	title := firstLine(wo.Direction)
 	if out.result != nil && !out.result.OK() {
 		status = elk.StatusStuck
 		title = "Did not finish: " + title
+	}
+	if out.unfinished != "" || summary == "" {
+		// Even after being asked for one (insistOnSummary). A ready run with
+		// no account of itself is not ready: nobody, Elk's review included,
+		// can tell what was done, and the review would only send it back.
+		status = elk.StatusStuck
+		title = "Finished without a report: " + firstLine(wo.Direction)
+		why := "The agent ended its session without a finished report (" +
+			orDefault(out.unfinished, "it wrote no closing message") + "), and did not write one when " +
+			"Rein asked. Its work may still have landed: this run's details name the branch it left " +
+			"behind, and the run log on this machine has every step it took."
+		if summary == "" {
+			summary = why
+		} else {
+			summary = why + "\n\n### What the agent said last\n\n" + summary
+		}
 	}
 	details := qr.runDetails(wt, repo, spec, sessionID)
 	banner := ""
