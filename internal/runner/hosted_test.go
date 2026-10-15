@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/adapter/fake"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/runner"
@@ -213,5 +214,56 @@ func TestHostedNeverDeclaresASecondRepositoryAvailable(t *testing.T) {
 	}
 	if !strings.Contains(h.submitted().Arg("deliverable"), "repo:acme/other") {
 		t.Fatal("missing capability not explained")
+	}
+}
+
+// A hosted run finishes the way a local one does (ark:rein#83): a promise is
+// not handed in; the session is resumed once and asked for its deliverable,
+// and what it writes then is what Elk receives.
+func TestHostedRunAsksForASummaryBeforeHandingIn(t *testing.T) {
+	h, opts := hostedHarness(t)
+	h.elk.Text("claim_run", strings.ReplaceAll(order("run-1", "repo:acme/scout", "git push access to acme/scout"), "repo: scout", "repo: acme/scout"))
+	h.agent.Rounds = []fake.Round{
+		{Script: oct14Round1, Result: ended(oct14Promise)},
+		{Script: []adapter.Event{{Kind: adapter.EventText, Text: oct14Summary}}, Result: ended(oct14Summary)},
+	}
+	if err := h.run(opts); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	sub := h.submitted()
+	if sub.Arg("status") != "ready" || sub.Arg("deliverable") != oct14Summary {
+		t.Fatalf("submitted %q:\n%s\nwant the summary the agent was asked for", sub.Arg("status"), sub.Arg("deliverable"))
+	}
+	specs := h.agent.Specs()
+	if len(specs) != 2 {
+		t.Fatalf("the agent ran %d times, want 2\nlog:\n%s", len(specs), h.log)
+	}
+	ask := specs[1]
+	if ask.ResumeID == "" || !ask.Hosted {
+		t.Errorf("the ask was not a hosted resume: resume=%q hosted=%v", ask.ResumeID, ask.Hosted)
+	}
+	if !strings.Contains(ask.Prompt, "what you did, and what is left") {
+		t.Errorf("the ask does not say what a deliverable is:\n%s", ask.Prompt)
+	}
+}
+
+// A hosted agent that will not summarise gets Rein's honest account, never a
+// blank, exactly as a local one does.
+func TestHostedRunNeverHandsInABlank(t *testing.T) {
+	h, opts := hostedHarness(t)
+	h.elk.Text("claim_run", strings.ReplaceAll(order("run-1", "repo:acme/scout", "git push access to acme/scout"), "repo: scout", "repo: acme/scout"))
+	h.agent.Rounds = []fake.Round{
+		{Script: oct14Round1, Result: ended("")},
+		{Script: nil, Result: ended("")},
+	}
+	if err := h.run(opts); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	d := h.submitted().Arg("deliverable")
+	if !strings.Contains(d, "The agent finished without writing a summary, so Rein wrote this one") {
+		t.Fatalf("a hosted run handed in something other than Rein's account:\n%s", d)
+	}
+	if n := len(h.agent.Specs()); n != 2 {
+		t.Errorf("the agent ran %d times, want 2: Rein asks once, not in a loop", n)
 	}
 }
