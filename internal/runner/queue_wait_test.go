@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/elk-work/rein/internal/adapter/fake"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/elk/elktest"
@@ -192,6 +193,13 @@ func TestARevisionWaitsForTheSlotAndSaysSoOnTheRun(t *testing.T) {
 	// run-a's revision request arrives.
 	h.agent.Script = slowScript(4)
 	h.agent.Delay = 60 * time.Millisecond
+	// A revision that repeats the deliverable it answers would be asked again
+	// (ark:rein#83), so each session writes its own.
+	for i := 1; i <= 4; i++ {
+		r := h.agent.Result
+		r.Summary = fmt.Sprintf("Session %d. %s", i, fake.DefaultSummary)
+		h.agent.Rounds = append(h.agent.Rounds, fake.Round{Script: h.agent.Script, Result: r})
+	}
 
 	opts := oneSlotOptions()
 	opts.ReviewTimeout = 800 * time.Millisecond

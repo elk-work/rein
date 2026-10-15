@@ -274,6 +274,56 @@ satisfied in three attempts is one a person should read.
 `ready`, which through the poll is indistinguishable from a pass that has not
 run yet. So the settlement is `--review-timeout` (20 minutes), not a signal.
 
+**A revision's reply replaces the deliverable**, so the resume prompt says so:
+the agent ends with the whole deliverable again, answering the review in its
+own words, not with a note about the change. The reply then goes through the
+same deliverable gate as round 1 (below), with one more check: a reply that
+repeats, word for word, the deliverable the review sent back has not answered
+it. If the agent's reply is weak, the ask that follows carries the review's text
+again.
+
+**Stopping mid-review is not an approval** (`ark:rein#81`). When Rein itself is
+shutting down while it waits, the run is left `ready` and the log says the wait
+was cut short. It used to say "Elk's review asked for nothing", which nobody
+knew. A send-back that arrives after that finds no agent, and Elk re-queues the
+run; carrying the pending review across a restart is still open on that task.
+
+## The deliverable gate
+
+A deliverable is what a person reads in Elk, usually on a phone, and the only
+thing Elk's review reads. So Rein does not submit whatever the agent said last
+(`ark:rein#83`). On 2026-10-14 (run `arun-75a2b7d0`) it did: the deliverable was
+"The pull request's checks are still running. I'll merge it once they pass.",
+and after two review send-backs, two empty messages. The run ended `stuck` with
+its pull request merged and the migration and deploy it still needed never
+mentioned.
+
+Before a `ready` submit, the agent's account is refused when it is:
+
+- empty;
+- under 200 characters — too short to say what was done and what is left;
+- under 600 characters and announcing work still to come ("I'll merge it once
+  they pass", "waiting for the checks");
+- in a revision round, the deliverable the review sent back, unchanged.
+
+A refused account is not submitted. Rein reports why on the run, **resumes the
+session once**, and tells the agent plainly to write the deliverable: what was
+done and what is left in plain English first, then links, and nothing started
+in the background. A revision round's ask carries the review's words. The
+answer is accepted if it is at least 200 characters and not a repeat.
+
+If even that produces nothing usable, or the adapter cannot resume, Rein writes
+the deliverable itself and says so in its first line: the pull requests (from
+the run branch, and from the agent's own `gh pr` commands and links), the
+branch's commits and push state, the agent's last commands, and then — last, as
+written — whatever the agent did say. It is honest about what it cannot know:
+what is left.
+
+The gate sits beside, not instead of, the adapter's background-work wait
+(`ark:rein#80`, `docs/adapter-claude.md`): that one keeps a session from ending
+while a shell or helper agent is still running; this one checks what the
+session said once it did end.
+
 ## Choosing the repository
 
 In hosted mode, Rein uses only an explicit `repo:` hint from the work order,

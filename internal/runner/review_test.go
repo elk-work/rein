@@ -1,12 +1,14 @@
 package runner_test
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/adapter/fake"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/elk/elktest"
 	"github.com/elk-work/rein/internal/runner"
@@ -44,6 +46,14 @@ func reviewHarness(t *testing.T, polls ...string) *harness {
 	h := newHarness(t)
 	h.elk.Text("claim_run", order("run-1")+"\n"+elk.AutoReviewLine+"\n")
 	h.elk.Text("submit_deliverable", submitReviewPending)
+	// Each round's account differs, as a real revision's does: one repeating
+	// the deliverable a review sent back is not an answer to it (ark:rein#83).
+	h.agent.Rounds = nil
+	for i := 1; i <= 6; i++ {
+		r := h.agent.Result
+		r.Summary = fmt.Sprintf("Round %d. %s", i, fake.DefaultSummary)
+		h.agent.Rounds = append(h.agent.Rounds, fake.Round{Script: h.agent.Script, Result: r})
+	}
 
 	var n int
 	var mu sync.Mutex

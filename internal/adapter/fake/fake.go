@@ -79,6 +79,12 @@ type Adapter struct {
 	// unsupported.
 	RefuseMCP []string
 
+	// Rounds, when set, scripts successive sessions separately: the Nth Start
+	// replays Rounds[N], and the last entry repeats once they run out. A zero
+	// Result in a round falls back to [Adapter.Result]. It is how a test
+	// replays a run whose agent behaves differently each time it is resumed.
+	Rounds []Round
+
 	mu       sync.Mutex
 	specs    []adapter.RunSpec
 	sessions []*Session
@@ -177,11 +183,24 @@ func New() *Adapter {
 		},
 		Result: adapter.Result{
 			Status:    adapter.StatusSucceeded,
-			Summary:   "fake session completed",
+			Summary:   DefaultSummary,
 			SessionID: "fake-session",
 			Usage:     adapter.Usage{InputTokens: 1000, OutputTokens: 250, Model: "fake-1"},
 		},
 	}
+}
+
+// DefaultSummary is the account a default session finishes with: long enough
+// to pass the run loop's deliverable gate, which refuses a one-liner, and
+// ending on the phrase older tests look for.
+const DefaultSummary = "Did the scripted work: changed what the work order asked for, ran the " +
+	"tests, which pass, and pushed the run branch. Nothing is left: no migration, deploy or follow-up " +
+	"step is outstanding, and there is nothing for a person to do but read this.\n\nfake session completed"
+
+// Round is one session's script, for [Adapter.Rounds].
+type Round struct {
+	Script []adapter.Event
+	Result adapter.Result
 }
 
 // Name implements [adapter.Adapter].
@@ -238,11 +257,20 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	s.ctx, s.cancel = context.WithCancel(context.WithoutCancel(ctx))
 
 	a.mu.Lock()
+	n := len(a.sessions)
 	a.specs = append(a.specs, spec)
 	a.sessions = append(a.sessions, s)
 	a.mu.Unlock()
 
-	go s.replay(a.Script, a.Result, a.WaitErr, a.Delay)
+	script, result := a.Script, a.Result
+	if len(a.Rounds) > 0 {
+		r := a.Rounds[min(n, len(a.Rounds)-1)]
+		script = r.Script
+		if r.Result.Status != "" {
+			result = r.Result
+		}
+	}
+	go s.replay(script, result, a.WaitErr, a.Delay)
 	return s, nil
 }
 

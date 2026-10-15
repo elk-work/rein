@@ -190,6 +190,11 @@ func (h *harness) prepare(opts runner.Options) runner.Options {
 	if opts.StallAfter == 0 {
 		opts.StallAfter = 30 * time.Second
 	}
+	if opts.Landing == nil {
+		// Never the real git and gh: a fallback deliverable reads the run
+		// branch through this, and a test must not depend on the network.
+		opts.Landing = &fakeLanding{}
+	}
 	return opts
 }
 
@@ -252,7 +257,7 @@ func TestFullLoopClaimProgressSubmit(t *testing.T) {
 	// The deliverable is the agent's account; where the work happened is on
 	// the timeline, so nothing of Rein's follows the agent's last line
 	// (ark:rein#77).
-	if deliverable := sub.Arg("deliverable"); deliverable != "fake session completed" {
+	if deliverable := sub.Arg("deliverable"); deliverable != fake.DefaultSummary {
 		t.Errorf("the deliverable is not the agent's own account:\n%s", deliverable)
 	}
 	details := h.details()
