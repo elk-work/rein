@@ -36,6 +36,12 @@ type Session struct {
 	grace        time.Duration
 	dec          *decoder
 
+	// The background-work wait (ark:rein#80). bgWait, bgSettle and bgBeat
+	// are set in Start and only read afterwards.
+	bgWait   time.Duration
+	bgSettle time.Duration
+	bgBeat   time.Duration
+
 	// promptErr is a failure to write the opening prompt, kept so the terminal
 	// error can name it when nothing better explains the session. It is written
 	// in Start before any goroutine runs and only read afterwards.
@@ -53,8 +59,19 @@ type Session struct {
 	// Activity clocks, read by the watch goroutine.
 	lastActivity atomic.Int64 // unix nanos
 	initSeen     atomic.Bool
-	resultAt     atomic.Int64 // unix nanos, 0 until the first result line
+	resultAt     atomic.Int64 // unix nanos, 0 until the terminal result line
 	killed       atomic.Bool
+
+	// The background-work clocks, written by the stream goroutine and read
+	// by the watch goroutine. bgSince is the unix nanos at which a turn ended
+	// with background work still running, 0 when the session is not waiting
+	// on any; bgLive is how many tasks are running now; bgSummary names them.
+	// bgGivenUp is set by watch once the wait has run out and the agent has
+	// been told to finish in the foreground.
+	bgSince   atomic.Int64
+	bgLive    atomic.Int32
+	bgSummary atomic.Value // string
+	bgGivenUp atomic.Bool
 
 	emitMu     sync.Mutex
 	seq        uint64
@@ -75,8 +92,11 @@ type Session struct {
 	// authRefused is set when the start-up line shows anything but the plan
 	// login; the process is killed and the session fails with it.
 	authRefused error
-	result      adapter.Result
-	err         error
+	// abandoned is set when the session ended with the agent's background
+	// work unfinished — the run failed, whatever its last result said.
+	abandoned string
+	result    adapter.Result
+	err       error
 }
 
 // ID implements [adapter.Session]. It is empty until the vendor's
@@ -297,6 +317,10 @@ func (s *Session) run(stdout io.ReadCloser) {
 	scanner.Buffer(make([]byte, 0, 64<<10), maxStreamLine)
 
 	var result *adapter.Result
+	// pending is the latest result of a turn that ended while background work
+	// was still running. It is not terminal: the session stays open, wakes
+	// itself when the work finishes, and its next result supersedes this one.
+	var pending *adapter.Result
 	authChecked := false
 	for scanner.Scan() {
 		s.markActivity()
@@ -313,6 +337,8 @@ func (s *Session) run(stdout io.ReadCloser) {
 		if s.dec.sawInit {
 			s.initSeen.Store(true)
 		}
+		s.bgLive.Store(int32(len(s.dec.background)))
+		s.bgSummary.Store(s.dec.backgroundSummary())
 
 		for _, ev := range evs {
 			s.emit(ev)
@@ -333,23 +359,70 @@ func (s *Session) run(stdout io.ReadCloser) {
 			}
 		}
 
-		if res != nil && result == nil {
-			// The FIRST result is terminal. Under --input-format stream-json
-			// the process would otherwise sit waiting for another turn, so
-			// closing stdin here is what ends the session — and what keeps one
-			// Rein run equal to one Claude Code session.
-			result = res
-			s.resultAt.Store(time.Now().UnixNano())
-			s.closeStdin()
+		if res == nil || result != nil {
+			continue
 		}
+		if live := len(s.dec.background); live > 0 && !s.bgGivenUp.Load() {
+			// The turn ended with background work still running — helper
+			// agents, background shells, a monitor. That is not the end of
+			// the run (ark:rein#80): closing stdin here would end the session
+			// and kill that work, and the run would submit whatever the agent
+			// said while it was waiting. Keep stdin open; Claude Code starts
+			// a new turn by itself when the work reports back.
+			pending = res
+			if s.bgSince.Load() == 0 {
+				s.bgSince.Store(time.Now().UnixNano())
+			}
+			s.emit(adapter.Event{
+				Kind: adapter.EventProgress,
+				Text: "the agent's turn ended with background work still running: " +
+					s.dec.backgroundSummary() + ". Keeping the session open until it finishes.",
+			})
+			continue
+		}
+		// The terminal result. Under --input-format stream-json the process
+		// would otherwise sit waiting for another turn, so closing stdin here
+		// is what ends the session — and what keeps one Rein run equal to one
+		// Claude Code session.
+		if live := len(s.dec.background); live > 0 {
+			// The wait ran out and the agent still left work running.
+			s.abandon("the agent's background work was still running when Rein stopped waiting for it: " +
+				s.dec.backgroundSummary())
+		}
+		result = res
+		s.bgSince.Store(0)
+		s.resultAt.Store(time.Now().UnixNano())
+		s.closeStdin()
 	}
 	scanErr := scanner.Err()
+
+	if result == nil && pending != nil {
+		// The stream ended while the session was waiting on background work:
+		// the process died, was killed, or Rein closed stdin after the work
+		// had all finished and the agent did not pick it up. Only the last
+		// case leaves nothing lost.
+		result = pending
+		if len(s.dec.background) > 0 {
+			s.abandon("the session ended while the agent's background work was still running: " +
+				s.dec.backgroundSummary())
+		}
+	}
 
 	// The stream is finished; make sure the process is too, then reap it.
 	s.closeStdin()
 	waitErr := s.cmd.Wait()
 
 	s.finish(s.terminalEvent(result, scanErr, waitErr))
+}
+
+// abandon records that the session ended with the agent's background work
+// unfinished. The first reason stands.
+func (s *Session) abandon(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.abandoned == "" {
+		s.abandoned = reason
+	}
 }
 
 // terminalEvent settles the outcome and builds the single closing event. The
@@ -361,6 +434,7 @@ func (s *Session) terminalEvent(result *adapter.Result, scanErr, waitErr error) 
 	timedOut := s.timedOut
 	reason := s.timeoutReason
 	authRefused := s.authRefused
+	abandoned := s.abandoned
 	transcript := s.transcriptPath
 	sessionID := s.sessionID
 	s.mu.Unlock()
@@ -400,6 +474,13 @@ func (s *Session) terminalEvent(result *adapter.Result, scanErr, waitErr error) 
 	case interrupted:
 		final.Status = adapter.StatusInterrupted
 		err = nil
+
+	case abandoned != "":
+		// Whatever the agent's last turn said, the work it started in the
+		// background did not finish, so the run did not either. Failing it
+		// is what makes the run loop submit stuck rather than ready.
+		final.Status = adapter.StatusFailed
+		err = fmt.Errorf("claude: %s", abandoned)
 
 	case result == nil:
 		// No result line ever arrived. The process died, or the stream broke.
@@ -456,7 +537,8 @@ func (s *Session) noResultError(scanErr, waitErr error) error {
 
 // watch enforces the spec's timeouts. The run loop has its own watchdog ladder,
 // but the contract says an adapter must not accept a timeout it will not
-// enforce, so all three are enforced here.
+// enforce, so all three are enforced here. It also runs the background-work
+// wait (ark:rein#80) — see [Session.watchBackground].
 func (s *Session) watch() {
 	startup := s.spec.Timeouts.Startup
 	if startup <= 0 {
@@ -468,11 +550,16 @@ func (s *Session) watch() {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 
+	var bg bgWaitState
 	for {
 		select {
 		case <-s.done:
 			return
 		case now := <-tick.C:
+			// Waiting on live background work is not idleness: a background
+			// shell watching a CI run is silent for as long as the run takes.
+			// The wait has its own bound instead.
+			waitingOnWork := s.bgSince.Load() != 0 && s.bgLive.Load() > 0
 			switch {
 			case !s.initSeen.Load() && now.Sub(s.started) > startup:
 				s.timeout(fmt.Sprintf("no session start within %s", startup))
@@ -480,7 +567,7 @@ func (s *Session) watch() {
 			case total > 0 && now.Sub(s.started) > total:
 				s.timeout(fmt.Sprintf("exceeded the total budget of %s", total))
 				return
-			case idle > 0 && s.resultAt.Load() == 0 &&
+			case idle > 0 && s.resultAt.Load() == 0 && !waitingOnWork &&
 				now.Sub(time.Unix(0, s.lastActivity.Load())) > idle:
 				s.timeout(fmt.Sprintf("no event for %s", idle))
 				return
@@ -491,8 +578,105 @@ func (s *Session) watch() {
 				_ = s.killNow()
 				return
 			}
+			if s.watchBackground(now, &bg) {
+				return
+			}
 		}
 	}
+}
+
+// bgWaitState is watch's own memory of one background-work wait.
+type bgWaitState struct {
+	since    int64     // the bgSince this state belongs to
+	lastBeat time.Time // the last "still waiting" progress event
+	drained  time.Time // when the live count was first seen at zero
+	nudged   time.Time // when the agent was told its work had finished
+	steered  time.Time // when the agent was told to finish in the foreground
+}
+
+// Nudges sent to the agent during a background-work wait. They are user
+// messages on stdin, the same channel a steer uses.
+const (
+	bgNudge = "Rein: your background work has finished. Pick up its results " +
+		"and finish the task; do not end your turn while anything is still running in the background."
+	bgSteer = "Rein: this run cannot wait any longer for background work. Stop " +
+		"anything still running in the background, finish what you can in the foreground, " +
+		"and say plainly what is unfinished."
+)
+
+// watchBackground drives a session whose turn ended with background work
+// still running. It reports true when it has ended the session.
+//
+//   - Every bgBeat it emits progress naming the work, so neither Elk's lease
+//     nor the run loop's stall watchdog reads the wait as a dead agent.
+//   - Once the work has all finished, Claude Code normally starts the next
+//     turn by itself within seconds. If it has not done so after bgSettle, the
+//     agent is nudged once; after bgSettle more, stdin is closed and the last
+//     result stands — the work finished, so nothing was lost.
+//   - After bgWait the agent is told to finish in the foreground, and the next
+//     result is terminal whatever is still running. If none comes within
+//     bgSettle the process is killed, and the run fails as abandoned.
+func (s *Session) watchBackground(now time.Time, st *bgWaitState) bool {
+	since := s.bgSince.Load()
+	if since == 0 || s.resultAt.Load() != 0 {
+		return false
+	}
+	if st.since != since {
+		*st = bgWaitState{since: since, lastBeat: now}
+	}
+	live := s.bgLive.Load()
+	quiet := now.Sub(time.Unix(0, s.lastActivity.Load()))
+
+	if live > 0 {
+		st.drained, st.nudged = time.Time{}, time.Time{}
+		if now.Sub(st.lastBeat) >= s.bgBeat {
+			st.lastBeat = now
+			summary, _ := s.bgSummary.Load().(string)
+			s.emit(adapter.Event{
+				Kind: adapter.EventProgress,
+				Text: "waiting for the agent's background work: " + summary,
+			})
+		}
+	} else if st.drained.IsZero() {
+		st.drained = now
+	}
+
+	switch {
+	case !st.steered.IsZero():
+		if now.Sub(st.steered) > s.bgSettle && quiet > s.bgSettle {
+			s.abandon("the agent did not finish in the foreground after Rein stopped waiting for its background work")
+			_ = s.killNow()
+			return true
+		}
+
+	case now.Sub(time.Unix(0, since)) > s.bgWait:
+		s.bgGivenUp.Store(true)
+		st.steered = now
+		if err := s.writeUserMessage(bgSteer); err != nil {
+			s.abandon("Rein stopped waiting for the agent's background work and could not tell it so: " + err.Error())
+			_ = s.killNow()
+			return true
+		}
+		s.emit(adapter.Event{Kind: adapter.EventProgress,
+			Text: fmt.Sprintf("background work still running after %s; told the agent to finish in the foreground", s.bgWait)})
+
+	case live == 0 && st.nudged.IsZero() &&
+		now.Sub(st.drained) > s.bgSettle && quiet > s.bgSettle:
+		st.nudged = now
+		if err := s.writeUserMessage(bgNudge); err == nil {
+			s.emit(adapter.Event{Kind: adapter.EventProgress,
+				Text: "the agent's background work has finished; nudged it to pick up the results"})
+		}
+
+	case live == 0 && !st.nudged.IsZero() &&
+		now.Sub(st.nudged) > s.bgSettle && quiet > s.bgSettle:
+		// Its work is done and it will not take another turn. The last
+		// result stands; closing stdin ends the session.
+		// watch keeps running: the exit grace now applies.
+		s.resultAt.Store(now.UnixNano())
+		s.closeStdin()
+	}
+	return false
 }
 
 // timeout marks the session timed out and kills the process, which ends the

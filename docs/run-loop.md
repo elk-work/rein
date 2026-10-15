@@ -405,6 +405,15 @@ details name the branch and the commit it was based on, and it is what
 `rein run --keep-worktrees` opts out of. The details say which of the two
 actually happened, rather than assuming the default.
 
+**A worktree something is still working in is never reaped** (`ark:rein#80
+(01M4YFTKR3PPSRG2DCGKC32E8R)`). Before removing it, Rein lists the processes
+whose working directory is inside it (`lsof`); if any besides Rein itself
+remain, the worktree is left in place and the run log says `worktree … NOT
+removed` with each process named. On 2026-10-14 a reap removed the worktree
+under five background lanes of a finished run, and the branch kept nothing they
+had not yet committed. A probe that cannot run fails open, so a missing `lsof`
+never wedges every reap.
+
 ## Reporting while it works
 
 | Event | Call |

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,17 @@ type streamLine struct {
 	ToolName  string `json:"tool_name"`
 	ToolUseID string `json:"tool_use_id"`
 
+	// system/background_tasks_changed carries Tasks, the whole set of
+	// background tasks still running. system/task_started carries TaskID,
+	// IsBackgrounded and OwnedBySubagent; system/task_notification carries
+	// TaskID and Status. See [decoder.background].
+	Tasks           *[]backgroundTask `json:"tasks"`
+	TaskID          string            `json:"task_id"`
+	IsBackgrounded  bool              `json:"is_backgrounded"`
+	OwnedBySubagent bool              `json:"owned_by_subagent"`
+	Status          string            `json:"status"`
+	Description     string            `json:"description"`
+
 	// rate_limit_event
 	RateLimitInfo *rateLimitInfo `json:"rate_limit_info"`
 
@@ -73,6 +85,13 @@ type streamLine struct {
 	Usage             *tokenUsage           `json:"usage"`
 	ModelUsage        map[string]modelUsage `json:"modelUsage"`
 	PermissionDenials []permissionDenial    `json:"permission_denials"`
+}
+
+// backgroundTask is one entry of system/background_tasks_changed.
+type backgroundTask struct {
+	TaskID      string `json:"task_id"`
+	TaskType    string `json:"task_type"`
+	Description string `json:"description"`
 }
 
 // vendorMessage is the Anthropic message carried by assistant and user lines.
@@ -331,6 +350,17 @@ type decoder struct {
 	rateLimit     *adapter.RateLimit
 	mcpServers    *[]adapter.MCPServer
 
+	// background is the agent's background work still running — helper
+	// agents, background shells, monitors — by task id, with a description.
+	// A turn that ends while it is non-empty is not the end of the run
+	// (ark:rein#80): the session wakes itself when the work finishes, if
+	// Rein keeps stdin open. Only the stream goroutine touches it.
+	//
+	// system/background_tasks_changed is the authority: it carries the whole
+	// set, and an empty list when the last task ends (measured on 2.1.296).
+	// task_started and task_notification keep the set current between those.
+	background map[string]string
+
 	// clock stamps a rate-limit reading's SampledAt. Nil is the wall clock;
 	// tests set it so a fixture decodes to the same reading every time.
 	clock func() time.Time
@@ -434,6 +464,32 @@ func (d *decoder) decodeSystem(sl streamLine, raw json.RawMessage) ([]adapter.Ev
 				sl.SessionID, sl.Model, sl.PermissionMode, sl.ClaudeCodeVersion),
 			Raw: raw,
 		}}, nil, nil
+
+	case "background_tasks_changed":
+		set := map[string]string{}
+		if sl.Tasks != nil {
+			for _, t := range *sl.Tasks {
+				set[t.TaskID] = firstNonEmpty(t.Description, t.TaskType, t.TaskID)
+			}
+		}
+		d.background = set
+		return []adapter.Event{{
+			Kind: adapter.EventProgress,
+			Text: "background work running: " + d.backgroundSummary(),
+			Raw:  raw,
+		}}, nil, nil
+
+	case "task_started":
+		if sl.IsBackgrounded && !sl.OwnedBySubagent && sl.TaskID != "" {
+			d.setBackground(sl.TaskID, firstNonEmpty(sl.Description, sl.TaskID))
+		}
+		return []adapter.Event{{Kind: adapter.EventProgress, Text: "claude system/" + sl.Subtype, Raw: raw}}, nil, nil
+
+	case "task_notification":
+		if sl.TaskID != "" && sl.Status != "" && sl.Status != "running" {
+			d.clearBackground(sl.TaskID)
+		}
+		return []adapter.Event{{Kind: adapter.EventProgress, Text: "claude system/" + sl.Subtype, Raw: raw}}, nil, nil
 
 	case "hook_started":
 		// Dropped. The developer's own hooks fire on every session and a
@@ -678,4 +734,50 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// setBackground and clearBackground copy the set rather than writing into it,
+// the same rule as the decoder's other published state.
+func (d *decoder) setBackground(id, desc string) {
+	set := make(map[string]string, len(d.background)+1)
+	for k, v := range d.background {
+		set[k] = v
+	}
+	set[id] = desc
+	d.background = set
+}
+
+func (d *decoder) clearBackground(id string) {
+	if _, ok := d.background[id]; !ok {
+		return
+	}
+	set := make(map[string]string, len(d.background))
+	for k, v := range d.background {
+		if k != id {
+			set[k] = v
+		}
+	}
+	d.background = set
+}
+
+// backgroundSummary names the running background work in one line, for
+// progress events and for the reason a run fails when it is abandoned.
+func (d *decoder) backgroundSummary() string {
+	if len(d.background) == 0 {
+		return "none"
+	}
+	descs := make([]string, 0, len(d.background))
+	for _, v := range d.background {
+		descs = append(descs, truncate(firstLine(v), 80))
+	}
+	sort.Strings(descs)
+	return fmt.Sprintf("%d (%s)", len(descs), strings.Join(descs, "; "))
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

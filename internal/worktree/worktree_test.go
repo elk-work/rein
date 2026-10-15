@@ -2,9 +2,11 @@ package worktree_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -386,5 +388,53 @@ func TestSafeID(t *testing.T) {
 		if got := worktree.SafeID(in); got != want {
 			t.Errorf("SafeID(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestReapLeavesAWorktreeInUse is ark:rein#80's second half: a process still
+// working in the worktree — on Oct 14, a background lane that outlived its
+// session — means the worktree is not removed under it. Measured with a real
+// process and the real probe, not a stub.
+func TestReapLeavesAWorktreeInUse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no live-process probe on Windows")
+	}
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("lsof is not installed")
+	}
+	repo := newRepo(t)
+	m := &worktree.Manager{Root: t.TempDir()}
+	ctx := context.Background()
+	wt, err := m.Create(ctx, worktree.Request{Repo: repo, RunID: "run-live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lane := exec.Command("sleep", "60")
+	lane.Dir = wt.Dir
+	if err := lane.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lane.Process.Kill(); _ = lane.Wait() })
+
+	err = m.Reap(ctx, wt)
+	if !errors.Is(err, worktree.ErrInUse) {
+		t.Fatalf("Reap = %v, want ErrInUse while a process works in the worktree", err)
+	}
+	if !strings.Contains(err.Error(), "sleep") {
+		t.Errorf("the refusal does not name the process: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(wt.Dir, "README.md")); statErr != nil {
+		t.Fatalf("the worktree was damaged although the reap was refused: %v", statErr)
+	}
+
+	// Once the work has ended, the reap goes ahead.
+	_ = lane.Process.Kill()
+	_ = lane.Wait()
+	if err := m.Reap(ctx, wt); err != nil {
+		t.Fatalf("Reap after the process ended: %v", err)
+	}
+	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
+		t.Errorf("the worktree survived the second reap: %v", err)
 	}
 }

@@ -542,7 +542,6 @@ func (qr *queueRunner) reap(wt *worktree.Worktree) {
 		qr.log.Runner(runlog.KindReaped, "worktree kept at %s (--keep-worktrees)", wt.Dir)
 		return
 	}
-	qr.log.Runner(runlog.KindReaped, "worktree %s removed; branch %s was not", wt.Dir, wt.Branch)
 	// A fresh context: the run's own may already be cancelled, and the
 	// worktree still has to go.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -551,11 +550,15 @@ func (qr *queueRunner) reap(wt *worktree.Worktree) {
 		if err := os.RemoveAll(wt.Dir); err != nil {
 			qr.logf("reaping hosted clone: %v", err)
 		}
+		qr.log.Runner(runlog.KindReaped, "worktree %s removed; branch %s was not", wt.Dir, wt.Branch)
 		return
 	}
 	if err := qr.r.opts.Worktrees.Reap(ctx, wt); err != nil {
 		qr.logf("reaping %s: %v", wt.Dir, err)
+		qr.log.Runner(runlog.KindReaped, "worktree %s NOT removed: %v", wt.Dir, err)
+		return
 	}
+	qr.log.Runner(runlog.KindReaped, "worktree %s removed; branch %s was not", wt.Dir, wt.Branch)
 }
 
 // runSession drives the agent, with Loom's watchdog ladder around it: no

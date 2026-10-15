@@ -73,6 +73,23 @@ const (
 	// defaultExitGrace is how long the session waits for the process to exit
 	// after stdin is closed at the end of a turn.
 	defaultExitGrace = 30 * time.Second
+
+	// defaultBackgroundWait bounds how long a session is kept open after its
+	// turn ended with background work still running (ark:rein#80). Past it the
+	// agent is told to finish in the foreground, and a session that still has
+	// background work at its next result fails rather than submitting ready.
+	defaultBackgroundWait = 3 * time.Hour
+
+	// defaultBackgroundSettle is how long the session waits, once its
+	// background work has all finished, for the agent to start the turn that
+	// picks up the results on its own. Past it the agent is nudged once, and
+	// past it again the last result stands.
+	defaultBackgroundSettle = 2 * time.Minute
+
+	// defaultBackgroundBeat is how often a session waiting on background work
+	// says so, as progress. The run loop treats silence as a stall, and a
+	// background `gh run watch` is silent for as long as the run takes.
+	defaultBackgroundBeat = time.Minute
 )
 
 // Adapter drives Claude Code. The zero value is not usable; call [New].
@@ -101,6 +118,13 @@ type Adapter struct {
 	// Set it to "" via the sentinel [NoSettingSources] to load nothing at all,
 	// for a deployment that wants a run to depend on nothing but its packet.
 	SettingSources string
+
+	// BackgroundWait, BackgroundSettle and BackgroundBeat override
+	// [defaultBackgroundWait], [defaultBackgroundSettle] and
+	// [defaultBackgroundBeat]. Zero means the default; tests shorten them.
+	BackgroundWait   time.Duration
+	BackgroundSettle time.Duration
+	BackgroundBeat   time.Duration
 }
 
 // Setting-source policies for [Adapter.SettingSources].
@@ -362,6 +386,9 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if s.grace <= 0 {
 		s.grace = defaultInterruptGrace
 	}
+	s.bgWait = orDefault(a.BackgroundWait, defaultBackgroundWait)
+	s.bgSettle = orDefault(a.BackgroundSettle, defaultBackgroundSettle)
+	s.bgBeat = orDefault(a.BackgroundBeat, defaultBackgroundBeat)
 
 	args, err := a.buildArgs(spec, mode, s)
 	if err != nil {
@@ -559,4 +586,11 @@ func (a *Adapter) PreflightHosted(ctx context.Context) error {
 		return fmt.Errorf("%w: hosted agent binary is not on PATH", adapter.ErrPreflight)
 	}
 	return nil
+}
+
+func orDefault(d, def time.Duration) time.Duration {
+	if d <= 0 {
+		return def
+	}
+	return d
 }

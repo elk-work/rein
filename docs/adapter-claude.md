@@ -295,7 +295,8 @@ will bite anyone who edits this package. Under `--input-format stream-json` the
 process stays alive after emitting `result`, waiting for another stdin message —
 a two-turn recording with two `result` lines is in `testdata/multiturn.jsonl`.
 The adapter therefore treats the **first** `result` as terminal, closes stdin,
-and reaps the process. That is what keeps one Rein run equal to one Claude Code
+and reaps the process — **unless the agent still has background work running**,
+below. That is what keeps one Rein run equal to one Claude Code
 session. The consequence for callers: `Send` is a *mid-run steer* only, and
 returns `ErrSessionClosed` afterwards. It is also the window `rein attach` has:
 a person can steer the turn that is running, and once it ends the run submits
@@ -303,6 +304,35 @@ as it always would. Attaching to a claude run that has already finished its
 turn can watch and cannot type — `docs/attach.md`. A genuine follow-up is a new session
 started with `ResumeID`, which is what `resume: yes` is for and which the
 integration test verifies end to end.
+
+**A turn that ends with background work running is not the end of the run**
+(`ark:rein#80 (01M4YFTKR3PPSRG2DCGKC32E8R)`). An agent can start helper agents,
+background shells and monitors, say "I'll pick up the results as they land",
+and end its turn. Closing stdin at that `result` ends the process and kills the
+work; on 2026-10-14 that happened twice on one run, which submitted "ready"
+with nothing done. Measured on 2.1.296 (`testdata/background.jsonl`): the
+stream carries `system/background_tasks_changed` with the whole set of running
+tasks — and `[]` when the last one ends — plus `system/task_started`
+(`is_backgrounded`) and `system/task_notification` (`status`). **If stdin is
+still open when the work finishes, Claude Code starts the next turn by itself**
+(a fresh `system/init` line, then the turn, then another `result`). So:
+
+- At a `result` with background tasks running, the adapter keeps stdin open and
+  holds that result as pending. The run's terminal result is the first one at
+  which nothing is running in the background.
+- While it waits it emits a progress event every minute naming the work, so
+  neither Elk's lease nor the run loop's stall watchdog reads a silent
+  `gh run watch` as a dead agent; the adapter's own idle timeout is suspended
+  for the same reason.
+- If the work has all finished and no new turn starts within two minutes, the
+  agent is nudged once on stdin; two minutes after that, the pending result
+  stands.
+- After three hours (`Adapter.BackgroundWait`) the agent is told to stop its
+  background work and finish in the foreground, and its next result is
+  terminal. If background work is still running then, or the agent does not
+  answer, or the process dies while work is running, the session **fails** —
+  so the run is submitted `stuck`, never an empty `ready`. A total timeout
+  still applies throughout.
 
 **`claude -p` auto-denies; it does not hang.** elk `docs/rein.md` §3 says an
 unconfigured `-p` run "hangs on its first edit". It does not, at 2.1.251: it
