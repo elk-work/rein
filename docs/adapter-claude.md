@@ -334,6 +334,17 @@ still open when the work finishes, Claude Code starts the next turn by itself**
   so the run is submitted `stuck`, never an empty `ready`. A total timeout
   still applies throughout.
 
+**A resume can open with an empty turn** (`ark:rein#83`). Measured on 2.1.296
+(`testdata/resume_stopped.jsonl`): resuming a session that left a background
+shell running, Claude Code first writes the stale `system/task_notification`
+(`status: stopped`), then a `result` with `num_turns: 0`, no text and no
+tokens, and only then reads the prompt and runs the real turn. Taking that
+first `result` as terminal closed stdin a second into the session, killed the
+agent mid-command thirty seconds later, and submitted nothing — twice, on
+2026-10-14, once per review round. The adapter now ignores a successful
+`result` with no turns, text or tokens; it stands only if the stream ends with
+no other result.
+
 **`claude -p` auto-denies; it does not hang.** elk `docs/rein.md` §3 says an
 unconfigured `-p` run "hangs on its first edit". It does not, at 2.1.251: it
 emits `system/permission_denied`, carries on, and **exits 0 reporting
