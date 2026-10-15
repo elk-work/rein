@@ -113,3 +113,49 @@ func TestDecoderMarksEmptyTurn(t *testing.T) {
 		}
 	}
 }
+
+// TestHostedSessionIgnoresEmptyTurnOnResume is the same recording on a hosted
+// run, which signs in with the workspace's API key and resumes the same way
+// when Rein asks for a summary or Elk's review sends the run back. The
+// recording's start-up line is rewritten to the API key a hosted session
+// reports; nothing else changes. The empty turn must not end it here either.
+func TestHostedSessionIgnoresEmptyTurnOnResume(t *testing.T) {
+	blob, err := os.ReadFile(filepath.Join("testdata", "resume_stopped.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob = bytes.ReplaceAll(blob, []byte(`"apiKeySource":"none"`), []byte(`"apiKeySource":"ANTHROPIC_API_KEY"`))
+	path := filepath.Join(t.TempDir(), "resume_hosted.jsonl")
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "claude-stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat "+path+"\ncat > /dev/null\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a := &Adapter{Binary: stub, DisableWatchdog: true}
+	sess, err := a.Start(t.Context(), adapter.RunSpec{
+		WorktreeDir:    t.TempDir(),
+		Prompt:         "write the deliverable",
+		ResumeID:       "1a66706e-1690-436f-bc29-0f8a97675784",
+		PermissionMode: adapter.PermissionFull,
+		Hosted:         true,
+		AgentKind:      "claude",
+		Env:            map[string]string{"ANTHROPIC_API_KEY": "hosted-model-test-key"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	drain(t, sess)
+
+	res, err := sess.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if !strings.HasPrefix(res.Summary, "The background sleep was stopped") {
+		t.Errorf("summary = %q; the hosted session ended on the empty turn before the agent's own", res.Summary)
+	}
+	if res.Status != adapter.StatusSucceeded {
+		t.Errorf("status = %q, want succeeded", res.Status)
+	}
+}
