@@ -321,6 +321,9 @@ func (s *Session) run(stdout io.ReadCloser) {
 	// was still running. It is not terminal: the session stays open, wakes
 	// itself when the work finishes, and its next result supersedes this one.
 	var pending *adapter.Result
+	// empty is a result line for a turn with no work in it (decoder.emptyTurn).
+	// It ends nothing; it stands only if the stream ends with no other result.
+	var empty *adapter.Result
 	authChecked := false
 	for scanner.Scan() {
 		s.markActivity()
@@ -360,6 +363,19 @@ func (s *Session) run(stdout io.ReadCloser) {
 		}
 
 		if res == nil || result != nil {
+			continue
+		}
+		if s.dec.emptyTurn {
+			// Not the agent's turn — Claude Code's own bookkeeping, written
+			// before the prompt is read. Closing stdin here ends the session
+			// thirty seconds into the real turn, with nothing to submit.
+			if empty == nil {
+				empty = res
+			}
+			s.emit(adapter.Event{
+				Kind: adapter.EventProgress,
+				Text: "claude reported a turn with no work in it; waiting for the agent's own turn",
+			})
 			continue
 		}
 		if live := len(s.dec.background); live > 0 && !s.bgGivenUp.Load() {
@@ -406,6 +422,10 @@ func (s *Session) run(stdout io.ReadCloser) {
 			s.abandon("the session ended while the agent's background work was still running: " +
 				s.dec.backgroundSummary())
 		}
+	}
+
+	if result == nil && pending == nil {
+		result = empty
 	}
 
 	// The stream is finished; make sure the process is too, then reap it.

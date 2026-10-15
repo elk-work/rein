@@ -361,6 +361,16 @@ type decoder struct {
 	// task_started and task_notification keep the set current between those.
 	background map[string]string
 
+	// emptyTurn reports whether the last result line was a turn with no work
+	// in it: success, num_turns 0, no text, no tokens. Claude Code writes one
+	// on --resume when the session it resumes left background work behind —
+	// it flushes the stale task_notification ("stopped") as a turn of its own
+	// before it reads the prompt (measured on 2.1.296, recorded in
+	// testdata/resume_stopped.jsonl). It is not the agent's answer, and taking
+	// it as the end of the session is what handed Elk two empty deliverables
+	// on Oct 14 (ark:rein#83).
+	emptyTurn bool
+
 	// clock stamps a rate-limit reading's SampledAt. Nil is the wall clock;
 	// tests set it so a fixture decodes to the same reading every time.
 	clock func() time.Time
@@ -672,6 +682,10 @@ func (d *decoder) decodeResult(sl streamLine, raw json.RawMessage) ([]adapter.Ev
 			d.rateLimit = rl
 		}
 	}
+
+	d.emptyTurn = status == adapter.StatusSucceeded && sl.NumTurns == 0 &&
+		strings.TrimSpace(sl.Result) == "" &&
+		(sl.Usage == nil || sl.Usage.InputTokens == 0 && sl.Usage.OutputTokens == 0)
 
 	res := &adapter.Result{
 		Status:    status,
