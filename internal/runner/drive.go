@@ -284,6 +284,9 @@ const (
 	reviewRevisions
 	// reviewCancelled — a person cancelled it while the review was thinking.
 	reviewCancelled
+	// reviewInterrupted — Rein itself is stopping, so nobody knows what the
+	// review would have said (ark:rein#81).
+	reviewInterrupted
 )
 
 // driveWithReview runs the agent, submits, and then — when Elk has parked the
@@ -313,8 +316,22 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		qr.logf("run %s: %v", wo.RunID, err)
 	}
 
+	// verdict is the review text a revision round answers, and sentBack the
+	// deliverable that review sent back; both empty in round 1. rec is what
+	// every session of the run did, for a deliverable Rein has to write.
+	var (
+		verdict, sentBack string
+		rec               runRecord
+	)
 	for round := 1; ; round++ {
 		res, err := qr.runSession(ctx, a, spec, wo, wt, repo, &pending)
+		if err != nil || res.done {
+			return err
+		}
+		rec.add(res.out)
+
+		// Never hand in a blank, a one-liner, or a promise (ark:rein#83).
+		res, err = qr.secureDeliverable(ctx, a, spec, wo, wt, repo, res, verdict, sentBack, &rec, &pending)
 		if err != nil || res.done {
 			return err
 		}
@@ -323,6 +340,7 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		if err != nil || sub == nil || !sub.ReviewPending {
 			return err
 		}
+		sentBack = agentAccount(res.out)
 
 		qr.logf("run %s: submitted; Elk is reviewing it. Waiting up to %s (round %d), with the slot given back",
 			wo.RunID, qr.reviewTimeout(), round)
@@ -334,8 +352,17 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		// made every reviewed run on a one-slot machine twenty minutes of
 		// nobody working, Wrangler cycle included.
 		qr.slot.release()
-		verdict, outcome := qr.awaitReview(ctx, wo)
+		var outcome reviewOutcome
+		verdict, outcome = qr.awaitReview(ctx, wo)
 		switch outcome {
+		case reviewInterrupted:
+			// Rein is stopping while Elk still has the run (ark:rein#81). The
+			// run stays `ready` in Elk, which is a legitimate place to leave
+			// it; saying the review "asked for nothing" was not true.
+			qr.logf("run %s: Rein stopped before Elk's review answered; the run stays ready in Elk, and a "+
+				"revision request now finds no agent to work it", wo.RunID)
+			qr.log.Runner(runlog.KindReview, "Rein stopped before Elk's review answered; the run stays ready")
+			return nil
 		case reviewCancelled:
 			qr.logf("run %s: cancelled while Elk was reviewing — nothing further submitted", wo.RunID)
 			qr.logStatus = runlog.StatusCancelled
@@ -444,8 +471,9 @@ func (qr *queueRunner) awaitReview(ctx context.Context, wo *elk.WorkOrder) (stri
 		select {
 		case <-ctx.Done():
 			// Shutting down. The run is `ready` in Elk, which is a legitimate
-			// place to leave it — better than claiming an outcome.
-			return "", reviewSettled
+			// place to leave it — better than claiming an outcome, and the
+			// caller says which this was (ark:rein#81).
+			return "", reviewInterrupted
 		case <-time.After(poll):
 		}
 
@@ -488,8 +516,11 @@ func (qr *queueRunner) revisionSpec(a adapter.Adapter, spec adapter.RunSpec,
 	wo *elk.WorkOrder, sessionID, verdict string) adapter.RunSpec {
 
 	directive := "Elk reviewed your deliverable and will not show it to the user until this is " +
-		"addressed:\n\n" + blockquote(verdict) + "\n\nMake those changes in this same worktree and " +
-		"finish the same way. Do not start the task over — only what is asked for above is missing."
+		"addressed:\n\n" + blockquote(verdict) + "\n\nMake those changes in this same worktree. Do not " +
+		"start the task over — only what is asked for above is missing. Do not end your turn while anything " +
+		"is still running in the background. Your final message replaces your previous deliverable " +
+		"entirely, so end with the whole deliverable: first, in plain English, what was done and what is " +
+		"left, answering the review above; then links to the pull requests and commits."
 
 	next := spec
 	next.ResumeID = ""
@@ -828,6 +859,22 @@ type watchOutcome struct {
 	stalled   bool
 	events    int
 	tools     []string
+	// commands and prs are the shell commands the agent ran and the pull
+	// requests it named, for a deliverable Rein has to write itself.
+	commands []string
+	prs      []string
+	// deliverable, when set, replaces the agent's account: Rein's own,
+	// written because the agent would not write one (deliverable.go).
+	deliverable string
+}
+
+// notePRs records the pull requests s names.
+func (o *watchOutcome) notePRs(s string) {
+	for _, u := range prRefs(s) {
+		if !containsString(o.prs, u) {
+			o.prs = append(o.prs, u)
+		}
+	}
 }
 
 // watch consumes a session's events and reports to Elk as it goes.
@@ -944,6 +991,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				if ev.Text != "" {
 					text.WriteString(ev.Text)
 					text.WriteString("\n")
+					out.notePRs(ev.Text)
 				}
 
 			case adapter.EventToolUse:
@@ -952,6 +1000,10 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					name = ev.Tool.Name
 				}
 				out.tools = append(out.tools, name)
+				if cmd := toolCommand(ev.Tool); cmd != "" {
+					out.commands = append(out.commands, cmd)
+					out.notePRs(cmd)
+				}
 				// Throttled: named, but not one round trip per call.
 				if time.Since(lastToolT) >= MinReportInterval || time.Since(lastRep) >= MinReportInterval {
 					lastToolT = time.Now()
@@ -1420,7 +1472,11 @@ func stoppedBody(why, details string, out watchOutcome) string {
 
 // agentAccount is what the agent wrote to finish its session: its result's
 // summary, or failing that the text it streamed. Empty when it wrote nothing.
+// When Rein had to write the deliverable itself (deliverable.go), it is that.
 func agentAccount(out watchOutcome) string {
+	if out.deliverable != "" {
+		return out.deliverable
+	}
 	summary := ""
 	if out.result != nil {
 		summary = strings.TrimSpace(out.result.Summary)

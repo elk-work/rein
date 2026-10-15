@@ -78,8 +78,10 @@ func leakingScript(values ...string) ([]adapter.Event, adapter.Result) {
 		{Kind: adapter.EventUsage, Usage: &adapter.Usage{InputTokens: 10, OutputTokens: 5, Model: "fake-1"}},
 	}
 	result := adapter.Result{
-		Status:    adapter.StatusSucceeded,
-		Summary:   "Done. For the record the key was " + joined + ".",
+		Status: adapter.StatusSucceeded,
+		Summary: "Done: the work order's change is made, its tests pass and the branch is pushed, so nothing " +
+			"is left for anyone to do — no migration, no deploy and no follow-up step. " +
+			"For the record the key was " + joined + ".",
 		SessionID: "fake-session",
 		Usage:     adapter.Usage{InputTokens: 10, OutputTokens: 5, Model: "fake-1"},
 	}

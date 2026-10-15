@@ -18,7 +18,9 @@ import (
 
 // wranglerEnding is an agent account that ends the way Elk Scout work orders
 // ask: with the exact Wrangler step on its own last line.
-const wranglerEnding = "Merged the fix and checked it on the live site.\n\nWrangler: nothing"
+const wranglerEnding = "Merged the fix and checked it on the live site: the due-date sheet now opens on Windows, " +
+	"its tests pass on all three platforms, and nothing is left — no migration, no deploy and no follow-up " +
+	"step for anyone.\n\nWrangler: nothing"
 
 func TestTheAgentsLastLineIsTheDeliverablesLastLine(t *testing.T) {
 	h := newHarness(t)
