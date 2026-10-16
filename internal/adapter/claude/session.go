@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,7 @@ import (
 // bufio's 64 KiB default. Hitting this is a stream error, not a silent skip.
 const maxStreamLine = 16 << 20
 
-// Session is one `claude -p` process.
+// Session is one Claude conversation, with at most one idle-recovery child.
 type Session struct {
 	spec         adapter.RunSpec
 	cmd          *exec.Cmd
@@ -89,6 +90,10 @@ type Session struct {
 	interrupted    bool
 	timedOut       bool
 	timeoutReason  string
+	resumePending  bool
+	resumed        bool
+	modelActive    bool
+	unanswered     map[string]string
 	// authRefused is set when the start-up line shows anything but the plan
 	// login; the process is killed and the session fails with it.
 	authRefused error
@@ -187,9 +192,9 @@ func (s *Session) Interrupt(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.interrupted = true
+	cmd := s.cmd
 	s.mu.Unlock()
-
-	if err := interruptProcess(s.cmd); err != nil {
+	if err := interruptProcess(cmd); err != nil {
 		// Interrupting failed, so escalate immediately rather than waiting out
 		// a grace period that protects nothing.
 		return s.killNow()
@@ -216,14 +221,17 @@ func (s *Session) Interrupt(ctx context.Context) error {
 // signal, once the first has had time to land, takes it.
 func (s *Session) killNow() error {
 	s.killed.Store(true)
-	err := killProcess(s.cmd)
+	s.mu.Lock()
+	cmd := s.cmd
+	s.mu.Unlock()
+	err := killProcess(cmd)
 	go func() {
 		t := time.NewTimer(killRepeat)
 		defer t.Stop()
 		select {
 		case <-s.done:
 		case <-t.C:
-			_ = killProcess(s.cmd)
+			_ = killProcess(cmd)
 		}
 	}()
 	return err
@@ -310,9 +318,34 @@ func (s *Session) run(stdout io.ReadCloser) {
 	defer close(s.done)
 	defer s.cleanup()
 
-	s.markActivity()
 	go s.consumeHooks()
+	for {
+		s.markActivity()
+		stopWatch := make(chan struct{})
+		watchDone := make(chan struct{})
+		go func() { defer close(watchDone); s.watch(stopWatch) }()
+		ev := s.runAttempt(stdout)
+		close(stopWatch)
+		<-watchDone
+		s.mu.Lock()
+		retry := s.resumePending && !s.interrupted && !s.timedOut && s.startCtx.Err() == nil
+		s.resumePending = false
+		s.mu.Unlock()
+		if !retry {
+			s.finish(ev)
+			return
+		}
+		s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "claude model request went silent; resuming the same session (attempt 1 of 1)"})
+		var err error
+		stdout, err = s.resumeChild()
+		if err != nil {
+			s.finish(s.terminalEvent(nil, err, nil))
+			return
+		}
+	}
+}
 
+func (s *Session) runAttempt(stdout io.ReadCloser) adapter.Event {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64<<10), maxStreamLine)
 
@@ -328,6 +361,7 @@ func (s *Session) run(stdout io.ReadCloser) {
 	for scanner.Scan() {
 		s.markActivity()
 		evs, res, _ := s.dec.decode([]byte(s.redact(scanner.Text())))
+		s.trackRequest(scanner.Bytes())
 
 		// Publish what the decoder now knows, under the lock that guards
 		// everything another goroutine may read while this one is running.
@@ -432,7 +466,7 @@ func (s *Session) run(stdout io.ReadCloser) {
 	s.closeStdin()
 	waitErr := s.cmd.Wait()
 
-	s.finish(s.terminalEvent(result, scanErr, waitErr))
+	return s.terminalEvent(result, scanErr, waitErr)
 }
 
 // abandon records that the session ended with the agent's background work
@@ -559,7 +593,7 @@ func (s *Session) noResultError(scanErr, waitErr error) error {
 // but the contract says an adapter must not accept a timeout it will not
 // enforce, so all three are enforced here. It also runs the background-work
 // wait (ark:rein#80) — see [Session.watchBackground].
-func (s *Session) watch() {
+func (s *Session) watch(stop <-chan struct{}) {
 	startup := s.spec.Timeouts.Startup
 	if startup <= 0 {
 		startup = defaultStartup
@@ -571,9 +605,10 @@ func (s *Session) watch() {
 	defer tick.Stop()
 
 	var bg bgWaitState
+	attemptStarted := time.Now()
 	for {
 		select {
-		case <-s.done:
+		case <-stop:
 			return
 		case now := <-tick.C:
 			// Waiting on live background work is not idleness: a background
@@ -581,7 +616,7 @@ func (s *Session) watch() {
 			// The wait has its own bound instead.
 			waitingOnWork := s.bgSince.Load() != 0 && s.bgLive.Load() > 0
 			switch {
-			case !s.initSeen.Load() && now.Sub(s.started) > startup:
+			case !s.initSeen.Load() && now.Sub(attemptStarted) > startup:
 				s.timeout(fmt.Sprintf("no session start within %s", startup))
 				return
 			case total > 0 && now.Sub(s.started) > total:
@@ -589,7 +624,7 @@ func (s *Session) watch() {
 				return
 			case idle > 0 && s.resultAt.Load() == 0 && !waitingOnWork &&
 				now.Sub(time.Unix(0, s.lastActivity.Load())) > idle:
-				s.timeout(fmt.Sprintf("no event for %s", idle))
+				s.idleTimeout(idle)
 				return
 			case s.resultAt.Load() > 0 &&
 				now.Sub(time.Unix(0, s.resultAt.Load())) > defaultExitGrace:
@@ -827,4 +862,118 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// trackRequest distinguishes model silence from tools whose results never arrived.
+// Unknown housekeeping events do not clear outstanding calls.
+func (s *Session) trackRequest(raw []byte) {
+	var line streamLine
+	if json.Unmarshal(raw, &line) != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unanswered == nil {
+		s.unanswered = make(map[string]string)
+	}
+	switch line.Type {
+	case "api-request", "api_request", "assistant", "stream_event":
+		s.modelActive = true
+	}
+	if line.Type != "assistant" && line.Type != "user" {
+		return
+	}
+	var msg vendorMessage
+	if json.Unmarshal(line.Message, &msg) != nil {
+		return
+	}
+	for _, b := range msg.Content {
+		switch b.Type {
+		case "tool_use":
+			var input struct {
+				Command string `json:"command"`
+			}
+			_ = json.Unmarshal(b.Input, &input)
+			detail := b.Name
+			if input.Command != "" {
+				detail += ": " + input.Command
+			}
+			s.unanswered[b.ID] = detail
+		case "tool_result":
+			delete(s.unanswered, b.ToolUseID)
+			s.modelActive = true
+		}
+	}
+}
+
+func (s *Session) idleTimeout(idle time.Duration) {
+	s.mu.Lock()
+	if s.modelActive && len(s.unanswered) == 0 && s.sessionID != "" && !s.resumed && !s.interrupted && !s.timedOut {
+		s.resumed, s.resumePending = true, true
+		s.mu.Unlock()
+		_ = s.killNow()
+		return
+	}
+	reason := fmt.Sprintf("no event for %s", idle)
+	var tools []string
+	for _, detail := range s.unanswered {
+		tools = append(tools, detail)
+	}
+	sort.Strings(tools)
+	if len(tools) > 0 {
+		reason += "; unanswered tool calls: " + strings.Join(tools, "; ")
+	}
+	s.mu.Unlock()
+	s.timeout(s.redact(reason))
+}
+
+// resumeChild preserves launch policy and generated configuration. The old
+// child has been reaped and its watcher joined before this is called.
+func (s *Session) resumeChild() (io.ReadCloser, error) {
+	args := append([]string(nil), s.argv[1:]...)
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--resume" {
+			args = append(args[:i], args[i+2:]...)
+			break
+		}
+	}
+	args = append(args, "--resume", s.ID())
+	cmd := exec.Command(s.argv[0], args...)
+	cmd.Dir, cmd.Env = s.spec.WorktreeDir, s.cmd.Env
+	setProcAttr(cmd)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return nil, err
+	}
+	stderr := &boundedBuffer{limit: 64 << 10}
+	cmd.Stderr = stderr
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.interrupted || s.timedOut || s.startCtx.Err() != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, errors.New("claude: resume cancelled")
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, fmt.Errorf("claude: resuming session: %w", err)
+	}
+	s.cmd, s.stderr = cmd, stderr
+	s.stdinMu.Lock()
+	s.stdin, s.stdinClosed = stdin, false
+	s.stdinMu.Unlock()
+	s.dec = &decoder{}
+	s.modelActive = false
+	s.killed.Store(false)
+	s.initSeen.Store(false)
+	s.resultAt.Store(0)
+	s.markActivity()
+	s.promptErr = s.writeUserMessage("Rein: continue where you left off and finish the task.")
+	return stdout, nil
 }

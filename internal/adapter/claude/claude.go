@@ -445,7 +445,6 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	}
 
 	go s.run(stdout)
-	go s.watch()
 	return s, nil
 }
 
