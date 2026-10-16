@@ -409,3 +409,71 @@ func TestSessionStopsWhenTheInitLineIsNotThePlanLogin(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionIdleRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name, event    string
+		finish, resume bool
+	}{
+		{"model request finishes", `{"type":"api-request"}`, true, true},
+		{"model turn finishes", `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"working"}]}}`, true, true},
+		{"second silence stops", `{"type":"api-request"}`, false, true},
+		{"unanswered tool stops", `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"gcloud run services describe example"}}]}}`, false, false},
+		{"answered tool resumes", `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}`, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			calls := filepath.Join(dir, "calls")
+			script := `echo "$*" >> '` + calls + `'
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"silent-session","apiKeySource":"none"}'
+`
+			if tc.finish {
+				script += `case " $* " in
+ *" --resume silent-session "*) printf '%s\n' '{"type":"result","subtype":"success","session_id":"silent-session","result":"recovered","num_turns":1}'; cat >/dev/null; exit 0 ;;
+esac
+`
+			}
+			script += "cat <<'EVENT'\n" + tc.event + "\nEVENT\nsleep 60"
+			sess := startStub(t, stubBinary(t, script), adapter.RunSpec{Timeouts: adapter.Timeouts{Idle: 300 * time.Millisecond}})
+			evs := drain(t, sess)
+			res, err := sess.Wait()
+			if tc.finish {
+				if err != nil || res.Status != adapter.StatusSucceeded || res.Summary != "recovered" {
+					t.Fatalf("result: %+v, %v", res, err)
+				}
+			} else if err == nil || res.Status != adapter.StatusTimedOut {
+				t.Fatalf("result: %+v, %v", res, err)
+			}
+			data, readErr := os.ReadFile(calls)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			want := 0
+			if tc.resume {
+				want = 1
+			}
+			if n := strings.Count(string(data), "--resume silent-session"); n != want {
+				t.Fatalf("resumes = %d, want %d", n, want)
+			}
+			if !tc.resume && !strings.Contains(err.Error(), "Bash: gcloud run services describe example") {
+				t.Fatalf("tool detail lost: %v", err)
+			}
+			terminals, resumes := 0, 0
+			for i, ev := range evs {
+				if ev.Seq != uint64(i+1) {
+					t.Errorf("sequence gap: %d", ev.Seq)
+				}
+				if ev.Kind.Terminal() {
+					terminals++
+				}
+				if strings.Contains(ev.Text, "attempt 1 of 1") {
+					resumes++
+				}
+			}
+			if terminals != 1 || resumes != want {
+				t.Fatalf("terminal events = %d, resume events = %d", terminals, resumes)
+			}
+		})
+	}
+}

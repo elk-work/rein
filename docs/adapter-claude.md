@@ -397,6 +397,15 @@ the wait for the `init` line (default 2 minutes), `Idle` the gap between events,
 `Total` the whole session. Zero means unbounded for `Idle` and `Total` — the run
 loop's own watchdog ladder owns those — and the default for `Startup`.
 
+When `Idle` fires after a model request or turn, with a known session id and
+no unanswered tool calls, the adapter kills and reaps the child, then resumes
+the same conversation once with `--resume` and a short continue prompt. A
+progress event records the recovery. The idle limit remains unchanged; a
+second silence fails normally. Startup gets a fresh allowance for the resumed
+child, while `Total` still bounds the whole run. An unanswered tool prevents
+recovery, and the timeout error names the tool and its command when present
+so the runner includes them in the stuck deliverable.
+
 **Interrupt takes the process group, not the process.** The session is started
 with `Setpgid`, and `Interrupt` sends `SIGINT` to the whole group before
 escalating to `SIGKILL` after a grace period. A `claude -p` session spawns MCP
