@@ -19,28 +19,29 @@ the honest answer is "nothing ran this", write that.
 
 1. Find the repo's manifest, `ci/suites.yml`.
 2. See which suites the diff implicates.
-3. Run what you can locally with `scripts/ci-local.sh <suite>`.
-4. Label the declared legs you need (`ci:<suite>`).
-5. Write `skip <suite>: <reason>` for skippable suites you skip.
-6. Settle Pulse coverage (pulse-decider).
-7. Wait for `ci-plan` and read its summary, not its colour.
+3. Read each implicated suite's history (`suite_history`).
+4. Run what you can locally with `scripts/ci-local.sh <suite>`.
+5. Label the declared legs you need (`ci:<suite>`).
+6. Write `skip <suite>: <reason>` for skippable suites you skip.
+7. Settle Pulse coverage (pulse-decider).
+8. Wait for `ci-plan` and read its summary, not its colour.
 
 ## 1. The manifest
 
 Look for `ci/suites.yml` at the root of the repository you are changing. In
 the superrepo that is the submodule, e.g. `scout/ci/suites.yml`.
 
-- **Found** (scout): follow steps 2–7. Each suite has
+- **Found** (scout): follow steps 2–8. Each suite has
   `paths`, a `tier` (`floor` starts by itself on every matching PR;
   `declared` is yours to start), `local` (the command `ci-local.sh` runs, or
-  `no`), `skippable` and, for declared legs, a `label`.
+  `no`), `skippable`, `quarantined` (step 3) and, for declared legs, a `label`.
 - **Not found**: this repo has no manifest, and today's rules in elk
   `docs/ci-runners.md` apply
   (<https://github.com/elk-work/elk/blob/main/docs/ci-runners.md> from a bare
   clone). "CI is green" means every check that ran on the head passed. Run the
   tests covering what you changed before pushing, and put one line in the PR
   body naming what ran and what did not (`Tested: go test ./... (412 passed);
-  Windows build not run locally`). Then do step 6 and stop.
+  Windows build not run locally`). Then do step 7 and stop.
 
 ## 2. What the diff implicates
 
@@ -57,8 +58,8 @@ Each implicated suite comes back with the ways it can be satisfied. For each:
 | Suite | Satisfied by | Your move |
 |---|---|---|
 | `floor` | its own check, green on the head | Nothing; it starts itself. Local runs are for iterating and do not count. |
-| `declared`, `skippable: false` | its check green on the head, or `local/<suite>` where `local` is not `no` | Run it locally (step 3) or label it (step 4). Never a skip line. |
-| `declared`, `skippable: true` | any of the above, or a skip line | Run it if your change could move what it tests; otherwise skip it with a reason (step 5). |
+| `declared`, `skippable: false` | its check green on the head, or `local/<suite>` where `local` is not `no` | Run it locally (step 4) or label it (step 5). Never a skip line. |
+| `declared`, `skippable: true` | any of the above, or a skip line | Run it if your change could move what it tests; otherwise skip it with a reason (step 6). |
 
 A red check on the head is never satisfied by local evidence or a skip line.
 Fix it.
@@ -68,7 +69,39 @@ per the suite's `run:` list), hosted only when neither can. The money is
 macOS, so start a declared leg once, when the branch is ready, not on every
 push.
 
-## 3. Run it locally
+## 3. Read the history before you decide
+
+For each implicated suite, before you write the plan or chase a red:
+
+```text
+suite_history(workspace: "elk-scout", repo: "elk-work/<repo>", suite: "<suite>", question: "all", window: "P30D")
+```
+
+Without Elk's MCP, `pulse history` reads the same rows (pulse `docs/history.md`):
+
+```sh
+node elk/scripts/vault-run.mjs --only SIGNAL_READ_URL -- pulse history last-green --workspace elk-scout --repo elk-work/<repo>   # or flake-rate, failures-by-path --window 720h
+```
+
+1. **Last green on `main`.** If its `sha` is older than your base (`git
+   merge-base origin/main HEAD`) and main's latest run of the suite is red
+   (`gh run list --branch main --workflow <file>`), the red is main's. Put
+   `red on main since <sha>: <suite>` in the PR body, `<sha>` being that last
+   green, and do not chase it. It still blocks: name main's task beside the
+   line, and update the branch once main is green.
+2. **Flake rate.** Above `0.05` over 30 days, do not trust the red and do not
+   skip it: propose `quarantined: true` for the suite in `ci/suites.yml`, in
+   a separate small PR that quotes the reading. Once that lands the suite is
+   recorded but never blocks.
+3. **Failures by changed path.** A path your diff changes that failed the
+   suite in the window promotes it from skip to run. It is history, not
+   cause, and the list is capped (`paths_omitted`): absent is not cleared.
+
+**No data yet is not a pass.** `no data yet`, `no_evidence`, `unknown` or
+`tested_shas: 0` mean nobody knows: the red is yours, and nothing is
+quarantined or skipped on the strength of it.
+
+## 4. Run it locally
 
 Commit and push first. Evidence is for one exact commit.
 
@@ -85,7 +118,7 @@ mean to merge. Only the script posts `local/*`. Never hand-post one.
 
 Cannot run it here (a cloudcode sandbox, no Xcode)? Label it instead.
 
-## 4. Label the declared legs you need
+## 5. Label the declared legs you need
 
 ```sh
 gh pr edit <n> --add-label ci:<suite>   # ci:elkkit, ci:apple-build, ci:apple-ui
@@ -97,7 +130,7 @@ Scout's `CI_PLAN_MODE` is `enforce`, so every declared leg needs its label:
 nothing macOS starts by path. A queue on the lab Mac is waited out, never
 routed around to hosted macOS.
 
-## 5. Skip honestly
+## 6. Skip honestly
 
 Only a `skippable: true` suite can be skipped. Write one line per suite in the
 PR body, outside any code fence:
@@ -107,11 +140,12 @@ skip apple-ui: copy-only change to the Settings footer; no thread, list or scrol
 ```
 
 The reason says why *this diff* cannot break what the suite tests. "No time",
-"flaky" and "CI is expensive" are not reasons. Once enforce mode is on, the
-nightly backstop (`ci-backstop.yml`) runs every declared leg on `main`. If it
-turns red on something you skipped, the skip was wrong: say so on the task.
+"flaky" and "CI is expensive" are not reasons; a suite that really flakes is
+quarantined (step 3). Once enforce mode is on, the nightly backstop
+(`ci-backstop.yml`) runs every declared leg on `main`. If it turns red on
+something you skipped, the skip was wrong: say so on the task.
 
-## 6. Pulse coverage
+## 7. Pulse coverage
 
 Pulse parity is not in `ci/suites.yml`, because `parity.yml` always measures
 scout `main` and cannot test a PR branch. Whether a change needs Pulse is
@@ -127,7 +161,7 @@ other clone, read it:
 gh api repos/elk-work/pulse/contents/.claude/skills/pulse-decider/SKILL.md -H "Accept: application/vnd.github.raw"
 ```
 
-## 7. Wait for `ci-plan`, then read it
+## 8. Wait for `ci-plan`, then read it
 
 `ci-plan` is one commit status on the PR head. It re-evaluates on every push,
 label, body edit, suite completion and `local/*` status.
@@ -145,6 +179,8 @@ gh api repos/elk-work/<repo>/commits/<head-sha>/status --jq '.statuses[] | selec
   status is **always success**, so read the description. `advisory · plan
   met: …` or `advisory · no suites implicated` means done; `advisory · enforce
   would fail: …` means work is left — do what it says.
+- A `quarantined: <suite> (<result>)` tail names a quarantined suite and what
+  it did. It never fails or holds the plan; the row is in the summary table.
 
 No `ci-plan` status on the head at all means the plan never ran. Push, or
 dispatch it (`gh workflow run ci-plan.yml --repo elk-work/<repo> -f pr=<n> -f
