@@ -139,6 +139,31 @@ argument.
 
 Do not "fix" that by granting the Rein agent those permissions.
 
+#### "rein was prevented from modifying apps"
+
+**App Management belongs on the same list, and the answer to its notice is the
+same: leave it off.** macOS may post a notification saying *"rein was prevented
+from modifying apps"* and point at System Settings → Privacy & Security → App
+Management to allow it. Do not.
+
+It is triggered by an agent launching an **installed, self-updating
+application** — in the case that produced it (2026-10-17, Rein v0.8.9), a run
+that started `/Applications/Google Chrome.app` with `--headless --screenshot` to
+check a deploy preview. Chrome's own updater touched its bundle at launch; TCC
+holds that decision for the *responsible process*, which is the LaunchAgent, so
+it was charged to Rein. Rein is a bare binary with an ad-hoc signature, so macOS
+cannot show it an Allow/Deny prompt: it denies the write
+(`kTCCServiceSystemPolicyAppBundles`) and posts the notice instead.
+
+Nothing broke: the browser still rendered the page, and nothing Rein does needs
+to write into an app bundle. Granting it would let every agent Rein runs, under
+permission mode `full`, update or delete any application on the machine without
+asking — and a grant to an ad-hoc-signed binary is probably tied to that exact
+build, so it would likely lapse at the next upgrade and the notice would return
+anyway. The prompt now tells runs to render pages with a headless browser they
+fetched for themselves (`chrome-headless-shell`, or Playwright's Chromium) and
+never to launch an app from `/Applications`, which removes the trigger.
+
 ### PATH is captured at install time
 
 A LaunchAgent inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and nothing else,

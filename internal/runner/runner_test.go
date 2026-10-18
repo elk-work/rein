@@ -741,6 +741,27 @@ func TestSystemPromptForbidsObservingTheMachine(t *testing.T) {
 	}
 }
 
+func TestSystemPromptKeepsRunsOutOfInstalledApps(t *testing.T) {
+	// 2026-10-17: a run launched the installed Chrome from /Applications to
+	// render a deploy preview headless. Chrome's updater touched its own
+	// bundle, TCC charged the write to the rein LaunchAgent, and macOS asked
+	// the person to grant Rein App Management. The answer is never to grant
+	// it (docs/service.md), so the prompt must keep sending page rendering to
+	// a browser the run fetched for itself.
+	prompt := strings.ToLower(strings.Join(strings.Fields(runner.SystemPrompt), " "))
+	for _, want := range []string{
+		"never launch an application installed on the machine",
+		"nothing from `/applications`",
+		"use a headless browser the run fetched for itself",
+		"chrome-headless-shell",
+		"playwright's bundled chromium",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the system prompt no longer keeps runs out of installed apps: missing %q", want)
+		}
+	}
+}
+
 func TestSystemPromptCarriesTheContractEssentials(t *testing.T) {
 	// The vendored prompt is what stands between an agent and a work order
 	// whose woven half is untrusted input, so its load-bearing sentences are

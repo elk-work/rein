@@ -816,7 +816,14 @@ but it is not a control, and treating it as one is how this happens twice.
 
 **The only real control is the operating system**, and on macOS that means
 **TCC**. Screen Recording, Accessibility and Input Monitoring are granted per
-*responsible process*, and that is the lever:
+*responsible process*, and that is the lever. **App Management** is the fourth
+service in the same position: it gates writes into application bundles, a run
+that launches an installed, self-updating app (Chrome from `/Applications`, to
+render a page) trips it, and macOS charges the write to Rein and tells the
+person *"rein was prevented from modifying apps"*. The denial is the wall
+working; `docs/service.md` has the notice, and the answer is to leave it off.
+The prompt sends page rendering to a headless browser the run fetched itself.
+
 
 - A `rein` **launchd agent that has never been granted them** cannot capture
   the screen or drive another application, whatever it is told. `screencapture`
