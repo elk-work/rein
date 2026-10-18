@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -751,7 +752,7 @@ type sessionResult struct {
 }
 
 // deliveryInstructions is the run-specific half of the standing prompt: the
-// concrete branch and Elk action id an agent needs in order to land its work.
+// concrete branch, and the Ark tasks, an agent needs in order to land its work.
 //
 // It goes in the SYSTEM prompt rather than the work order. The work order is
 // data — its woven half is generated from captures that are not trusted input —
@@ -763,7 +764,7 @@ type sessionResult struct {
 // packet is one that will sometimes get it wrong.
 //
 // The landing policy is restated here for `pr` and `branch` (landing.go). A
-// merge queue's block is left exactly as it was before the setting existed.
+// pull request, under `merge` or `pr`, closes nothing (prRule).
 func deliveryInstructions(wt *worktree.Worktree, wo *elk.WorkOrder, land string) string {
 	var b strings.Builder
 	b.WriteString("## This run\n\n")
@@ -773,18 +774,124 @@ func deliveryInstructions(wt *worktree.Worktree, wo *elk.WorkOrder, land string)
 	case config.LandPR:
 		b.WriteString("- Landing policy: `pr` — open a non-draft pull request from this branch and stop. " +
 			"Do not merge it, enable auto-merge on it, or approve it; the repository's owners merge.\n")
-		b.WriteString("- The pull request body must contain no Elk action id and no closing sigil. " +
-			"Report the PR URL and its head sha in your deliverable instead; Rein reports it to Elk from there.\n")
+		b.WriteString(prRule(wo, "Report the PR URL and its head sha in your deliverable instead; Rein reports it to Elk from there. "+
+			"Elk closes the item, and each Ark task it tracks that a merged pull request names, once its review accepts the run."))
 	case config.LandBranch:
 		b.WriteString("- Landing policy: `branch` — push this branch and stop. " +
 			"Open no pull request, draft or otherwise, and merge nothing.\n")
 		b.WriteString("- Commit messages must contain no Elk action id and no closing sigil. " +
 			"Report the branch and its pushed head sha in your deliverable; Rein reports it to Elk from there.\n")
 	default:
-		b.WriteString("- The pull request body must contain no Elk action id and no closing sigil. " +
-			"Report the PR URL and the merge sha in your deliverable instead; Rein closes the item from there.\n")
+		b.WriteString(prRule(wo, "Report the PR URL and the merge sha in your deliverable instead. "+
+			"Elk closes the item, and each Ark task it tracks that a merged pull request names, once its review accepts the run."))
 	}
 	return b.String()
+}
+
+// prRule is what a run's pull request body may and must say, for the two
+// policies that open one. It is absolute (Elk Scout #1000, ruled (b) on
+// 2026-10-17; ark:rein#76 (01M4KW06YJ)): no `Closes`, `Fixes` or `Resolves`
+// for anything, Elk item or Ark task, even where the work order asks for one,
+// and no Elk action id. A closing line for the Elk item is the 0138 race in
+// docs/run-loop.md; one for an Ark task closes the task at the merge, before
+// the review has read the work. Each Ark task the run advances is named with
+// `Implements` instead, which records the landing without closing anything.
+// Accepting the run marks the item done, and Elk's retire sweep (scout
+// gh-connector retire.ts, migration 0429) then closes each Ark task the item
+// tracks that a merged pull request names; docs/run-loop.md has the evidence.
+//
+// The tasks are the ones the work order lists under its Work heading, filled
+// in for the same reason the branch is. Elk names them by number
+// (`ark:rein#76`), and a landing is matched by ULID alone, so the line keeps a
+// slot for the ULID unless Elk sent one.
+func prRule(wo *elk.WorkOrder, report string) string {
+	var b strings.Builder
+	b.WriteString("- The pull request closes nothing: no `Closes`, `Fixes` or `Resolves` line, for an Elk item or an Ark task, " +
+		"even where the work order asks for one, and no Elk action id. " + report + "\n")
+	tasks := workOrderArkTasks(wo)
+	if len(tasks) == 0 {
+		b.WriteString("- Name each Ark task the pull request advances on a line of its own in its body, " +
+			"`Implements ark:<repo>#<N> (<ULID>)`, with the task's full ULID (`ark task view <N>` prints it); " +
+			"a line without one records nothing.\n")
+		return b.String()
+	}
+	b.WriteString("- Name each Ark task the pull request advances on a line of its own in its body, " +
+		"with the task's full ULID; a line without one records nothing. This run's work order lists:\n")
+	for _, t := range tasks {
+		fmt.Fprintf(&b, "  - `%s`\n", t.implementsLine())
+	}
+	b.WriteString("  Fill in a `<ULID>` or `<repo>#<N>` from `ark task view <N or ULID>`, which reads this repository's tasks, " +
+		"and check the title it prints is the task's. A task whose ULID you cannot find gets no line; name it in your deliverable instead.\n")
+	return b.String()
+}
+
+// arkTask is one Ark task a work order lists under its Work heading.
+type arkTask struct {
+	// Ref is how Elk names it, `ark:<repo>#<N>`. Empty when Elk had only the
+	// task's id to show (`ark:<repository ULID>#task/<ULID>`).
+	Ref string
+	// ULID is the task's id, or the prefix of ten or more characters Elk
+	// sent; empty when Elk sent none.
+	ULID string
+}
+
+// implementsLine is the line the pull request body carries for the task,
+// with a slot for whatever Elk did not say.
+func (t arkTask) implementsLine() string {
+	ref, ulid := t.Ref, t.ULID
+	if ref == "" {
+		ref = "ark:<repo>#<N>"
+	}
+	if ulid == "" {
+		ulid = "<ULID>"
+	}
+	return "Implements " + ref + " (" + ulid + ")"
+}
+
+var (
+	// workHeadingRE is the heading Elk's claim text puts over an item's
+	// children (elk-mcp/queue.ts formatClaim: "## Work 1/3").
+	workHeadingRE = regexp.MustCompile(`^## Work \d+/\d+`)
+	// workArkItemRE is one Ark child under it: "2. ark:rein#76 · title ·
+	// state", with an optional "(<ULID>)" after the reference, or the id-only
+	// form Elk falls back to before it has synced the task's number. A
+	// GitHub child (gh:…) does not match and is left to the PR's own text.
+	workArkItemRE = regexp.MustCompile(`^\d+\. (?:(ark:[A-Za-z0-9._-]+#\d+)(?: \(([0-9A-Za-z]{10,26})\))?|ark:[0-9A-Za-z]{26}#task/([0-9A-Za-z]{26})) ·`)
+)
+
+// workOrderArkTasks reads the Ark tasks out of the work order's Work section:
+// the first one only, ended by the next heading, and only lines in Elk's own
+// shape, because this lifts text from the data channel into the instruction
+// channel.
+func workOrderArkTasks(wo *elk.WorkOrder) []arkTask {
+	if wo == nil {
+		return nil
+	}
+	var out []arkTask
+	seen := map[arkTask]bool{}
+	in := false
+	for _, line := range strings.Split(wo.Text, "\n") {
+		if !in {
+			in = workHeadingRE.MatchString(line)
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			break
+		}
+		m := workArkItemRE.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		t := arkTask{Ref: m[1], ULID: strings.ToUpper(m[2])}
+		if m[3] != "" {
+			t = arkTask{ULID: strings.ToUpper(m[3])}
+		}
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // baseRefFor picks the ref this run is cut from: a repository-specific

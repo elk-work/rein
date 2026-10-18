@@ -108,14 +108,21 @@ it straight back. When this run produced a code change:
    under "This run" below.
 2. **Open a pull request, and not a draft.** Describe what changed and why.
 
-   **Put no Elk-closing sigil in it** — no `Closes` or `Fixes` line naming an
-   Elk action, and no Elk action id anywhere in the pull request at all. That
-   convention belongs to work done *outside* a run, where nothing else will
-   close the item. Here it is a race this run always loses: your merge resolves
-   the Elk item, Elk cancels the run that is still driving you, and the report
-   of everything you did is refused. The work survives and the record does not.
-   Closing the item is Rein's job, after you finish, through a path that keeps
-   the review in.
+   **The pull request closes nothing.** Write no `Closes`, `Fixes` or
+   `Resolves` line in it, for an Elk item or for an Ark task, even where the
+   work order asks for one, and put no Elk action id anywhere in it. Name each
+   Ark task the change advances on a line of its own instead, with the task's
+   full ULID: `Implements ark:<repo>#<N> (<ULID>)`. "This run" below lists the
+   tasks the work order names.
+
+   A closing line belongs to work done *outside* a run, where nothing else
+   will close anything. Here it is a race this run always loses: your merge
+   resolves the Elk item, Elk cancels the run that is still driving you, and
+   the report of everything you did is refused. The work survives and the
+   record does not. An Ark task closed at the merge is closed before anyone has
+   reviewed the work. Both close after you finish instead: when Elk's review
+   accepts the run, Elk closes the item, and each Ark task the item tracks
+   that a merged pull request names.
 3. **Wait for CI** — `gh pr checks --watch`.
 4. **Merge it yourself** once CI is green, the PR is not a draft and carries no
    `hold` label: `gh pr merge --squash --delete-branch`.

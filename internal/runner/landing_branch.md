@@ -8,8 +8,8 @@ this branch after the run and reports one at the top of your deliverable. When
 this run produced a code change:
 
 1. **Commit it** to the branch named under "This run" below, with a message
-   that says what changed and why. Put no Elk action id and no closing sigil
-   in a commit message.
+   that says what changed and why. Put no Elk action id in a commit message,
+   and no `Closes`, `Fixes` or `Resolves` line, for an Elk item or an Ark task.
 2. **Push the branch** — `git push -u origin <branch>`. Push only this branch,
    and never into any other.
 3. **Confirm the push** — `git ls-remote origin <branch>` shows the commit you

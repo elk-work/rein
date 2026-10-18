@@ -548,11 +548,14 @@ different pool and never a fallback for a named queue that came back clear.
 An empty queue is plain text — `Queue "mac-claude" is clear: …` — as is a lost
 race (`Run … is not claimable`). Both become `elk.ErrNoWork`.
 
-The reply is the work order. Rein reads four things out of it and passes the
+The reply is the work order. Rein reads five things out of it and passes the
 whole text to the agent as the prompt: the run id from the first line, the
-action id, the direction, and the `### Required capabilities — preflight
-BEFORE starting` section. That last one is the input to the two fail-closed
-checks above, which is why the heading is pinned as a constant and tested.
+action id, the direction, the `### Required capabilities — preflight
+BEFORE starting` section, and the Ark tasks under `## Work N/M`. The
+capabilities are the input to the two fail-closed checks above, which is why
+the heading is pinned as a constant and tested; the Ark tasks become the
+`Implements` lines of the run's pull request (*The pull request closes
+nothing*, below).
 
 ### report_progress
 
@@ -874,7 +877,8 @@ refused — a finished run reporting a blocker. Force-pushing, rewriting history
 and production remain forbidden.
 
 **The branch name is filled in per run**, appended to the system prompt as a
-short "This run" section. Two reasons it goes there rather than into the packet:
+short "This run" section, and so are the run's Ark tasks, as the `Implements`
+lines its pull request carries (*The pull request closes nothing*, below). Two reasons it goes there rather than into the packet:
 the work order is data, and the agent is told to take orders only from the
 instruction channel; and an agent that has to find its own branch name in a
 packet is one that will sometimes get it wrong.
@@ -903,7 +907,8 @@ cuts at has been reworded away — the text is compiled in, so every test run
 sees that rather than a release shipping a `pr` queue merge's instructions.
 `TestMergePromptIsExactlyTheVendoredPrompt` holds the merge half of that
 promise. The "This run" block states the policy again for `pr` and `branch`;
-for `merge` it is the block it always was. A Wrangler cycle's rule is spliced in
+for `merge` it carries the branch and the pull request rule, which `pr`
+shares. A Wrangler cycle's rule is spliced in
 after the landing section, so `wrangler = true` composes with any policy.
 
 **The Wrangler rule and the owner's connector are per run, not per queue.**
@@ -954,7 +959,7 @@ an outward-facing action no one asked for. **The control is the repository's
 branch protection**: a `pr` queue belongs on a repository that requires a
 review before merge, and then a breach is impossible rather than reported.
 
-### The PR body must not close the Elk item
+### The pull request closes nothing
 
 The first version of that instruction told the agent to put `Closes elk:<id>`
 in the PR body, which is the org convention — for work done *outside* a run.
@@ -972,6 +977,68 @@ a negative example (an example is copyable), and the injected section does not
 hand over the action id at all: an id in front of the agent is an id that can
 end up in a PR body. The item is closed afterwards, by `submit_deliverable` and
 the review that follows it.
+
+**The rule is absolute, Ark tasks included** (Elk Scout #1000, ruled (b) on
+2026-10-17; `ark:rein#76 (01M4KW06YJ)`). Until then `prompt.md` scoped it to a
+sigil *naming an Elk action*, while the "This run" line said "no closing sigil"
+outright. The org convention outside a run (elk `docs/pr-flow.md`, *Record the
+landing*) is `Closes ark:<repo>#N (<ULID>)`, and PM sessions put it in their
+briefs. A Codex run (`arun-bdbca1ca`) read the two texts as a conflict, could
+not ask mid-run, and stopped; three queued directions carried the same line.
+Allowing `Closes ark:…` was the other option. It closes the task at the merge,
+before the review has read the work, and it would rest on closing an item's
+last open child never resolving the item mid-run, which is the `0138` race
+again if it ever stops being true.
+
+So under `merge` and `pr` the pull request body carries:
+
+- no `Closes`, `Fixes` or `Resolves` line, for an Elk item or an Ark task, even
+  where the work order asks for one: the rule outranks the brief, and says so;
+- no Elk action id;
+- one `Implements ark:<repo>#<N> (<ULID>)` line for each Ark task the change
+  advances. `Implements` records the landing (`ark-record-landing`) and closes
+  nothing.
+
+`landing_branch.md` says the same of commit messages.
+
+**Rein fills the tasks in**, as it does the branch. `prRule` in `drive.go`
+reads the work order's `## Work N/M` section, Elk's list of the item's children
+(`elk-mcp/queue.ts`, `formatClaim`), and lists one `Implements` line per Ark
+child. It reads that section only, only lines in Elk's own shape, and never a
+GitHub child, because this lifts text from the data channel into the
+instruction channel. Elk names a child `ark:<repo>#<N>` without its ULID, so
+the line keeps a `<ULID>` slot that the agent fills from `ark task view`, and a
+task whose ULID it cannot find gets no line and a mention in the deliverable.
+The id-only form Elk shows before a task's number has synced carries the ULID
+and keeps a `<repo>#<N>` slot instead. A ULID Elk sends in parentheses after
+the number is used as sent; rendering one there is
+`ark:scout#3865 (01M56FV1PS)`, after which an agent never has to look one up.
+`TestAnArkLinkedRunsPullRequestImplementsAndClosesNothing` holds all of it.
+
+**The Ark tasks close after the accept, and Elk already does that.** Rein
+needs no code for it. `accept_action_run` marks the run's item done; the
+scheduled Ark pull (`ark-pull-every-10-min`) then runs gh-connector's retire
+sweep (`retire.ts`, `ark:scout#611`), which since scout migration `0429`
+(`ark:scout#2817 (01M4984BDD)`) closes an open Ark child of a closed item when a
+merged pull request declares it, and `Implements ark:<repo>#<N> (<ULID>)` is a
+declaration (`private.pr_declares_ark_task`). Seen working on 2026-10-18: run
+`arun-4d65b1de` was accepted at 01:55:54Z, its item Elk Scout #1147 went done,
+and at 02:03Z the sweep closed `ark:signal#292 (01M55ZHPKK)` with *"Closed from
+Elk: its Elk task #1147 was closed and it landed in elk-work/signal#219"*, a
+pull request whose body read `Implements ark:signal#292
+(01M55ZHPKK2QEKJF9V9NB511D0)`.
+
+Rein could not do it as well. It cannot see an accept: an approved run looks
+exactly like one whose review has not run yet (*Elk's auto-review pass*,
+above), and a person's accept in the app comes after Rein has moved on. A task
+closes this way when all three hold, and each is a reason one might not:
+
+- it is **linked to the run's Elk item** as a child; a task only the pull
+  request names is recorded, never closed;
+- its `Implements` line carries the **ULID**, ten characters or more; a number
+  alone names no task;
+- the pull request has **merged**; under `pr` the task closes when the owners
+  merge, if that is within 60 days of the accept.
 
 `completed_actions: [action_id]` on the submit was considered and rejected. It
 would close the item from inside the runner, bypassing the auto-review pass that
