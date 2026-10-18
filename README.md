@@ -142,9 +142,13 @@ that refuses the push or the merge means the PR is left open and the
 deliverable says so. A queue serving a repository somebody else owns can stop
 short of that with its **landing policy** — see below.
 
-The PR body carries **no Elk-closing sigil**: closing the item from a PR that
-merges mid-run makes Elk cancel the run and refuse its deliverable, which lands
-the work and loses the record. Rein closes the item afterwards instead.
+The PR **closes nothing**: no `Closes`, `Fixes` or `Resolves` line, for an Elk
+item or an Ark task, even where the work order asks for one. Closing the item
+from a PR that merges mid-run makes Elk cancel the run and refuse its
+deliverable, which lands the work and loses the record. The PR names each Ark
+task it advances as `Implements ark:<repo>#<N> (<ULID>)` instead, and Rein fills
+those lines in from the work order. Elk closes the item, and each of its Ark
+tasks that a merged PR names, once its review accepts the run.
 
 A run flagged **"Review with Elk"** is not finished at the submit: Elk's review
 pass may reopen it with a revision request and expect the agent to still be

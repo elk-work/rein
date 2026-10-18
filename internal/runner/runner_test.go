@@ -804,7 +804,8 @@ func TestSystemPromptCarriesTheContractEssentials(t *testing.T) {
 		t.Error("the prompt appears to tell the agent to call Elk itself; Rein reports on its behalf")
 	}
 	// It has to say what NOT to put in the PR body, and why.
-	for _, want := range []string{"no elk-closing sigil", "race this run always loses"} {
+	for _, want := range []string{"the pull request closes nothing", "for an elk item or for an ark task",
+		"implements ark:<repo>#<n> (<ulid>)", "race this run always loses"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the prompt does not explain the closing-sigil rule: missing %q", want)
 		}
@@ -826,7 +827,8 @@ func TestTheAgentIsToldItsBranch(t *testing.T) {
 	if want := "git push -u origin " + worktree.BranchPrefix + "run-1"; !strings.Contains(spec.SystemPrompt, want) {
 		t.Errorf("the system prompt does not carry %q:\n%s", want, spec.SystemPrompt)
 	}
-	if !strings.Contains(spec.SystemPrompt, "no Elk action id and no closing sigil") {
+	if !strings.Contains(spec.SystemPrompt, "The pull request closes nothing") ||
+		!strings.Contains(spec.SystemPrompt, "and no Elk action id") {
 		t.Errorf("the injected section does not carry the closing-sigil rule:\n%s", spec.SystemPrompt)
 	}
 	if strings.Contains(spec.Prompt, "git push -u origin") {

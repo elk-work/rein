@@ -13,10 +13,13 @@ produced a code change:
    written for a reviewer who was not watching: what to look at first, how you
    tested it, and anything you were unsure of.
 
-   **Put no Elk-closing sigil in it** — no `Closes` or `Fixes` line naming an
-   Elk action, and no Elk action id anywhere in the pull request at all.
-   Closing the item is Rein's job, after you finish, through a path that keeps
-   the review in.
+   **The pull request closes nothing.** Write no `Closes`, `Fixes` or
+   `Resolves` line in it, for an Elk item or for an Ark task, even where the
+   work order asks for one, and put no Elk action id anywhere in it. Name each
+   Ark task the change advances on a line of its own instead, with the task's
+   full ULID: `Implements ark:<repo>#<N> (<ULID>)`. "This run" below lists the
+   tasks the work order names. Elk closes the item and those tasks after you
+   finish, once its review accepts the run and the pull request has merged.
 3. **Wait for CI** if the repository runs it — `gh pr checks --watch` — and fix
    what your change broke by pushing to the same branch. If a check fails for a
    reason outside your change, say which and why.
