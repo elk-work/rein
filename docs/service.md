@@ -173,7 +173,7 @@ downloads its own copy only when the person opts in.
 | | |
 |---|---|
 | **Rein's copy** | Chrome for Testing — Google's build for automation, with no updater — pinned in the source (`browser.Version`) and moving with Rein releases. `rein browser install` downloads it into `~/.rein/browsers/<version>/` (about 190 MB from `storage.googleapis.com`; add that host to an egress allow-list), is idempotent, removes older versions and sets no quarantine attribute. `browser = "rein"` in `config.toml` asks for the same at start-up. |
-| **Otherwise** | Linux and Windows: the installed Chrome at the platform's standard path, launched the same way. **macOS: none** — see below. |
+| **Otherwise** | The installed Chrome at the platform's standard path (`/Applications/Google Chrome.app` on macOS), launched the same way, with its updater switched off — see below. |
 | **Not wanted** | `browser = "none"` gives runs no Chrome. |
 
 `rein service install` downloads nothing; it prints one line saying which
@@ -185,22 +185,32 @@ A run gets it as a **`chrome` command on its PATH**, which always adds
 `--headless=new` (the service lives in the person's GUI session, so a window
 would open on their screen), a new `--user-data-dir` under the run's own
 directory outside its worktree, `--use-mock-keychain` (a fresh profile can
-otherwise raise a Keychain dialog) and `--no-first-run
---no-default-browser-check`. The directory and every profile in it are removed
+otherwise raise a Keychain dialog), `--no-first-run
+--no-default-browser-check`, and `--disable-updater-scheduler
+--disable-background-networking --disable-component-update` (below). The directory and every profile in it are removed
 when the run ends. **`REIN_CHROME`**, `CHROME_PATH` and
 `PUPPETEER_EXECUTABLE_PATH` name the binary, so Puppeteer, Lighthouse and
 chrome-launcher find it without being told; those libraries pass their own
 profile and flags, and both Puppeteer (puppeteer-core 25.14) and Playwright
 (playwright-core 1.64) pass `--use-mock-keychain` in their default arguments.
 
-**On macOS the installed Chrome is not used, even with those flags.** Measured
-under the LaunchAgent on 2026-10-17, with throwaway pages: Chrome for Testing
-155.0.8059.84 rendered three times and made **no** TCC request at all; the
-installed Google Chrome 155, launched through the same wrapper with a fresh
-profile, made one `kTCCServiceSystemPolicyAppBundles ... preflight=no` request
-attributed to `rein` — the notice above — and started its notification helper.
-So on a Mac, runs get Rein's copy or nothing, and `rein service install` asks
-the person to opt in.
+**The installed Chrome's updater is what asks for App Management, so the
+wrapper keeps it asleep.** Measured under the LaunchAgent on 2026-10-17, with
+throwaway pages and `about:blank`:
+
+| Launch | Launches | TCC requests charged to `rein` | `kTCCServiceSystemPolicyAppBundles ... preflight=no` |
+|---|---|---|---|
+| Chrome for Testing 155.0.8059.84, the wrapper | 7 | 0 | 0 |
+| installed Google Chrome 155, fresh profile, first four flags only | 3 | 3 | **1** — the notice above; its notification helper also started |
+| installed Google Chrome 155, the wrapper with the updater switches | 20 | 0 | 0 |
+
+`--disable-updater-scheduler`, `--disable-background-networking` and
+`--disable-component-update` are switches the installed Chrome recognises, and
+Playwright passes all three by default. **Puppeteer passes only
+`--disable-background-networking`**: a run that points Puppeteer at the
+installed Chrome should add the other two to `args`, or use `chrome`. Twenty
+clean launches against one write in three is strong evidence, not proof; Rein's
+own copy, which has no updater at all, is the answer that does not depend on it.
 
 **Never make Chrome its own responsible process** — `open -a`, a
 responsibility disclaim — to get around the notice. A self-responsible Chrome

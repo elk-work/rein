@@ -63,8 +63,8 @@ func TestResolvePrefersReinsCopyThenTheInstalledChrome(t *testing.T) {
 
 	system[installed] = true
 	c := resolve(home, "", "darwin", getenv, exists)
-	if c.OK() || !strings.Contains(c.Why, "modify apps") || !strings.Contains(c.Why, "rein browser install") {
-		t.Fatalf("macOS handed a run the installed Chrome, which asks for App Management: %+v", c)
+	if c.Source != SourceInstalled || c.Path != installed || !strings.Contains(c.Why, "rein browser install") {
+		t.Fatalf("installed Chrome only, on macOS: %+v", c)
 	}
 	linux := systemPaths("linux", getenv)[0]
 	system[linux] = true
@@ -140,6 +140,18 @@ func TestWrapperAddsTheSafetyFlagsAndAFreshProfileEveryLaunch(t *testing.T) {
 	}
 	if profiles[0] == profiles[1] {
 		t.Errorf("two launches shared a profile: %s", profiles[0])
+	}
+}
+
+func TestFlagsKeepTheInstalledChromesUpdaterAsleep(t *testing.T) {
+	// 2026-10-17: without these the installed Chrome asked macOS for App
+	// Management under Rein's name on one launch in three; with them, twenty
+	// launches under the LaunchAgent asked nothing. Dropping one brings the
+	// "rein was prevented from modifying apps" notice back.
+	for _, want := range []string{"--disable-updater-scheduler", "--disable-background-networking", "--disable-component-update"} {
+		if !contains(Flags, want) {
+			t.Errorf("Flags no longer carries %s", want)
+		}
 	}
 }
 
