@@ -14,6 +14,10 @@ ARG CLAUDE_CODE_VERSION=2.1.296
 ARG CODEX_VERSION=0.162.1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git gh \
+        fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 libcairo2 \
+        libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
+        libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+        libxfixes3 libxkbcommon0 libxrandr2 \
     && rm -rf /var/lib/apt/lists/* \
     && npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
     && npm cache clean --force \
@@ -24,6 +28,10 @@ RUN apt-get update \
 COPY --from=build /out/rein /usr/local/bin/rein
 ENV HOME=/home/rein REIN_HOME=/home/rein/.rein
 USER 10001:10001
+# The hosted image opts in to Rein's own Chrome for Testing (ark:rein#87):
+# installed at build time, so no run downloads it. The libraries above are
+# what Chrome for Testing needs on bookworm-slim.
+RUN rein browser install
 WORKDIR /home/rein/work
 # Mount a deployment-specific, credential-free config at this path.
 ENTRYPOINT ["rein", "--config", "/etc/rein/config.toml", "run", "--hosted", "--once"]

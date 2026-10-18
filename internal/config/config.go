@@ -129,6 +129,16 @@ type Config struct {
 	//	inherit_env = ["SENTRY_ORG"]
 	InheritEnv []string `toml:"inherit_env,omitempty"`
 
+	// Browser is which Chrome runs get (internal/browser, ark:rein#87):
+	//
+	//	browser = "rein"   # opt in: Rein installs its own Chrome for Testing at start-up
+	//	browser = "none"   # runs get no Chrome
+	//
+	// Unset uses Rein's copy if `rein browser install` put one on disk,
+	// otherwise the installed Chrome with a fresh profile and safety flags,
+	// and downloads nothing.
+	Browser string `toml:"browser,omitempty"`
+
 	// BaseRefs maps a repository name — the same keys as [Config.Repos] — to
 	// the ref a run should be cut from:
 	//
@@ -1004,6 +1014,12 @@ func (c Config) Validate() error {
 				}
 			}
 		}
+	}
+
+	switch c.Browser {
+	case "", "rein", "none":
+	default:
+		return fmt.Errorf("browser %q: must be \"rein\", \"none\" or unset", c.Browser)
 	}
 
 	if c.HostID != "" && !hostIDRE.MatchString(c.HostID) {

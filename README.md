@@ -622,6 +622,26 @@ today, and reading `exhausted_until` is the router's half (`ark:scout#2003`).
 A Codex window whose stated length is five hours or seven days is reported
 under those names, so Elk shows it without learning Codex's slot names.
 
+### Chrome for runs — `rein browser`
+
+Every run gets one Chrome, headless, with a fresh profile per launch: a
+`chrome` command on its PATH, and `REIN_CHROME`, `CHROME_PATH` and
+`PUPPETEER_EXECUTABLE_PATH` naming the binary for Puppeteer, Playwright and
+Lighthouse. Never the person's own profile, never a window.
+
+```sh
+rein browser            # which Chrome runs get, and why
+rein browser install    # opt in: download Rein's own Chrome for Testing (~190 MB)
+```
+
+or `browser = "rein"` in `config.toml` to install it at start-up. Rein downloads
+nothing until you ask. Without its own copy it uses the installed Chrome on
+Linux and Windows; **on macOS it gives runs none**, because the installed Chrome
+asks macOS to let Rein modify apps when it starts. App Management stays off
+whichever Chrome is used. The download comes from `storage.googleapis.com`.
+Details and the measurement: [`docs/service.md`](docs/service.md) → "The Chrome
+runs get".
+
 ### What `rein status` tells you
 
 Everything local, and nothing over the network unless you ask:
@@ -638,6 +658,7 @@ Everything local, and nothing over the network unless you ask:
 - the environment capability names this machine holds and how each was
   established — the half of a packet's `required_capabilities` that depends on
   what is installed and logged in rather than on the code;
+- which Chrome runs get, and why (`browser`, below);
 - each queue's subscription as the running service last knew it — `exhausted
   until …`, or the windows and how long ago they were read, or a dash when no
   run has reported one yet.
@@ -673,6 +694,7 @@ interval = "60s"            # machine looks like" above
 disabled = false
 
 inherit_env = ["SENTRY_ORG"]  # optional; daemon variables every run keeps
+# browser = "rein"           # optional; install Rein's own Chrome for runs at start-up ("none": no Chrome)
 
 [[queues]]
 name       = "mac-claude"   # at most 12 bytes; over the cap is a rejection

@@ -822,7 +822,9 @@ that launches an installed, self-updating app (Chrome from `/Applications`, to
 render a page) trips it, and macOS charges the write to Rein and tells the
 person *"rein was prevented from modifying apps"*. The denial is the wall
 working; `docs/service.md` has the notice, and the answer is to leave it off.
-The prompt sends page rendering to a headless browser the run fetched itself.
+Runs get a Chrome Rein manages, headless with a fresh profile per launch
+(`docs/service.md` → "The Chrome runs get"), and the prompt keeps page
+rendering on it.
 
 
 - A `rein` **launchd agent that has never been granted them** cannot capture

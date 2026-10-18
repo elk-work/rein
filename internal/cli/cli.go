@@ -98,6 +98,7 @@ Work records live in Ark, repository 01M17TTM53XJKBZW2M9E04HHYP.`,
 		newVersionCommand(version),
 		newServiceCommand(),
 		newConfigCommand(),
+		newBrowserCommand(),
 	)
 	return root
 }

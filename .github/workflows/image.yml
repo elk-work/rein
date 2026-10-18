@@ -48,3 +48,8 @@ jobs:
           docker run --rm --network none --entrypoint rein rein-hosted:ci version
           docker run --rm --network none --entrypoint claude rein-hosted:ci --version
           docker run --rm --network none --entrypoint codex rein-hosted:ci --version
+          # Rein's own Chrome for Testing is baked in, and it starts.
+          docker run --rm --network none --entrypoint sh rein-hosted:ci -ec '
+            rein browser | grep -q "Rein'"'"'s Chrome for Testing"
+            "$HOME"/.rein/browsers/*/chrome-linux64/chrome --version
+          '

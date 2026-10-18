@@ -160,9 +160,57 @@ to write into an app bundle. Granting it would let every agent Rein runs, under
 permission mode `full`, update or delete any application on the machine without
 asking — and a grant to an ad-hoc-signed binary is probably tied to that exact
 build, so it would likely lapse at the next upgrade and the notice would return
-anyway. The prompt now tells runs to render pages with a headless browser they
-fetched for themselves (`chrome-headless-shell`, or Playwright's Chromium) and
-never to launch an app from `/Applications`, which removes the trigger.
+anyway. Runs now get a Chrome Rein manages instead (below), which removes the
+trigger, and the prompt keeps them off every other installed application.
+
+#### The Chrome runs get
+
+**Every run gets one Chrome, with a fresh profile per launch and never a
+window** (`internal/browser`, ark:rein#87). Two rulings (2026-10-17) set it: a
+Chrome Rein manages, never the person's own signed-in profile; and Rein
+downloads its own copy only when the person opts in.
+
+| | |
+|---|---|
+| **Rein's copy** | Chrome for Testing — Google's build for automation, with no updater — pinned in the source (`browser.Version`) and moving with Rein releases. `rein browser install` downloads it into `~/.rein/browsers/<version>/` (about 190 MB from `storage.googleapis.com`; add that host to an egress allow-list), is idempotent, removes older versions and sets no quarantine attribute. `browser = "rein"` in `config.toml` asks for the same at start-up. |
+| **Otherwise** | Linux and Windows: the installed Chrome at the platform's standard path, launched the same way. **macOS: none** — see below. |
+| **Not wanted** | `browser = "none"` gives runs no Chrome. |
+
+`rein service install` downloads nothing; it prints one line saying which
+Chrome runs will get and how to opt in. `rein status` and `rein browser` say
+the same, and the machine declares the host capability `browser` to Elk only
+when runs get one, so Pace can route web-checking work to it.
+
+A run gets it as a **`chrome` command on its PATH**, which always adds
+`--headless=new` (the service lives in the person's GUI session, so a window
+would open on their screen), a new `--user-data-dir` under the run's own
+directory outside its worktree, `--use-mock-keychain` (a fresh profile can
+otherwise raise a Keychain dialog) and `--no-first-run
+--no-default-browser-check`. The directory and every profile in it are removed
+when the run ends. **`REIN_CHROME`**, `CHROME_PATH` and
+`PUPPETEER_EXECUTABLE_PATH` name the binary, so Puppeteer, Lighthouse and
+chrome-launcher find it without being told; those libraries pass their own
+profile and flags, and both Puppeteer (puppeteer-core 25.14) and Playwright
+(playwright-core 1.64) pass `--use-mock-keychain` in their default arguments.
+
+**On macOS the installed Chrome is not used, even with those flags.** Measured
+under the LaunchAgent on 2026-10-17, with throwaway pages: Chrome for Testing
+155.0.8059.84 rendered three times and made **no** TCC request at all; the
+installed Google Chrome 155, launched through the same wrapper with a fresh
+profile, made one `kTCCServiceSystemPolicyAppBundles ... preflight=no` request
+attributed to `rein` — the notice above — and started its notification helper.
+So on a Mac, runs get Rein's copy or nothing, and `rein service install` asks
+the person to opt in.
+
+**Never make Chrome its own responsible process** — `open -a`, a
+responsibility disclaim — to get around the notice. A self-responsible Chrome
+brings the person's own Chrome grants (camera, microphone, screen) into an
+agent run, which breaks the containment this section relies on.
+
+(`codesign --verify --deep` reports Chrome for Testing's macOS bundle as "code
+has no resources but signature indicates they must be present". That is
+Google's archive as shipped — `ditto` unpacks the same result — and it launches
+normally without a quarantine attribute.)
 
 ### PATH is captured at install time
 

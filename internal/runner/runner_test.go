@@ -743,21 +743,24 @@ func TestSystemPromptForbidsObservingTheMachine(t *testing.T) {
 
 func TestSystemPromptKeepsRunsOutOfInstalledApps(t *testing.T) {
 	// 2026-10-17: a run launched the installed Chrome from /Applications to
-	// render a deploy preview headless. Chrome's updater touched its own
-	// bundle, TCC charged the write to the rein LaunchAgent, and macOS asked
-	// the person to grant Rein App Management. The answer is never to grant
-	// it (docs/service.md), so the prompt must keep sending page rendering to
-	// a browser the run fetched for itself.
+	// render a deploy preview headless, with no profile directory of its own.
+	// Chrome's updater touched its own bundle, TCC charged the write to the
+	// rein LaunchAgent, and macOS asked the person to grant Rein App
+	// Management. The answer is never to grant it (docs/service.md). Runs now
+	// get a Chrome Rein manages, with a fresh profile per launch (ark:rein#87),
+	// and the prompt must keep page rendering on it and off everything else.
 	prompt := strings.ToLower(strings.Join(strings.Fields(runner.SystemPrompt), " "))
 	for _, want := range []string{
-		"never launch an application installed on the machine",
-		"nothing from `/applications`",
-		"use a headless browser the run fetched for itself",
-		"chrome-headless-shell",
-		"playwright's bundled chromium",
+		"to render, screenshot or test a web page, use `chrome` or `$rein_chrome`",
+		"headless with a fresh profile",
+		"never the person's own profile",
+		"never a visible window",
+		"never their running chrome",
+		"no other installed application",
+		"never `open -a`",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Errorf("the system prompt no longer keeps runs out of installed apps: missing %q", want)
+			t.Errorf("the system prompt no longer keeps runs on Rein's Chrome: missing %q", want)
 		}
 	}
 }

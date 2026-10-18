@@ -88,6 +88,7 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 
 	printAdapters(out)
 	printHostCapabilities(cmd, out, cfg)
+	fmt.Fprintf(out, "browser   %s\n", runner.ResolveChrome(cfg).Why)
 	printMachine(out, cfg)
 
 	if len(cfg.Queues) == 0 {

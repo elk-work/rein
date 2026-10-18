@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/elk-work/rein/internal/browser"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/control"
 	"github.com/elk-work/rein/internal/keyring"
@@ -161,6 +162,19 @@ func runRun(cmd *cobra.Command) error {
 			fmt.Fprintf(out, "attach ready on %s\n", control.Endpoint(dir))
 		}
 	}
+
+	// browser = "rein" is the person's opt-in to Rein's own Chrome for
+	// Testing (ark:rein#87): install it now when the pinned version is
+	// missing. A failed download is reported and the run loop carries on with
+	// whatever Chrome the machine already has.
+	if cfg.Browser == browser.ConfigRein && !dryRun {
+		if _, ok := browser.Installed(dir, browser.Version); !ok {
+			if _, err := browser.Install(cmdContext(cmd), dir, out); err != nil {
+				fmt.Fprintf(out, "browser: Rein's Chrome for Testing did not install: %v\n", err)
+			}
+		}
+	}
+	fmt.Fprintf(out, "browser: %s\n", runner.ResolveChrome(cfg).Why)
 
 	r, err := runner.New(runner.Options{
 		Config:          cfg,

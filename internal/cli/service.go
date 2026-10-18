@@ -13,6 +13,7 @@ import (
 
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/keyring"
+	"github.com/elk-work/rein/internal/runner"
 	"github.com/elk-work/rein/internal/service"
 	"github.com/spf13/cobra"
 )
@@ -212,6 +213,9 @@ func runServiceInstall(cmd *cobra.Command) error {
 	if warn := temporaryPathWarning(m.Executable()); warn != "" {
 		fmt.Fprintln(out, warn)
 	}
+	// One line, and no download: Rein fetches its own Chrome only when the
+	// person opts in (ark:rein#87).
+	fmt.Fprintf(out, "  browser: runs get %s\n", runner.ResolveChrome(cfg).Why)
 	fmt.Fprintf(out, "\nstart it with `rein service start`, then `rein service status`.\n")
 	return nil
 }
