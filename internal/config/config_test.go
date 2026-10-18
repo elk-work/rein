@@ -797,3 +797,12 @@ workspace = "Signal"
 		})
 	}
 }
+
+func TestBrowserTakesReinNoneOrNothing(t *testing.T) {
+	for v, ok := range map[string]bool{"": true, "rein": true, "none": true, "installed": false, "Rein": false} {
+		err := config.Config{Browser: v}.Validate()
+		if (err == nil) != ok {
+			t.Errorf("browser = %q: Validate() = %v", v, err)
+		}
+	}
+}

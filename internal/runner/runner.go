@@ -53,6 +53,7 @@ import (
 	_ "embed"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/browser"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/control"
 	"github.com/elk-work/rein/internal/elk"
@@ -290,6 +291,11 @@ type Options struct {
 	// happens to have `gh` installed is not part of the assertion.
 	HostCapabilities *HostCapabilities
 
+	// Chrome is the browser every run is given (chrome.go, ark:rein#87). Nil
+	// resolves it at startup when the machine holds the `browser` capability;
+	// tests that supply HostCapabilities get none unless they set this.
+	Chrome *browser.Chrome
+
 	// Rand seeds the poll jitter. Zero uses the process clock.
 	Rand *rand.Rand
 }
@@ -315,6 +321,7 @@ type Runner struct {
 	queues []config.Queue
 	gate   *slotGate
 	host   *HostCapabilities
+	chrome browser.Chrome
 	logMu  sync.Mutex
 	rnd    *rand.Rand
 	rndMu  sync.Mutex
@@ -433,6 +440,12 @@ func New(opts Options) (*Runner, error) {
 		host = DetectHostCapabilities(ctx, opts.Config)
 	}
 	r := &Runner{opts: opts, queues: queues, rnd: rnd, host: host, sessions: newSessionRegistry(), upgradeDone: make(chan struct{}), upgradeStarted: make(chan struct{})}
+	switch {
+	case opts.Chrome != nil:
+		r.chrome = *opts.Chrome
+	case host.Has("browser"):
+		r.chrome = ResolveChrome(opts.Config)
+	}
 	// The disk half of the measurement is about the filesystem worktrees land
 	// on, which is the work directory and not "/" — on a Mac with an external
 	// scratch disk those are different volumes with different answers.

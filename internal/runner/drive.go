@@ -201,6 +201,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		// the system variables, only what it names (env.go).
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
 	}
+	defer qr.giveChrome(&spec)()
 
 	var repo RepoResolution
 	var wt *worktree.Worktree

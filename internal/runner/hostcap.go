@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/browser"
 	"github.com/elk-work/rein/internal/config"
 )
 
@@ -262,7 +263,22 @@ func DetectHostCapabilities(ctx context.Context, cfg config.Config, extra ...str
 			h.add(p.name, strings.Join(p.verify, " "))
 		}
 	}
+	// `browser`: this machine gives its runs a Chrome (ark:rein#87), so Elk
+	// and Pace can route web-checking work here.
+	if c := ResolveChrome(cfg); c.OK() {
+		h.add("browser", c.Why)
+	}
 	return withConfig(h, cfg, extra)
+}
+
+// ResolveChrome is the Chrome this machine gives its runs, under cfg's
+// `browser` setting ([browser.Resolve]).
+func ResolveChrome(cfg config.Config) browser.Chrome {
+	home, err := config.Dir()
+	if err != nil {
+		return browser.Chrome{Why: "none: " + err.Error()}
+	}
+	return browser.Resolve(home, cfg.Browser)
 }
 
 func withConfig(h *HostCapabilities, cfg config.Config, extra []string) *HostCapabilities {
