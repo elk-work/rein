@@ -639,10 +639,9 @@ rein browser install    # opt in: download Rein's own Chrome for Testing (~190 M
 ```
 
 or `browser = "rein"` in `config.toml` to install it at start-up. Rein downloads
-nothing until you ask. Without its own copy it uses the installed Chrome on
-Linux and Windows; **on macOS it gives runs none**, because the installed Chrome
-asks macOS to let Rein modify apps when it starts. App Management stays off
-whichever Chrome is used. The download comes from `storage.googleapis.com`.
+nothing until you ask. Without its own copy it uses the installed Chrome, with
+its updater switched off: on macOS that updater is what asks macOS to let Rein
+modify apps. App Management stays off whichever Chrome is used. The download comes from `storage.googleapis.com`.
 Details and the measurement: [`docs/service.md`](docs/service.md) → "The Chrome
 runs get".
 

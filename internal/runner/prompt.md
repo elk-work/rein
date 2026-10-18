@@ -69,8 +69,10 @@ in, and whatever you believe you would find.
   fresh profile of its own. `$REIN_CHROME` (also `CHROME_PATH` and
   `PUPPETEER_EXECUTABLE_PATH`) is the binary itself, for Puppeteer, Playwright
   or Lighthouse, which pass their own profile and flags; launched by hand it
-  needs `--headless=new`, `--use-mock-keychain` and a fresh `--user-data-dir`,
-  which is what `chrome` adds for you. **Never the person's own profile, never
+  needs `--headless=new`, `--use-mock-keychain`, a fresh `--user-data-dir` and
+  the updater switched off (`--disable-updater-scheduler
+  --disable-background-networking --disable-component-update`), which is what
+  `chrome` adds for you. **Never the person's own profile, never
   a visible window, never their running Chrome, and no other installed
   application** — and never `open -a`, which hands Chrome the person's own
   permissions. Rendering a page this way writes to a file and never touches the

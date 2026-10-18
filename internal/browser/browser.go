@@ -15,10 +15,9 @@
 //     then it uses the Chrome already installed on the machine, launched with
 //     the safety flags in [Flags].
 //
-// On macOS the second half did not survive measurement: the installed Chrome,
-// with a fresh profile and every flag, still asked for App Management under
-// Rein's name (see [Resolve]). There, Rein's copy is the only Chrome a run
-// gets, and until the person opts in a run gets none.
+// "The safety flags" include switching the installed Chrome's updater off:
+// without that it asked macOS for App Management under Rein's name (see
+// [Flags]).
 //
 // [Resolve] picks one Chrome per machine; the run loop hands it to every run
 // as REIN_CHROME (plus CHROME_PATH and PUPPETEER_EXECUTABLE_PATH) and as a
@@ -75,9 +74,20 @@ const (
 //     dialog in the person's session on macOS. Harmless elsewhere.
 //   - --no-first-run, --no-default-browser-check: no first-run UI, and no
 //     attempt to become the person's default browser.
+//   - --disable-updater-scheduler, --disable-background-networking,
+//     --disable-component-update: the installed Chrome's updater stays
+//     asleep. Measured under the LaunchAgent on 2026-10-17, the installed
+//     Google Chrome 155 without them asked macOS to write into an app bundle
+//     under Rein's name (kTCCServiceSystemPolicyAppBundles, preflight=no —
+//     the "rein was prevented from modifying apps" notice) on one launch in
+//     three; with them, twenty launches asked nothing. Playwright passes the
+//     same three. Chrome for Testing has no updater, so they cost it nothing.
 //
 // The wrapper adds --user-data-dir itself, a new directory per launch.
-var Flags = []string{"--headless=new", "--use-mock-keychain", "--no-first-run", "--no-default-browser-check"}
+var Flags = []string{
+	"--headless=new", "--use-mock-keychain", "--no-first-run", "--no-default-browser-check",
+	"--disable-updater-scheduler", "--disable-background-networking", "--disable-component-update",
+}
 
 // Chrome is the browser this machine gives its runs.
 type Chrome struct {
@@ -234,8 +244,7 @@ func systemPaths(goos string, getenv func(string) string) []string {
 
 // Resolve picks the one Chrome this machine gives its runs: Rein's own copy if
 // one is installed (the pinned version, else the newest on disk), otherwise
-// the installed Chrome at the platform's standard path — on Linux and Windows
-// only — otherwise none.
+// the installed Chrome at the platform's standard path, otherwise none.
 // setting is config.toml's `browser`.
 func Resolve(reinHome, setting string) Chrome {
 	return resolve(reinHome, setting, runtime.GOOS, os.Getenv, isFile)
@@ -262,18 +271,6 @@ func resolve(reinHome, setting, goos string, getenv func(string) string, exists 
 	for _, p := range systemPaths(goos, getenv) {
 		if !exists(p) {
 			continue
-		}
-		if goos == "darwin" {
-			// Measured under the LaunchAgent on 2026-10-17: the installed
-			// Chrome, launched with a fresh profile and every flag in
-			// [Flags], still asked macOS to write into an app bundle
-			// (kTCCServiceSystemPolicyAppBundles, preflight=no) under Rein's
-			// name, and started its notification helper. That is the "rein
-			// was prevented from modifying apps" notice, so on macOS it is
-			// never handed to a run; Chrome for Testing asked nothing.
-			return Chrome{Why: "none: the installed Chrome (" + p + ") is not given to runs on macOS, " +
-				"because launching it asks macOS to let Rein modify apps; " +
-				"`rein browser install` gives runs Rein's own copy"}
 		}
 		return Chrome{Path: p, Source: SourceInstalled,
 			Why: "the installed Chrome, fresh profile and safety flags (" + p + "); " + optIn}
