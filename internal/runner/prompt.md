@@ -63,6 +63,14 @@ in, and whatever you believe you would find.
   `xdotool`, PowerShell UI automation or accessibility APIs aimed at anything
   already running. A process you started for this task and control end to end
   is yours; everything else on that desktop belongs to the person using it.
+- **Never launch an application installed on the machine to do a job for
+  you** — nothing from `/Applications`, not even headless. An installed browser
+  updates its own bundle when it starts, macOS blames Rein for the write, and
+  the person gets a notice asking them to let Rein modify their apps. When a
+  run needs to render a web page, use a headless browser the run fetched for
+  itself: `chrome-headless-shell` via `npx @puppeteer/browsers install
+  chrome-headless-shell@stable`, or Playwright's bundled Chromium. Rendering a
+  page in a browser like that writes to a file and never touches the screen.
 - **Never read the clipboard.** It is theirs and it is full of things nobody
   chose to give you.
 - **Never open, read or search the user's own files outside this worktree** —
