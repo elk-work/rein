@@ -500,3 +500,28 @@ func (s *plainSession) Send(context.Context, string) error                      
 func (s *plainSession) Respond(context.Context, adapter.PermissionResponse) error { return nil }
 func (s *plainSession) Interrupt(context.Context) error                           { return nil }
 func (s *plainSession) Wait() (adapter.Result, error)                             { return adapter.Result{}, nil }
+
+// An idle queue still names its model, so Elk's agent card can show it between
+// runs: the configured one, else the last a live session reported.
+func TestSessionReadingNamesTheModelBetweenRuns(t *testing.T) {
+	qr := testQueueRunner(testRunner(fullMachine()))
+	if got := qr.sessionReading().Model; got != "" {
+		t.Errorf("model = %q before Rein knew one, want none", got)
+	}
+
+	qr.telMu.Lock()
+	qr.tel.model = "claude-opus-5"
+	qr.telMu.Unlock()
+	if got := qr.sessionReading().Model; got != "claude-opus-5" {
+		t.Errorf("idle model = %q, want the last session's", got)
+	}
+	qr.startRun("arun-9")
+	if got := qr.sessionReading().Model; got != "claude-opus-5" {
+		t.Errorf("model with no live session = %q, want the last session's", got)
+	}
+
+	qr.q.Model = "claude-opus-5-5"
+	if got := qr.sessionReading().Model; got != "claude-opus-5-5" {
+		t.Errorf("model = %q, want the configured one", got)
+	}
+}
