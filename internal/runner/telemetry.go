@@ -237,6 +237,11 @@ type queueTelemetry struct {
 	// waiting for a slot.
 	waitingOn    string
 	waitingSince time.Time
+
+	// model is the last model a live session on this queue reported. It is
+	// what an idle queue says it runs on when its config names none (the
+	// CLI's default), so Elk's agent card can name a model between runs.
+	model string
 }
 
 // tokens is a cumulative spend. Four plain counters: this is a running total
@@ -364,6 +369,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		// No session, but the subscription is still there: the last reading,
 		// carried forward, and whether the queue is holding (ark:rein#40).
 		qr.fillHeadroom(s, nil)
+		qr.putModel(s, tel)
 		return s
 	}
 
@@ -393,6 +399,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	live := qr.r.sessions.byQueue(qr.r.opts.Config.QueueLabel(qr.q))
 	if live == nil {
 		qr.fillHeadroom(s, nil)
+		qr.putModel(s, tel)
 		return s
 	}
 	if state, ok := live.state(); ok {
@@ -400,7 +407,27 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	}
 	fillSessionTelemetry(s, live.sess)
 	qr.fillHeadroom(s, live.sess)
+	if s.Model != "" {
+		qr.telMu.Lock()
+		qr.tel.model = s.Model
+		qr.telMu.Unlock()
+	}
+	qr.putModel(s, tel)
 	return s
+}
+
+// putModel names the model when no live session did: the queue's configured
+// one, else the last a session reported. Left out only when Rein has never
+// known it (a CLI default, before the first run).
+func (qr *queueRunner) putModel(s *elk.SessionReading, tel queueTelemetry) {
+	if s.Model != "" {
+		return
+	}
+	if qr.q.Model != "" {
+		s.Model = qr.q.Model
+		return
+	}
+	s.Model = tel.model
 }
 
 // putWaiting adds why the queue's work is held up, when something is.
