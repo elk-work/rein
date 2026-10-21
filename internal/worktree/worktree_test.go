@@ -438,3 +438,24 @@ func TestReapLeavesAWorktreeInUse(t *testing.T) {
 		t.Errorf("the worktree survived the second reap: %v", err)
 	}
 }
+
+func TestCreateReadsTheInitStopMarkerPastTheTrim(t *testing.T) {
+	repo := newRepo(t)
+	write(t, filepath.Join(repo, "scripts", "worktree-init.sh"), "#!/usr/bin/env bash\n"+
+		"printf 'x%.0s' $(seq 1 3000); echo\n"+
+		"echo \"elk-init-stop: repo_access GitHub can't be reached for scout\"\nexit 1\n")
+	if err := os.Chmod(filepath.Join(repo, "scripts", "worktree-init.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, repo, "add a worktree-init.sh that stops with a marker")
+
+	m := &worktree.Manager{Root: t.TempDir(), Ark: "definitely-not-installed"}
+	_, err := m.Create(context.Background(), worktree.Request{Repo: repo, RunID: "run-stop"})
+	var stop worktree.InitStop
+	if !errors.As(err, &stop) {
+		t.Fatalf("err = %v, want an InitStop", err)
+	}
+	if stop.Code != "repo_access" || stop.Line != "GitHub can't be reached for scout" {
+		t.Errorf("stop = %+v", stop)
+	}
+}
