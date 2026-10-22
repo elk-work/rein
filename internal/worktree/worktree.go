@@ -400,10 +400,24 @@ func (m *Manager) runInitScript(ctx context.Context, dir string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "bash", filepath.FromSlash(InitScript))
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
+		// The marker is the script's LAST line, and trimOutput keeps the first
+		// 2000 chars, so it is read from the full output.
+		if m := initStopRE.FindAllStringSubmatch(string(out), -1); m != nil {
+			last := m[len(m)-1]
+			err = fmt.Errorf("%w (%w)", InitStop{Code: last[1], Line: strings.TrimSpace(last[2])}, err)
+		}
 		return false, fmt.Errorf("worktree: %s failed in %s: %w\n%s", InitScript, dir, err, trimOutput(out))
 	}
 	return true, nil
 }
+
+// InitStop is the cause the bootstrap named on its way out: its last line
+// `elk-init-stop: <code> <one line>` before a non-zero exit.
+type InitStop struct{ Code, Line string }
+
+func (s InitStop) Error() string { return "elk-init-stop: " + s.Code + " " + s.Line }
+
+var initStopRE = regexp.MustCompile(`(?m)^elk-init-stop: (\S+) ?(.*)$`)
 
 // Reap removes a worktree.
 //

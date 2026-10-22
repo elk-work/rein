@@ -730,6 +730,9 @@ type Submission struct {
 	CompletedActions []string
 	Links            []Link
 	Usage            *Usage
+	// StopCode names why a stuck run stopped, so Elk can group runs stopped
+	// for one reason: repo_access, agent_login, worktree_init or other.
+	StopCode string
 }
 
 // SubmitResult is what Elk recorded.
@@ -778,6 +781,7 @@ func (c *Client) SubmitDeliverable(ctx context.Context, s Submission) (*SubmitRe
 	}
 	putIf(args, "title", s.Title)
 	putIf(args, "summary", s.Summary)
+	putIf(args, "stop_code", s.StopCode)
 	if len(s.CompletedActions) > 0 {
 		args["completed_actions"] = s.CompletedActions
 	}

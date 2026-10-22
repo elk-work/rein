@@ -167,9 +167,13 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		if errors.Is(err, adapter.ErrNotAPIAuth) {
 			title = notAPITitle
 		}
-		return qr.stuck(ctx, wo, title, err.Error()+
+		code, _ := stopCode(err)
+		if code == "" {
+			code = "other"
+		}
+		return qr.stuckCode(ctx, wo, title, err.Error()+
 			"\n\nThis is a local problem on the machine serving queue "+qr.q.Name+
-			" — a missing binary or an expired vendor login. Nothing was started.")
+			" — a missing binary or an expired vendor login. Nothing was started.", code)
 	}
 
 	qr.setPreflightState("ready")
@@ -242,9 +246,14 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	}
 
 	if err != nil {
-		qr.setPreflightState("Could not create a worktree")
-		return qr.stuck(ctx, wo, "Could not create a worktree", err.Error()+
-			"\n\nRepository: "+repo.String())
+		title := "Could not create a worktree"
+		code, line := stopCode(err)
+		if line != "" {
+			title = truncate(line, 200)
+		}
+		qr.setPreflightState(title)
+		return qr.stuckCode(ctx, wo, title, err.Error()+
+			"\n\nRepository: "+repo.String(), code)
 	}
 	defer qr.reap(wt)
 	spec.WorktreeDir = wt.Dir
@@ -1372,8 +1381,13 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 // every pre-flight refusal takes it and they all owe the same shape: what
 // stopped it, and what to do about it.
 func (qr *queueRunner) stuck(ctx context.Context, wo *elk.WorkOrder, title, why string) error {
+	return qr.stuckCode(ctx, wo, title, why, "")
+}
+
+// stuckCode is stuck with a stop code naming the cause (stopcode.go).
+func (qr *queueRunner) stuckCode(ctx context.Context, wo *elk.WorkOrder, title, why, code string) error {
 	var pending elk.Usage
-	err := qr.submitStuck(ctx, wo, title, why, &pending)
+	err := qr.submitStuckCode(ctx, wo, title, why, code, &pending)
 	if qr.r.opts.Hosted && err == nil {
 		return errors.New(qr.redactString("hosted refusal: " + title))
 	}
@@ -1381,12 +1395,17 @@ func (qr *queueRunner) stuck(ctx context.Context, wo *elk.WorkOrder, title, why 
 }
 
 func (qr *queueRunner) submitStuck(ctx context.Context, wo *elk.WorkOrder, title, why string, pending *elk.Usage) error {
+	return qr.submitStuckCode(ctx, wo, title, why, "", pending)
+}
+
+func (qr *queueRunner) submitStuckCode(ctx context.Context, wo *elk.WorkOrder, title, why, code string, pending *elk.Usage) error {
 	qr.logf("run %s: stuck — %s", wo.RunID, title)
 	_, err := qr.submit(ctx, wo, elk.Submission{
 		RunID:       wo.RunID,
 		Deliverable: "## " + title + "\n\n" + why,
 		Status:      elk.StatusStuck,
 		Title:       truncate(title, 200),
+		StopCode:    code,
 	}, pending)
 	return err
 }

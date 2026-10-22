@@ -512,3 +512,23 @@ func TestHeartbeatAgentStatusContract(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmitDeliverableSendsStopCode(t *testing.T) {
+	for _, code := range []string{"repo_access", ""} {
+		s := elktest.New(t, testToken)
+		s.Text("submit_deliverable", "Deliverable saved: run `run-77` is `stuck`.")
+		c := newClient(t, s)
+		if _, err := c.SubmitDeliverable(context.Background(), elk.Submission{
+			RunID: "run-77", Deliverable: "## Stuck", Status: elk.StatusStuck, StopCode: code,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got, sent := s.CallsTo("submit_deliverable")[0].Args["stop_code"]
+		if code == "" && sent {
+			t.Errorf("empty stop code sent as %v", got)
+		}
+		if code != "" && got != code {
+			t.Errorf("stop_code = %v, want %q", got, code)
+		}
+	}
+}
