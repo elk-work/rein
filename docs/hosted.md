@@ -156,6 +156,14 @@ pass credentials as build arguments, or record them in deliverables.
      compute charge next to the provider's token usage and charge for this run.
      If billing is delayed or cannot be attributed to the run, mark cost evidence
      pending. Do not substitute an estimate for the actual charge.
+   - Expect the execution to end at the submit. A hosted run does not wait in
+     its billed container while Elk reviews the deliverable (ark:rein#78): it
+     exits right after `submit_deliverable`, and if the review asks for
+     revisions the run reopens and a fresh execution takes them, starting from
+     the work order and the verdict. Elk does not start that execution yet
+     (the hosted queue design's attempt rules), so in this phase a revision
+     waits for a person. The first proof spent about 20 of its 22 minutes
+     waiting for a review Elk had already passed.
    - Revoke the proof GitHub token and remove obsolete secret versions using the
      organization's approved retention process. Record only public PR links,
      execution status, audit pass/fail and costs in the proof deliverable.

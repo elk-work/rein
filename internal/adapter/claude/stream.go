@@ -361,6 +361,12 @@ type decoder struct {
 	// task_started and task_notification keep the set current between those.
 	background map[string]string
 
+	// usageSeen is the usage already recorded for each assistant message, by
+	// message id, so that a message split over several lines is counted once
+	// ([decoder.usageIncrement], ark:rein#62). Only the stream goroutine
+	// touches it.
+	usageSeen map[string]tokenUsage
+
 	// emptyTurn reports whether the last result line was a turn with no work
 	// in it: success, num_turns 0, no text, no tokens. Claude Code writes one
 	// on --resume when the session it resumes left background work behind —
@@ -569,15 +575,68 @@ func (d *decoder) decodeAssistant(sl streamLine, raw json.RawMessage) []adapter.
 	}
 
 	if msg.Usage != nil {
-		u := msg.Usage.toAdapter(d.model)
-		evs = append(evs, adapter.Event{
-			Kind:  adapter.EventUsage,
-			Usage: &u,
-			Raw:   raw,
-		})
+		if inc, ok := d.usageIncrement(msg.ID, *msg.Usage); ok {
+			u := inc.toAdapter(d.model)
+			evs = append(evs, adapter.Event{
+				Kind:  adapter.EventUsage,
+				Usage: &u,
+				Raw:   raw,
+			})
+		}
 		d.contextUsed, d.contextKnown = msg.Usage.contextTokens(), true
 	}
 	return evs
+}
+
+// usageIncrement is the part of one assistant line's usage that no earlier
+// line of the same message has already recorded (ark:rein#62).
+//
+// Claude Code writes one assistant line per content block, and every line of a
+// message carries that whole message's usage — a reply with text and a tool
+// call is two lines with the same message id and the same counts (see
+// testdata/tools.jsonl). Recording each line's usage as it came counted every
+// such message once per block: a Mac's cache reads came to 99.5M recorded
+// against 48.3M actual. So usage is recorded per message, not per line: the
+// first line of a message records what it carries, and a later line records
+// only what it adds, if a count has grown since. Identical repeats record
+// nothing, and ok is false.
+//
+// A line with no message id is recorded as it stands, as before: there is
+// nothing to tell it apart from the next one by.
+func (d *decoder) usageIncrement(id string, u tokenUsage) (tokenUsage, bool) {
+	if id == "" {
+		return u, true
+	}
+	if d.usageSeen == nil {
+		d.usageSeen = map[string]tokenUsage{}
+	}
+	prev, seen := d.usageSeen[id]
+	if !seen {
+		d.usageSeen[id] = u
+		return u, true
+	}
+	grown := func(now, before int64) int64 {
+		if now > before {
+			return now - before
+		}
+		return 0
+	}
+	inc := tokenUsage{
+		InputTokens:              grown(u.InputTokens, prev.InputTokens),
+		OutputTokens:             grown(u.OutputTokens, prev.OutputTokens),
+		CacheCreationInputTokens: grown(u.CacheCreationInputTokens, prev.CacheCreationInputTokens),
+		CacheReadInputTokens:     grown(u.CacheReadInputTokens, prev.CacheReadInputTokens),
+	}
+	if inc == (tokenUsage{}) {
+		return inc, false
+	}
+	d.usageSeen[id] = tokenUsage{
+		InputTokens:              max(u.InputTokens, prev.InputTokens),
+		OutputTokens:             max(u.OutputTokens, prev.OutputTokens),
+		CacheCreationInputTokens: max(u.CacheCreationInputTokens, prev.CacheCreationInputTokens),
+		CacheReadInputTokens:     max(u.CacheReadInputTokens, prev.CacheReadInputTokens),
+	}
+	return inc, true
 }
 
 func (d *decoder) decodeUser(sl streamLine, raw json.RawMessage) []adapter.Event {

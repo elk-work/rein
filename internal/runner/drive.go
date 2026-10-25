@@ -312,9 +312,11 @@ type reviewOutcome int
 
 const (
 	// reviewSettled — nothing more to do: the review approved it, somebody
-	// settled the run, or the wait timed out. Approval and "the pass has not
-	// run yet" are indistinguishable through the poll, which is why a timeout
-	// is a settlement rather than a failure.
+	// settled the run, or the wait timed out. An Elk that says "it is with the
+	// person for review now" is heard as an approval at once
+	// ([elk.NotRunningError.ReviewPassed]); without that sentence approval and
+	// "the pass has not run yet" are indistinguishable through the poll, which
+	// is why a timeout is still a settlement rather than a failure.
 	reviewSettled reviewOutcome = iota
 	// reviewRevisions — Elk wants changes and has reopened the run.
 	reviewRevisions
@@ -333,6 +335,10 @@ const (
 // still be there, so a runner that exits strands the run with nobody driving
 // it. `review_run` then refuses it, because there is no ready, unresolved run
 // to review.
+//
+// Hosted mode is the exception, and leaves at the submit on purpose
+// (ark:rein#78): a billed container is the wrong place to wait, and a revision
+// there is taken by a fresh attempt rather than this process.
 func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, spec adapter.RunSpec,
 	wo *elk.WorkOrder, wt *worktree.Worktree, repo RepoResolution) error {
 
@@ -377,6 +383,21 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 			return err
 		}
 		sentBack = agentAccount(res.out)
+
+		if qr.r.opts.Hosted {
+			// A hosted run does not wait for the review (ark:rein#78). Its
+			// container is billed by the minute and nobody is working while
+			// Elk reviews: on the hosted proof the wait was over 90% of the
+			// run's compute. So it exits here. If the review asks for
+			// revisions the run reopens, and taking them is a fresh attempt
+			// in a fresh container — the session file died with this one, so
+			// that attempt starts from the work order and the verdict, not a
+			// resume (hosted-rein-queue design, "Idle").
+			qr.logf("run %s: submitted; Elk is reviewing it. Hosted, so Rein exits now rather than wait in a "+
+				"billed container; a revision is taken by a fresh run", wo.RunID)
+			qr.log.Runner(runlog.KindReview, "submitted; hosted, so not waiting for Elk's review — a revision is taken by a fresh run")
+			return nil
+		}
 
 		qr.logf("run %s: submitted; Elk is reviewing it. Waiting up to %s (round %d), with the slot given back",
 			wo.RunID, qr.reviewTimeout(), round)
@@ -527,6 +548,11 @@ func (qr *queueRunner) awaitReview(ctx context.Context, wo *elk.WorkOrder) (stri
 				qr.logf("run %s: polling Elk's review: %v", wo.RunID, err)
 			case nr.Cancelled:
 				return "", reviewCancelled
+			case nr.ReviewPassed():
+				// `ready`, and Elk says the pass is done and the run is with
+				// the person: an approval, heard on the next poll instead of
+				// at the timeout (ark:rein#78).
+				return "", reviewSettled
 			case nr.AwaitingReview():
 				// `ready`: the pass has not reported yet. The one "not
 				// running" that does not mean stop.
