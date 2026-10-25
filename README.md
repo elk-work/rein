@@ -59,6 +59,7 @@ reserved for a command that lands ahead of its implementation.
 ```
 rein enrol --workspace "Elk Scout" --agent-kind claude --claim-code <code>
 rein enrol --workspace "Elk Scout" --agent-kind claude --token <connector-token> [--shared]
+rein enrol --workspace "Elk Scout" --agent-kind runner --token <connector-token> --queue lab-checks
 rein enrol --revoke --queue mac-claude
 rein run   [--queue mac-claude] [--once] [--dry-run] [--keep-worktrees]
            [--review-timeout 20m] [--max-review-rounds 3]
@@ -865,6 +866,26 @@ worktree exists — is [`docs/adapters.md`](docs/adapters.md).
 
 `internal/adapter/fake` is a scriptable test double that enforces the same
 rules, for the run loop and for anyone testing a caller.
+
+`internal/adapter/check` is the one adapter that drives no agent: agent kind
+`runner`, which runs a CI check. A check packet names a repository, a
+commit, a workflow file and a job; Rein cuts the worktree detached at that
+commit, runs the job with [act](https://nektosact.com) — in a container on
+the machine's Docker daemon, or on the host itself for a Mac or Windows job —
+and submits a suite record (pulse `suite-record`, schema_version 1). Enrol one
+with `--agent-kind runner`; it needs `act` on PATH, and Docker for container
+checks. [`docs/adapter-check.md`](docs/adapter-check.md) has the packet, the
+executors, the `[queues.settings]` table and the record.
+
+```toml
+[[queues]]
+name = "lab-checks"
+agent_kind = "runner"
+
+[queues.settings]
+executor = "host"     # container | host | auto (by the job's runs-on)
+timeout = "30m"
+```
 
 ## Building
 

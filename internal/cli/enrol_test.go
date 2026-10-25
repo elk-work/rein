@@ -252,7 +252,7 @@ func TestEnrolRejectsAnUnknownAgentKind(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(errb, "claude, codex, grok, other") {
+	if !strings.Contains(errb, "claude, codex, grok, runner, other") {
 		t.Errorf("error does not name the kinds Elk accepts: %q", errb)
 	}
 }

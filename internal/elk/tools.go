@@ -35,7 +35,11 @@ const QueueNameMaxRunes = 12
 // AgentKinds is Elk's closed `agent_kind` enum. A value outside it is refused
 // at `connect_executor`, and refusing locally first means a mistyped kind
 // costs a sentence rather than a spent claim code.
-var AgentKinds = []string{"claude", "codex", "grok", "other"}
+//
+// `runner` is a queue that runs CI checks rather than a coding agent
+// (internal/adapter/check; Elk Scout #1163, a): its runs carry a check packet
+// naming a commit, a workflow file and a job.
+var AgentKinds = []string{"claude", "codex", "grok", "runner", "other"}
 
 // KnownAgentKind reports whether kind is one Elk will accept.
 func KnownAgentKind(kind string) bool {

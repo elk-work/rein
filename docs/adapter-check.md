@@ -1,0 +1,221 @@
+# The check adapter
+
+**`ark:rein#89 (01M5RKG2AHBGKHC1WCVTXHJ69X)`. Package `internal/adapter/check`. Agent kind `runner`.**
+
+A check is a CI job that Rein runs as an ordinary run. It is one job of one
+workflow file, run at one exact commit with [nektos/act](https://nektosact.com),
+outside GitHub. Read [`docs/adapters.md`](./adapters.md) first: this file
+records only what is true of checks.
+
+The ruling is Elk Scout #1163 (a), 2026-10-18: Rein takes the check run kind,
+and there is no separate runner binary. The plan is elk
+`docs/milestones/elk-ci.md` §5.2, Phase B. A check is one more adapter behind
+the contract, so claim, capability checks, preflight, worktree, progress,
+submit and reap all run unchanged.
+
+## Enrolling a runner
+
+```
+rein enrol --workspace "Elk Scout" --agent-kind runner --token <connector-token> --queue lab-checks
+```
+
+`runner` is an `agent_kind` like `claude`. Elk must accept it, which is
+ark:scout#4033's half. The queue declares:
+
+- `agent:runner`, from the kind;
+- `tool:act` when `act` is on PATH;
+- `tool:docker` when `docker info` answers;
+- `os:<this OS>`, and the runtime capabilities in the manifest below.
+
+## What a check packet looks like
+
+`claim_run` hands Rein markdown, so Elk renders the packet into the claim
+text. Rein reads a fenced JSON block under a `### Check` heading:
+
+````
+### Work order
+repo: elk-work/scout
+kind: check
+
+### Check
+
+```json
+{"repo":"elk-work/scout","sha":"<40 hex>","ref":"refs/heads/main","suite":"migration-numbers",
+ "workflow":".github/workflows/quick-checks.yml","job":"checks","runs_on":["ubuntu-latest"],
+ "provider":"linux-lab","changed_paths":["supabase/migrations/0550_x.sql"]}
+```
+````
+
+The block may also hold `{"check": {…}}` or the whole packet
+(`{"kind":"check","check":{…}}`). Rein also accepts:
+
+- a single `check: {…}` line;
+- `check.sha: …` lines;
+- `sha: …` lines under `### Check`.
+
+The first shape found wins. Unknown fields are ignored. The packet's
+top-level `repo` must be `check.repo`, so the existing `repo:` line picks the
+checkout. Rein refuses a check whose `check.repo` differs from that
+checkout's GitHub origin.
+
+Every value is validated before it reaches git or act:
+
+| Field | Rule |
+|---|---|
+| `sha` | a full 40- or 64-hex commit |
+| `workflow` | a file directly under `.github/workflows/` |
+| `job` | an id or a name, never a flag |
+| `runs_on` | runner labels, at most 16 |
+| `event` | optional; one of `workflow_dispatch`, `push`, `pull_request`, `schedule` |
+
+A run that reaches a runner queue without a packet goes stuck: "The work
+order cannot be run as written". A runner runs checks, not tasks.
+
+The job is found by id, then by id ignoring case, then by name. A workflow
+with exactly one job runs that job, and the deliverable says so. Scout's
+`quick-checks.yml` names its one job `checks` (named "Quick checks"), so a
+packet saying `quick-checks` still runs it.
+
+### What runs-on requires
+
+The rule is elk-ci.md §5.2. `RequiredCapabilities` implements it, and Elk's
+packet writer applies the same rule:
+
+| runs-on | requires |
+|---|---|
+| `ubuntu-*`, `linux`, `linux-lab` | `agent:runner os:linux tool:docker` |
+| `macos-*`, `mac-01`, `mac-lab` | `agent:runner os:macos tool:xcode` |
+| `windows-*`, `win-*`, `win11` | `agent:runner os:windows desktop` |
+
+## The commit
+
+`Adapter.Prepare` runs where `Preflight` runs, before anything exists on
+disk. It reads the packet and hands the commit to the run loop. The worktree
+manager checks that the repository holds the commit, and fetches it from
+origin by name (`git fetch --no-tags origin <sha>`) if not. It then cuts the
+worktree detached at exactly that commit: no branch, no Ark link, no
+bootstrap script.
+
+A commit that cannot be fetched goes stuck with `stop_code: repo_access` and
+the title "Commit `<sha>` could not be fetched from origin". No directory is
+created.
+
+## The two executors
+
+```
+act <event> -W <workflow> -j <job> --json -P <label>=<image>        # container
+act <event> -W <workflow> -j <job> --json -P <label>=-self-hosted   # host
+```
+
+| | container | host |
+|---|---|---|
+| Runs the steps | in a container on the Docker daemon the environment names (`DOCKER_HOST`, `DOCKER_CONTEXT`, … from the daemon, or from the queue's secrets) | on this machine itself: what `mac-01` and the Windows boxes need |
+| Chosen by default for | `ubuntu-*` and `linux-lab` jobs | `macos-*`, `mac-01` and Windows jobs |
+| Image | `catthehacker/ubuntu:act-latest`, or `settings.image` | — |
+| Pulls | `--pull=false` when the daemon already has the image | — |
+| Git | the source repository's git directory is mounted read-only at its own path, because a worktree's `.git` is a file pointing there | works as is |
+| Preflight | `docker info` must answer, or the run goes stuck before the worktree | git and act on PATH |
+
+A workflow's `runs-on` is often an expression. Scout's resolves
+`vars.LINUX_RUNNER` to `ubuntu-slim` outside GitHub. So Rein maps every label
+the job could resolve to, not only the packet's:
+
+1. the packet's labels;
+2. the queue's `settings.labels`;
+3. a default set (`ubuntu-latest`, `ubuntu-slim`, `ubuntu-24.04`,
+   `self-hosted`, `macos-*` and so on).
+
+An unmapped label sends act to its own default Docker image. That fails
+"Set up job", which Rein records as an error, not a failure.
+
+`GITHUB_TOKEN` reaches the job only when the queue's secrets map holds one.
+It is passed as `-s GITHUB_TOKEN`, by name, and act reads the value from its
+environment, so it is never on a command line.
+
+## Queue settings
+
+```toml
+[[queues]]
+name = "lab-checks"
+agent_kind = "runner"
+repos = ["elk-work/scout"]
+
+[queues.settings]
+executor = "container"                   # container | host | auto (default: by the job's labels)
+image = "catthehacker/ubuntu:act-latest" # the container image for every mapped label
+labels = "ubuntu-slim, linux-lab"        # extra runs-on labels to map
+timeout = "30m"                          # default 1h; the run's own cap wins when it is shorter
+event = "workflow_dispatch"              # what every check on the queue runs as
+```
+
+Rein refuses an unknown key or value rather than guessing: a typo in
+`executor` that quietly became the default would run a desktop job in a
+container.
+
+## Progress, results and the record
+
+Rein renders every line of act's `--json` log, with terminal colour
+stripped, and sends each one as a progress event. The run loop throttles
+these as it throttles an agent's. If act prints nothing for a minute, the
+session says it is still running, so a silent compile is not mistaken for a
+stall. The total is bounded by the timeout.
+
+| act said | record `result` | session | Elk run |
+|---|---|---|---|
+| 🏁 Job succeeded | `pass` | succeeded | `ready`, deliverable says pass |
+| a workflow step failed, 🏁 Job failed | `fail` | **succeeded** | `ready`, deliverable says fail |
+| "Set up job" failed, no 🏁 line, or act exited early | `error` | failed | `stuck`, "Did not finish" |
+| past the timeout | `error` | timed out | `stuck` |
+| interrupted (Elk cancelled the run) | `cancelled` (written, never sent) | interrupted | discarded |
+
+A failed job is a finished check: it found out. Only a harness fault fails
+the session.
+
+The suite record follows [pulse/docs/suite-records.md] schema_version 1. It
+is written to `<Rein home>/checks/<run id>/suite-record.json`, outside the
+worktree, beside the full log (`act.log`):
+
+| Field | Value |
+|---|---|
+| `pr` | 0 |
+| `runner` | the queue name |
+| `provider` | the packet's, default `rein` |
+| `branch` | only when `git ls-remote origin refs/heads/<ref's branch>` is exactly the commit tested |
+| `counts` | step counts from act's log (`steps`, `steps_passed`, `steps_failed`, `steps_skipped`), named for steps because a step is not a test; `{}` when no step ran |
+| `failing_test_ids` | `[]` |
+| `retention_class` | `ci-history` |
+
+When `pulse` is on PATH and the queue's environment holds
+`STRIDE_INGEST_URL` and `STRIDE_TOKEN`, Rein runs `pulse suite-record --file
+<record>`. That is the scoped secrets map, or `inherit_env` for an unscoped
+queue. Otherwise the record stays on the machine, and the deliverable says
+why and carries the record's JSON. A failed send is reported in the
+deliverable, never a stuck run.
+
+The deliverable leads with one plain sentence: the suite passed, failed, or
+could not be run. It then gives the check (commit, job, executor), the
+record's path and JSON, and the last 40 lines of the log.
+
+## Manifest
+
+| Capability | Declared | Why |
+|---|---|---|
+| `git`, `worktree`, `shell` | yes | the job reads its worktree and runs shell steps in it |
+| `structured_events` | yes | act's `--json` log, read line by line |
+| `file_edit`, `mcp`, `resume`, `approvals`, `steer` | no | a check edits nothing, takes no MCP servers, cannot be resumed, asks nobody and takes no input |
+
+## What was measured, and when
+
+Measured on 2026-10-24 against act 0.2.89 on darwin/arm64:
+
+- The recorded logs in `testdata/` come from act's host executor on a
+  three-step workflow: pass, a failing step, and an unmapped label.
+- `REIN_REAL_ACT=1 go test ./internal/adapter/check -run RealAct -v` runs the
+  real act. `REIN_REAL_ACT_REPO` pointed at a checkout of elk-work/scout also
+  runs its quick-checks job through the adapter.
+- The container executor has not been run against a real Docker daemon. Its
+  arguments are covered by the stub tests only.
+- The act spike that measured which workflow keywords act ignores is on
+  ark:pulse#78 (01M56D1BR2B7ZGBPR8JNEJYVQG).
+
+[pulse/docs/suite-records.md]: https://github.com/elk-work/pulse/blob/main/docs/suite-records.md

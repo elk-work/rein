@@ -210,6 +210,38 @@ type RunSpec struct {
 
 	// Timeouts bound the session. Zero values mean the adapter's default.
 	Timeouts Timeouts
+
+	// Queue is the name of the queue the run was claimed on. An adapter that
+	// records the run somewhere of its own names it by this — the check
+	// adapter's suite record carries it as `runner`.
+	Queue string
+
+	// Settings is the queue's `[queues.settings]` table from config.toml,
+	// passed verbatim. An adapter reads the keys its own doc names and must
+	// refuse a value it does not understand rather than guess; every other
+	// adapter ignores the table. The run loop fills it and never reads it.
+	Settings map[string]string
+}
+
+// RunPreparer is implemented by an adapter whose work order names something
+// the run loop must honour before anything exists on disk — today the check
+// adapter, whose packet names the exact commit a workflow job runs at.
+//
+// The run loop calls Prepare INSTEAD of [Adapter.Preflight], at the same
+// point: after the capability checks, before the worktree. spec carries the
+// work order, the queue and its settings, but not yet a worktree or the
+// queue's secrets. An error is reported exactly as a preflight error is —
+// wrap [ErrPreflight] for a machine that is not ready — and nothing is
+// created.
+type RunPreparer interface {
+	Prepare(ctx context.Context, spec RunSpec) (Prepared, error)
+}
+
+// Prepared is what [RunPreparer.Prepare] tells the run loop about the run.
+type Prepared struct {
+	// Commit, when set, is the full commit id the worktree is cut at,
+	// detached, in place of a branch from the queue's base ref.
+	Commit string
 }
 
 // InheritedEnv is the base environment for the child process, before Env and
@@ -450,6 +482,11 @@ var (
 	// ErrSessionClosed — an operation was attempted on a session that has
 	// already ended.
 	ErrSessionClosed = errors.New("adapter: session closed")
+
+	// ErrWorkOrder — the work order itself cannot be served as written: a
+	// check packet that is missing or malformed. Not the machine's fault, so
+	// the run loop says so instead of blaming a binary or a login.
+	ErrWorkOrder = errors.New("adapter: the work order cannot be run as written")
 )
 
 // APIAuthError is a refusal of hosted API-key billing.

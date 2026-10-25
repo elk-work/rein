@@ -1,0 +1,10 @@
+{"level":"warning","msg":"Couldn't get a valid docker connection: no DOCKER_HOST and an invalid container socket ''","time":"2026-10-24T21:28:52-07:00"}
+level=warning msg= ⚠ You are using Apple M-series chip and you have not specified container architecture, you might encounter issues while running act. If so, try running it with '--container-architecture linux/amd64'. ⚠ 
+
+{"dryrun":false,"job":"floor/Floor check","jobID":"floor","level":"info","matrix":{},"msg":"⭐ Run Set up job","step":"Set up job","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"floor/Floor check","jobID":"floor","level":"info","matrix":{},"msg":"🚀  Start image=node:16-buster-slim","step":"Set up job","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"floor/Floor check","jobID":"floor","level":"info","matrix":{},"msg":"  🐳  docker pull image=node:16-buster-slim platform= username= forcePull=true","step":"Set up job","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"floor/Floor check","jobID":"floor","level":"error","matrix":{},"msg":"failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory","step":"Set up job","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"floor/Floor check","jobID":"floor","level":"info","matrix":{},"msg":"  ❌  Failure - Set up job","step":"Set up job","stepResult":"failure","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"floor/Floor check","jobID":"floor","jobResult":"failure","level":"info","matrix":{},"msg":"🏁  Job failed","time":"2026-10-24T21:28:52-07:00"}
+Error: failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory

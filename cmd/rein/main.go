@@ -11,6 +11,7 @@ import (
 	// Registering an adapter is one blank import: each package's init calls
 	// adapter.MustRegister, so this list is the whole answer to "which agents
 	// can this build drive" (docs/adapters.md).
+	_ "github.com/elk-work/rein/internal/adapter/check"
 	_ "github.com/elk-work/rein/internal/adapter/claude"
 	_ "github.com/elk-work/rein/internal/adapter/codex"
 	_ "github.com/elk-work/rein/internal/adapter/grok"

@@ -81,6 +81,12 @@ var hostProbes = []hostProbe{
 	{name: "codex", binary: "codex"},
 	{name: "claude", binary: "claude"},
 	{name: "grok", binary: "grok"},
+	// A check's container executor needs a daemon that answers, not a CLI
+	// that is installed; Docker Desktop installed and not running is the
+	// common case on a Mac. `act` is what runs a check at all
+	// (internal/adapter/check).
+	{name: "docker", binary: "docker", verify: []string{"docker", "info", "--format", "{{.ServerVersion}}"}},
+	{name: "act", binary: "act"},
 }
 
 // EnvCapabilities replaces auto-detection with an explicit comma-separated
@@ -379,7 +385,7 @@ var capabilityNamespaces = map[string]bool{
 	"agent": true, "tool": true, "runtime": true, "repo": true,
 	"mcp": true, "os": true, "does": true, "tier": true,
 }
-var toolCapabilities = []string{"git", "github-cli", "xcode", "node", "go", "supabase-cli", "ark-cli"}
+var toolCapabilities = []string{"git", "github-cli", "xcode", "node", "go", "supabase-cli", "ark-cli", "docker", "act"}
 
 func hostOS(goos string) string {
 	if goos == "darwin" {

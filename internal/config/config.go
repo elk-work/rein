@@ -464,6 +464,16 @@ type Queue struct {
 	//	model = "claude-opus-5-5"
 	Model string `toml:"model,omitempty"`
 
+	// Settings is this queue's adapter settings, handed to the adapter
+	// verbatim as [adapter.RunSpec.Settings]: keys and values the adapter
+	// documents, which Rein's config does not interpret. The check adapter
+	// (agent_kind = "runner", docs/adapter-check.md) reads executor, image,
+	// labels, timeout and event from it.
+	//
+	//	[queues.settings]
+	//	executor = "host"
+	Settings map[string]string `toml:"settings,omitempty"`
+
 	// Effort is the reasoning-effort level every run on this queue uses,
 	// passed verbatim: `--effort` for Claude Code (low, medium, high, xhigh,
 	// max), the turn's `effort` for Codex (minimal, low, medium, high, xhigh),
