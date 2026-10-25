@@ -63,7 +63,7 @@ from losing all of it. If you see it, say so and fix it:
 
 ```sh
 ark remote set <sync-service-url>     # the team's ark-server
-ark login                             # paste the service token
+ark login                             # device login, or paste your own credential
 ark sync                              # pushes everything recorded so far
 ```
 
@@ -87,8 +87,9 @@ ark run start --task <n> -i "<what you were asked, in one or two sentences>"
 ```
 
 Drop `--task <n>` if no task fits; create one first if the work deserves
-tracking (`ark task create -t "..." -b "..."`). The command prints a run ID —
-keep it.
+tracking (`ark task create -t "..." -b "..." --elk <ref>` when the work
+belongs under an Elk task; the ref is `#35`, `35`, or the action id). The
+command prints a run ID — keep it.
 
 **At the end**, before you write your summary to the user:
 
