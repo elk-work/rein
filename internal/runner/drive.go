@@ -33,6 +33,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	}
 	qr.openLog(wo)
 	defer qr.closeLog()
+	// From the claim to the end of the run: keep the machine from idling to
+	// sleep, and renew the lease the moment it wakes (sleep.go, ark:rein#90).
+	defer qr.holdAcrossSleep(ctx, wo.RunID)()
 	if qr.r.opts.Hosted {
 		qr.applySecrets(hosted.Values())
 	}

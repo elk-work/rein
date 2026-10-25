@@ -192,6 +192,7 @@ func runRun(cmd *cobra.Command) error {
 		StallAfter:      stallAfter,
 		ReviewTimeout:   reviewTimeout,
 		MaxReviewRounds: maxReviewRounds,
+		KeepAwake:       !flag, // a hosted run is a container that does not sleep (sleep.go, ark:rein#90)
 		// Telemetry is configured rather than flagged: it describes the
 		// machine, and the machine is a service nobody types a command line
 		// at. See internal/runner/telemetry.go and the [telemetry] block in

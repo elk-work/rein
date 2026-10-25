@@ -59,6 +59,7 @@ import (
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/keyring"
+	"github.com/elk-work/rein/internal/power"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/secretenv"
 	"github.com/elk-work/rein/internal/worktree"
@@ -229,6 +230,19 @@ type Options struct {
 	// StallAfter overrides [DefaultStallAfter].
 	StallAfter time.Duration
 
+	// KeepAwake makes the runner mind the machine's sleep (sleep.go,
+	// ark:rein#90). On a Mac it holds an idle-sleep assertion from each claim
+	// to the end of that run; everywhere it watches for a sleep and, on
+	// waking, renews the lease of every run in flight and tells Elk the
+	// machine is up. `rein run` sets it outside hosted mode; tests leave it
+	// off, so no test spawns caffeinate.
+	KeepAwake bool
+
+	// SleepWatch and Assertion replace the ones KeepAwake builds, and take
+	// effect without it. Tests use them to stage a sleep and count holds.
+	SleepWatch *power.SleepWatch
+	Assertion  *power.Assertion
+
 	// ReclaimInterval overrides [LeaseDuration] as how often the loop claims
 	// even though Elk reports an empty queue — the sweep that recovers runs
 	// stranded `running` by a dead runner. Tests shorten it; nothing else
@@ -337,6 +351,12 @@ type Runner struct {
 
 	// machines caches one machine sample for every queue's beat to share.
 	machines machineCache
+
+	// sleep notices the machine sleeping and awake keeps it from idling to
+	// sleep while a run is in flight (sleep.go). Both nil unless
+	// [Options.KeepAwake] or a test asked for them.
+	sleep *power.SleepWatch
+	awake *power.Assertion
 }
 
 // HostCapabilities returns what this runner believes the machine holds.
@@ -462,6 +482,15 @@ func New(opts Options) (*Runner, error) {
 		logf:    r.logf,
 		retry:   opts.SlotInterval,
 	}
+	r.sleep, r.awake = opts.SleepWatch, opts.Assertion
+	if opts.KeepAwake && !opts.Hosted && !opts.DryRun {
+		if r.sleep == nil {
+			r.sleep = power.NewSleepWatch(nil)
+		}
+		if r.awake == nil {
+			r.awake = power.NewAssertion(r.logf)
+		}
+	}
 	return r, nil
 }
 
@@ -563,6 +592,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Elk about the machine.
 	if len(r.qrs) > 0 && !r.opts.DryRun && !r.opts.TelemetryOff {
 		go r.telemetryTick(inner)
+	}
+
+	// The sleep watch, and the beat that follows a wake (sleep.go). After
+	// r.qrs is complete for the same reason as the tick.
+	if r.sleep != nil {
+		go r.sleep.Run(inner)
+		if len(r.qrs) > 0 && !r.opts.DryRun {
+			go r.beatAfterSleep(inner)
+		}
 	}
 
 	wg.Wait()
