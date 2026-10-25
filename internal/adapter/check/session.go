@@ -3,7 +3,6 @@ package check
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -315,7 +314,7 @@ func (s *session) run() {
 				if s.noise(l) {
 					continue // in the log, but not worth a reader's line
 				}
-				tail = append(tail, l)
+				tail = append(tail, truncate(l, 500))
 				if len(tail) > s.tailLines() {
 					tail = tail[1:]
 				}
@@ -489,12 +488,9 @@ func (s *session) deliverable(rec SuiteRecord, result, why string, t *tally, em 
 	}
 	fmt.Fprintf(&b, "- Duration: %s\n", time.Duration(rec.DurationMS)*time.Millisecond)
 
-	b.WriteString("\n### Suite record\n\n")
-	fmt.Fprintf(&b, "- `%s` — %s\n", recPath, em.note)
-	fmt.Fprintf(&b, "- Full log: `%s`\n\n", logPath)
-	if j, err := json.Marshal(rec); err == nil {
-		b.WriteString("```json\n" + string(j) + "\n```\n")
-	}
+	b.WriteString("\n### Record and log\n\n")
+	fmt.Fprintf(&b, "- Record: `%s` — %s\n", recPath, em.note)
+	fmt.Fprintf(&b, "- Full log: `%s`\n", logPath)
 
 	fmt.Fprintf(&b, "\n### Last %d lines of the log\n\n", len(tail))
 	b.WriteString("```text\n")
@@ -502,6 +498,11 @@ func (s *session) deliverable(rec SuiteRecord, result, why string, t *tally, em 
 		b.WriteString(strings.ReplaceAll(l, "```", "'''") + "\n")
 	}
 	b.WriteString("```\n")
+
+	// Last, and for Elk rather than a person: the record itself, which Elk
+	// forwards to Signal unless it says Rein already sent it. A runner with no
+	// pulse and no Stride credentials still produces history this way.
+	b.WriteString("\n" + recordBlock(rec, em.sent))
 	return b.String()
 }
 
