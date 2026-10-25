@@ -189,8 +189,10 @@ Three sources, in order, each additive:
 2. **Detected at startup**, once per process: `github-cli` (`gh auth status`
    exits 0 — on PATH is not the same as logged in, and an unauthenticated `gh`
    fails at the first API call *inside* a run rather than at preflight),
-   `xcode` (`xcodebuild -version` on darwin), and `node`, `go`, `supabase-cli`,
-   `codex`, `claude`, `grok` on PATH.
+   `xcode` (`xcodebuild -version` on darwin), `docker` (`docker info` answers —
+   installed is not the same as running, and a check's container executor
+   needs the daemon), and `node`, `go`, `supabase-cli`, `codex`, `claude`,
+   `grok`, `act` on PATH.
 3. **Declared in the config**, for everything a probe cannot establish without
    holding the credential — which Rein will not do:
 

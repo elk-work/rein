@@ -1,0 +1,421 @@
+//go:build !windows
+
+package check
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/elk-work/rein/internal/adapter"
+)
+
+// The stub act below replays a recorded `act --json` log, so the whole path
+// from act's output to a suite record and a deliverable runs on every Unix
+// machine with no act, no Docker and no network. What it cannot prove is that
+// real act still prints this dialect; the fixtures were recorded from act
+// 0.2.89, and TestRealActRunsATinyWorkflow runs the real thing when asked.
+
+const floorWorkflow = `name: floor
+on: [push, workflow_dispatch]
+jobs:
+  floor:
+    name: Floor check
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello
+`
+
+// testRepo makes a git repository holding a workflow file and returns its
+// directory and HEAD.
+func testRepo(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".github", "workflows", "floor.yml"), []byte(floorWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "init", "-q", "-b", "main")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init")
+	return dir, strings.TrimSpace(gitRun(t, dir, "rev-parse", "HEAD"))
+}
+
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+// stubAct writes an act that answers --list with one job, `floor`, and
+// otherwise records its arguments, prints fixture and exits with code after
+// sleeping for sleep seconds.
+func stubAct(t *testing.T, fixture string, code int, sleep string) (path, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile = filepath.Join(dir, "args")
+	abs, err := filepath.Abs(filepath.Join("testdata", fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := filepath.Abs(filepath.Join("testdata", "act-list.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"case \" $* \" in *\" --list \"*) cat '" + list + "'; exit 0;; esac\n" +
+		"for a in \"$@\"; do echo \"$a\"; done > '" + argsFile + "'\n" +
+		"cat '" + abs + "'\n"
+	if sleep != "" {
+		script += "sleep " + sleep + "\n"
+	}
+	script += "exit " + itoa(code) + "\n"
+	path = filepath.Join(dir, "act")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path, argsFile
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func stubScript(t *testing.T, name, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func packetFor(sha string, extra string) string {
+	return order("```json\n{\"repo\":\"elk-work/tiny\",\"sha\":\"" + sha + "\",\"ref\":\"refs/heads/main\"," +
+		"\"suite\":\"floor\",\"workflow\":\".github/workflows/floor.yml\",\"job\":\"floor\"," +
+		"\"runs_on\":[\"ubuntu-latest\"],\"provider\":\"rein\",\"changed_paths\":[\"README.md\"]" + extra + "}\n```")
+}
+
+type ran struct {
+	res    adapter.Result
+	err    error
+	events []adapter.Event
+	rec    SuiteRecord
+	args   []string
+}
+
+func runCheck(t *testing.T, a *Adapter, spec adapter.RunSpec, argsFile string) ran {
+	t.Helper()
+	sess, err := a.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var r ran
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			r.events = append(r.events, ev)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the session never closed its events")
+	}
+	r.res, r.err = sess.Wait()
+	b, err := os.ReadFile(filepath.Join(a.RecordRoot, spec.RunID, "suite-record.json"))
+	if err != nil {
+		t.Fatalf("no suite record: %v", err)
+	}
+	if err := json.Unmarshal(b, &r.rec); err != nil {
+		t.Fatal(err)
+	}
+	if argsFile != "" {
+		if b, err := os.ReadFile(argsFile); err == nil {
+			r.args = strings.Split(strings.TrimSpace(string(b)), "\n")
+		}
+	}
+	return r
+}
+
+func baseSpec(dir, sha string) adapter.RunSpec {
+	return adapter.RunSpec{
+		RunID: "run-1", AgentKind: Kind, WorktreeDir: dir, Prompt: packetFor(sha, ""),
+		PermissionMode: adapter.PermissionFull, Queue: "lab-checks",
+		Settings: map[string]string{"executor": "host"},
+	}
+}
+
+func hasArgs(args []string, seq ...string) bool {
+	for i := 0; i+len(seq) <= len(args); i++ {
+		match := true
+		for j := range seq {
+			if args[i+j] != seq[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAPassingJobIsAPassRecordAndASucceededSession(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+	r := runCheck(t, a, baseSpec(dir, sha), argsFile)
+
+	if r.res.Status != adapter.StatusSucceeded || r.err != nil {
+		t.Fatalf("status %s, err %v", r.res.Status, r.err)
+	}
+	if r.rec.Result != ResultPass || r.rec.Runner != "lab-checks" || r.rec.SHA != sha || r.rec.Repo != "elk-work/tiny" ||
+		r.rec.Suite != "floor" || r.rec.Counts["steps"] != 3 || r.rec.Branch != "" {
+		t.Errorf("record: %+v", r.rec)
+	}
+	for _, want := range [][]string{
+		{"workflow_dispatch", "-W", ".github/workflows/floor.yml", "-j", "floor", "--json"},
+		{"-P", "ubuntu-latest=-self-hosted"},
+	} {
+		if !hasArgs(r.args, want...) {
+			t.Errorf("act was not run with %v: %v", want, r.args)
+		}
+	}
+	if hasArgs(r.args, "--container-options") || hasArgs(r.args, "-s") {
+		t.Errorf("host run got container or secret flags: %v", r.args)
+	}
+	var progress []string
+	for _, ev := range r.events {
+		if ev.Kind == adapter.EventProgress {
+			progress = append(progress, ev.Text)
+		}
+	}
+	if !strings.Contains(strings.Join(progress, "\n"), "  | line 2") {
+		t.Errorf("act's output did not arrive as progress events: %v", progress)
+	}
+	if last := r.events[len(r.events)-1]; last.Kind != adapter.EventDone {
+		t.Errorf("last event is %s, want done", last.Kind)
+	}
+	for _, want := range []string{"The floor check passed on tiny.", "Result: **pass**", "suite-record.json",
+		"pulse is not on PATH", "lines of the log", "Job succeeded"} {
+		if !strings.Contains(r.res.Summary, want) {
+			t.Errorf("deliverable lacks %q:\n%s", want, r.res.Summary)
+		}
+	}
+	// The deliverable gate (ark:rein#83) must have nothing to object to.
+	if n := len([]rune(r.res.Summary)); n < 600 {
+		t.Errorf("deliverable is %d characters; the run loop's gate reads under 600 closely", n)
+	}
+}
+
+func TestAFailingJobIsAFailRecordAndStillASucceededSession(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-fail.jsonl", 1, "")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+	r := runCheck(t, a, baseSpec(dir, sha), argsFile)
+	if r.res.Status != adapter.StatusSucceeded || r.err != nil {
+		t.Fatalf("a failed job is a finished check: status %s, err %v", r.res.Status, r.err)
+	}
+	if r.rec.Result != ResultFail || r.rec.Counts["steps_failed"] != 1 {
+		t.Errorf("record: %+v", r.rec)
+	}
+	if !strings.Contains(r.res.Summary, `The floor check failed on tiny: the step "the failing step" failed.`) {
+		t.Errorf("deliverable:\n%s", r.res.Summary)
+	}
+}
+
+func TestAJobActCouldNotSetUpIsAnErrorAndAFailedSession(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-setup-failed.jsonl", 1, "")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+	r := runCheck(t, a, baseSpec(dir, sha), argsFile)
+	if r.res.Status != adapter.StatusFailed || r.err == nil {
+		t.Fatalf("a harness fault must fail the session: status %s, err %v", r.res.Status, r.err)
+	}
+	if r.rec.Result != ResultError {
+		t.Errorf("record result %s, want error", r.rec.Result)
+	}
+	if !strings.Contains(r.res.Summary, "could not be run on this machine") {
+		t.Errorf("deliverable:\n%s", r.res.Summary)
+	}
+}
+
+func TestACheckPastItsTimeoutIsStopped(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "30")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary",
+		InterruptGrace: 200 * time.Millisecond, Heartbeat: 100 * time.Millisecond}
+	spec := baseSpec(dir, sha)
+	spec.Settings["timeout"] = "1s"
+	start := time.Now()
+	r := runCheck(t, a, spec, argsFile)
+	if time.Since(start) > 15*time.Second {
+		t.Fatalf("the timeout did not stop act: %s", time.Since(start))
+	}
+	if r.res.Status != adapter.StatusTimedOut || r.rec.Result != ResultError {
+		t.Errorf("status %s, record %s", r.res.Status, r.rec.Result)
+	}
+	beat := false
+	for _, ev := range r.events {
+		beat = beat || strings.Contains(ev.Text, "act is still running")
+	}
+	if !beat {
+		t.Error("a silent act produced no heartbeat; the run loop would call it stalled")
+	}
+}
+
+func TestInterruptStopsTheCheck(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, _ := stubAct(t, "act-pass.jsonl", 0, "30")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary", InterruptGrace: 200 * time.Millisecond}
+	sess, err := a.Start(context.Background(), baseSpec(dir, sha))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if err := sess.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := sess.Wait()
+	if res.Status != adapter.StatusInterrupted || err == nil {
+		t.Fatalf("status %s, err %v", res.Status, err)
+	}
+	if err := sess.Interrupt(context.Background()); !errors.Is(err, adapter.ErrSessionClosed) {
+		t.Errorf("interrupting a finished session: %v", err)
+	}
+}
+
+func TestTheRecordGoesToPulseWhenTheQueueHoldsStride(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	pulseArgs := filepath.Join(t.TempDir(), "pulse-args")
+	pulse := stubScript(t, "pulse", "echo \"$@\" > '"+pulseArgs+"'\nenv | grep -c STRIDE_ >> '"+pulseArgs+"'")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: pulse}
+	spec := baseSpec(dir, sha)
+	spec.Env = map[string]string{"STRIDE_INGEST_URL": "https://ingest.example/x", "STRIDE_TOKEN": "stride-secret-token",
+		"GITHUB_TOKEN": "ghs_not_on_the_command_line"}
+	r := runCheck(t, a, spec, argsFile)
+	if !strings.Contains(r.res.Summary, "sent to Elk's suite history") {
+		t.Errorf("deliverable:\n%s", r.res.Summary)
+	}
+	b, err := os.ReadFile(pulseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(b), "suite-record --file "+filepath.Join(a.RecordRoot, "run-1", "suite-record.json")) ||
+		!strings.Contains(string(b), "\n2") {
+		t.Errorf("pulse was called as: %q", b)
+	}
+	if !hasArgs(r.args, "-s", "GITHUB_TOKEN") {
+		t.Errorf("act was not told about the queue's GITHUB_TOKEN: %v", r.args)
+	}
+	for _, arg := range r.args {
+		if strings.Contains(arg, "ghs_not_on_the_command_line") || strings.Contains(arg, "stride-secret-token") {
+			t.Fatalf("a secret reached act's command line: %v", r.args)
+		}
+	}
+	if strings.Contains(r.res.Summary, "stride-secret-token") || strings.Contains(r.res.Summary, "ghs_") {
+		t.Fatal("a secret reached the deliverable")
+	}
+}
+
+func TestTheContainerExecutorMapsTheImageAndMountsGit(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	docker := stubScript(t, "docker", "exit 0")
+	a := &Adapter{Act: act, Docker: docker, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+	spec := baseSpec(dir, sha)
+	spec.Settings = map[string]string{"executor": "container"}
+	r := runCheck(t, a, spec, argsFile)
+	for _, want := range [][]string{{"-P", "ubuntu-latest=" + DefaultImage}, {"-P", "ubuntu-slim=" + DefaultImage}, {"--pull=false"}} {
+		if !hasArgs(r.args, want...) {
+			t.Errorf("missing %v in %v", want, r.args)
+		}
+	}
+	mounted := false
+	for i, arg := range r.args {
+		if arg == "--container-options" && i+1 < len(r.args) && strings.HasSuffix(r.args[i+1], ".git:ro") {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("the repository's git directory was not mounted: %v", r.args)
+	}
+}
+
+func TestPrepare(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, _ := stubAct(t, "act-pass.jsonl", 0, "")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir()}
+
+	p, err := a.Prepare(context.Background(), baseSpec(dir, sha))
+	if err != nil || p.Commit != sha {
+		t.Fatalf("Prepare = %+v, %v", p, err)
+	}
+
+	spec := baseSpec(dir, sha)
+	spec.Prompt = "Claimed Elk run `r` (contract v2).\n\n**Direction:** Port the due-date sheet\nrepo: scout\n"
+	if _, err := a.Prepare(context.Background(), spec); !errors.Is(err, adapter.ErrWorkOrder) {
+		t.Errorf("a run with no packet: %v, want ErrWorkOrder", err)
+	}
+
+	spec = baseSpec(dir, sha)
+	spec.Settings = map[string]string{"executor": "container"}
+	a.Docker = stubScript(t, "docker", "echo 'Cannot connect to the Docker daemon' >&2; exit 1")
+	_, err = a.Prepare(context.Background(), spec)
+	if !errors.Is(err, adapter.ErrPreflight) || !strings.Contains(err.Error(), "Docker daemon is not answering") {
+		t.Errorf("Docker down: %v", err)
+	}
+
+	spec = baseSpec(dir, sha)
+	spec.Settings = map[string]string{"executor": "vm"}
+	if _, err := a.Prepare(context.Background(), spec); !errors.Is(err, adapter.ErrPreflight) {
+		t.Errorf("a bad setting: %v", err)
+	}
+
+	a.Act = "rein-test-act-that-is-not-installed"
+	if _, err := a.Prepare(context.Background(), baseSpec(dir, sha)); !errors.Is(err, adapter.ErrPreflight) ||
+		!errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("act missing: %v", err)
+	}
+}
+
+func TestStartRefusesAWorktreeAtAnotherCommit(t *testing.T) {
+	dir, _ := testRepo(t)
+	act, _ := stubAct(t, "act-pass.jsonl", 0, "")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir()}
+	other := strings.Repeat("a", 40)
+	if _, err := a.Start(context.Background(), baseSpec(dir, other)); err == nil || !strings.Contains(err.Error(), "not the check's commit") {
+		t.Fatalf("Start at the wrong commit: %v", err)
+	}
+}
+
+func TestManifestIsValidAndDeclaresNoAgentPowers(t *testing.T) {
+	m := New().Manifest()
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if m.Kind != "runner" || !m.Has(adapter.CapStructuredEvents) || m.Has(adapter.CapFileEdit) || m.Has(adapter.CapResume) {
+		t.Errorf("manifest: %+v", m)
+	}
+	if _, ok := adapter.Lookup("runner"); !ok {
+		t.Error("the check adapter did not register under runner")
+	}
+}

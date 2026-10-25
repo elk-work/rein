@@ -108,6 +108,8 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		Effort:               qr.q.Effort,
 		RequiredCapabilities: runtimeNames,
 		Timeouts:             adapter.Timeouts{Idle: qr.r.opts.StallAfter},
+		Queue:                qr.q.Name,
+		Settings:             qr.q.Settings,
 		// The queue's allow-list, and nothing else: each adapter keeps the
 		// developer's own servers out (ark:rein#21, #22), so these are the
 		// only MCP servers the session sees (mcp.go, ark:rein#40).
@@ -150,7 +152,13 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 				"No work was started and no worktree was created.")
 	}
 	var preflightErr error
-	if qr.r.opts.Hosted {
+	var prepared adapter.Prepared
+	if p, ok := a.(adapter.RunPreparer); ok {
+		// An adapter whose packet names something the worktree must honour —
+		// the check adapter's commit — reads it here, before anything exists
+		// on disk, in place of its preflight.
+		prepared, preflightErr = p.Prepare(ctx, spec)
+	} else if qr.r.opts.Hosted {
 		spec.Env = hosted.Values()
 		preflightErr = spec.CheckPlanEnv()
 		if preflightErr == nil {
@@ -160,6 +168,11 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		}
 	} else {
 		preflightErr = a.Preflight(ctx)
+	}
+	if err := preflightErr; err != nil && errors.Is(err, adapter.ErrWorkOrder) {
+		qr.setPreflightState("ready")
+		return qr.stuck(ctx, wo, "The work order cannot be run as written", err.Error()+
+			"\n\nNothing was started and no worktree was created.")
 	}
 	if err := preflightErr; err != nil {
 		qr.setPreflightState(agentSetupFailure(err))
@@ -242,7 +255,8 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			repo.Path = wt.Dir
 		}
 	} else {
-		wt, err = qr.r.opts.Worktrees.Create(ctx, worktree.Request{Repo: repo.Path, RunID: wo.RunID, BaseRef: qr.baseRefFor(repo)})
+		wt, err = qr.r.opts.Worktrees.Create(ctx, worktree.Request{Repo: repo.Path, RunID: wo.RunID,
+			BaseRef: qr.baseRefFor(repo), Commit: prepared.Commit})
 	}
 
 	if err != nil {
@@ -936,8 +950,12 @@ func (qr *queueRunner) openingReport(repo RepoResolution, wt *worktree.Worktree)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Claimed by Rein on queue %s. Starting %s in a worktree of %s.\n",
 		qr.q.Name, qr.q.AgentKind, repo.Path)
-	fmt.Fprintf(&b, "Branch `%s`, based on `%s` (%s) at %s.\n",
-		wt.Branch, wt.BaseRef, wt.BaseNote, shortSHA(wt.BaseSHA))
+	if wt.Detached {
+		fmt.Fprintf(&b, "Detached at %s (%s), no branch.\n", shortSHA(wt.BaseSHA), wt.BaseNote)
+	} else {
+		fmt.Fprintf(&b, "Branch `%s`, based on `%s` (%s) at %s.\n",
+			wt.Branch, wt.BaseRef, wt.BaseNote, shortSHA(wt.BaseSHA))
+	}
 	fmt.Fprintf(&b, "Landing policy: %s.\n", landingSummary(qr.q.LandOrDefault()))
 	if wt.Ark.Wanted {
 		fmt.Fprintf(&b, "Ark: %s.\n", wt.Ark.Note)
@@ -1529,7 +1547,11 @@ func (qr *queueRunner) runDetails(wt *worktree.Worktree, repo RepoResolution, sp
 	b.WriteString("**Run details**\n\n")
 	fmt.Fprintf(&b, "- Repository: `%s` — chosen from %s\n", repo.Path, repo.Source)
 	if wt != nil {
-		fmt.Fprintf(&b, "- Branch: `%s`, based on `%s` at %s\n", wt.Branch, wt.BaseRef, shortSHA(wt.BaseSHA))
+		if wt.Detached {
+			fmt.Fprintf(&b, "- Commit: `%s`, detached, no branch\n", wt.BaseSHA)
+		} else {
+			fmt.Fprintf(&b, "- Branch: `%s`, based on `%s` at %s\n", wt.Branch, wt.BaseRef, shortSHA(wt.BaseSHA))
+		}
 		if qr.r.opts.KeepWorktrees {
 			fmt.Fprintf(&b, "- Worktree: kept at `%s` (--keep-worktrees)\n", wt.Dir)
 		} else {

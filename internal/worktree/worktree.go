@@ -91,6 +91,15 @@ type Request struct {
 	// default branch, which is almost always what is wanted — see
 	// [Manager.resolveBase].
 	BaseRef string
+
+	// Commit, when set, replaces BaseRef: the worktree is cut detached at
+	// exactly this commit, with no branch, after fetching it from origin when
+	// the repository does not already hold it. A check run (internal/adapter/
+	// check) tests one revision and nothing else, so neither a branch nor the
+	// remote default has any say. A commit that cannot be fetched fails
+	// before anything is created, with an [InitStop] naming `repo_access`.
+	// Must be a full 40- or 64-character hex object name.
+	Commit string
 }
 
 // Worktree is one checkout Rein owns.
@@ -112,6 +121,9 @@ type Worktree struct {
 	// BaseNote says how BaseRef was chosen, including when it had to fall
 	// back to the source checkout's HEAD.
 	BaseNote string
+	// Detached reports a worktree cut at [Request.Commit]: Branch is empty and
+	// BaseRef is the commit itself.
+	Detached bool
 	// Initialised records whether [InitScript] ran.
 	Initialised bool
 	// Ark records how the repository's work records were provisioned.
@@ -194,6 +206,14 @@ func (m *Manager) Create(ctx context.Context, req Request) (*Worktree, error) {
 	if err := m.assertRepo(ctx, repoAbs); err != nil {
 		return nil, err
 	}
+	// The commit comes first, before any directory is touched: a run whose
+	// revision cannot be had leaves nothing on disk.
+	commitNote := ""
+	if req.Commit != "" {
+		if commitNote, err = m.ensureCommit(ctx, repoAbs, req.Commit); err != nil {
+			return nil, err
+		}
+	}
 
 	dir := filepath.Join(m.Root, id)
 	if err := os.MkdirAll(m.Root, 0o700); err != nil {
@@ -211,6 +231,10 @@ func (m *Manager) Create(ctx context.Context, req Request) (*Worktree, error) {
 		}
 	}
 	_ = m.run(ctx, repoAbs, "worktree", "prune")
+
+	if req.Commit != "" {
+		return m.createDetached(ctx, repoAbs, dir, req, commitNote)
+	}
 
 	base, note := m.resolveBase(ctx, repoAbs, req.BaseRef)
 	m.log("worktree: basing run %s on %s (%s)", req.RunID, base, note)
@@ -248,6 +272,56 @@ func (m *Manager) Create(ctx context.Context, req Request) (*Worktree, error) {
 		wt.Ark.Note += fmt.Sprintf(" Also linked %s.", strings.Join(sub, ", "))
 	}
 	return wt, nil
+}
+
+// commitRE is a full object name: SHA-1 or SHA-256. An abbreviation is
+// refused, because "exactly this commit" is the point and a prefix is not one.
+var commitRE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// ensureCommit makes sure the repository holds commit, fetching it from
+// origin by name when it does not, and says which it was.
+func (m *Manager) ensureCommit(ctx context.Context, repo, commit string) (string, error) {
+	if !commitRE.MatchString(commit) {
+		return "", fmt.Errorf("worktree: %q is not a full commit id (40 or 64 lower-case hex characters): %w",
+			commit, InitStop{Code: "repo_access", Line: "The check names no usable commit"})
+	}
+	if m.hasCommit(ctx, repo, commit) {
+		return "already in the repository", nil
+	}
+	if !m.hasOrigin(ctx, repo) {
+		return "", fmt.Errorf("worktree: %s does not hold %s and has no origin to fetch it from: %w",
+			repo, commit, InitStop{Code: "repo_access", Line: "Commit " + commit[:12] + " is not in this machine's checkout, which has no origin"})
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	err := m.run(fetchCtx, repo, "fetch", "--quiet", "--no-tags", "origin", commit)
+	cancel()
+	if err != nil || !m.hasCommit(ctx, repo, commit) {
+		if err == nil {
+			err = errors.New("the fetch succeeded but the commit is still missing")
+		}
+		return "", fmt.Errorf("worktree: fetching %s from origin in %s: %w: %w", commit, repo, err,
+			InitStop{Code: "repo_access", Line: "Commit " + commit[:12] + " could not be fetched from origin"})
+	}
+	return "fetched from origin", nil
+}
+
+func (m *Manager) hasCommit(ctx context.Context, repo, commit string) bool {
+	return m.run(ctx, repo, "cat-file", "-e", commit+"^{commit}") == nil
+}
+
+// createDetached cuts the worktree at the commit with no branch. It skips the
+// Ark link and the bootstrap script: a check runs a workflow job, which keeps
+// no work records and brings up its own environment from the workflow file.
+func (m *Manager) createDetached(ctx context.Context, repo, dir string, req Request, note string) (*Worktree, error) {
+	m.log("worktree: cutting run %s detached at %s (%s)", req.RunID, req.Commit, note)
+	if err := m.run(ctx, repo, "worktree", "add", "--detach", dir, req.Commit); err != nil {
+		return nil, err
+	}
+	return &Worktree{
+		Dir: dir, Repo: repo, RunID: req.RunID, Detached: true,
+		BaseRef: req.Commit, BaseSHA: req.Commit, BaseNote: "the check's commit, " + note,
+		Ark: ArkState{Note: "a check run keeps no Ark records"},
+	}, nil
 }
 
 // resolveBase decides which commit a run starts from, and says why.

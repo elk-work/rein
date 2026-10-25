@@ -17,6 +17,7 @@ the code and this file disagree, the code is right and this file is a bug.
 | `internal/adapter/` | this contract | the interface, the capability vocabulary, the registry. **No vendor knowledge at all.** |
 | `internal/adapter/<kind>/` | one adapter each | everything about one vendor: its flags, its event shapes, its login check |
 | `internal/adapter/fake/` | tests + the run-loop lane | a scriptable test double |
+| `internal/adapter/check/` | the check lane (`ark:rein#89`) | agent kind `runner`: one workflow job at one commit, with act — not a coding agent. [`adapter-check.md`](./adapter-check.md) |
 
 An adapter package owns its own directory and nothing else. Adding a
 capability to the vocabulary, changing an event kind, or changing the
@@ -52,6 +53,18 @@ res, err := sess.Wait()                         // terminal result
 The order matters. `CheckSupport` runs **before** `git worktree add`: a run
 that cannot be served must produce no partial work, no orphan worktree, and
 nothing to reap.
+
+An adapter whose work order names something the worktree must honour
+implements `RunPreparer`, and the run loop calls its `Prepare(ctx, spec)` in
+place of `Preflight`, at the same point. It returns `Prepared{Commit}`: the
+worktree is then cut detached at exactly that commit rather than on a branch.
+The check adapter is the one implementation. A `Prepare` error wrapping
+`ErrWorkOrder` is the work order's fault — a missing or malformed check
+packet — and is reported as such, not as a broken binary or login.
+
+`RunSpec.Queue` and `RunSpec.Settings` carry the queue's name and its
+`[queues.settings]` table, verbatim. An adapter reads the keys its own doc
+names and refuses a value it does not understand; the others ignore them.
 
 `Events()` must be drained. An adapter that cannot deliver an event blocks,
 and a run loop that stops reading stalls the agent it is watching.
@@ -184,11 +197,11 @@ worktree exists rather than in the middle of a run.
 Known mapping targets, from the research in elk `docs/rein.md` §3 — Lane B
 owns getting these right:
 
-| | Claude Code | Codex | Grok Build |
-|---|---|---|---|
-| headless entry | `claude -p --output-format stream-json --verbose` | `codex app-server` (JSON-RPC) | `grok agent … stdio` (ACP) |
-| permissions | `--permission-mode` + `--allowedTools` | `-s {read-only,workspace-write,danger-full-access}` — **not** `--full-auto`, which the binary rejects | ACP; `streaming-json` is read-only |
-| resume | `--resume <id>` | `codex exec resume` | `--resume` |
+| | Claude Code | Codex | Grok Build | Check (`runner`) |
+|---|---|---|---|---|
+| headless entry | `claude -p --output-format stream-json --verbose` | `codex app-server` (JSON-RPC) | `grok agent … stdio` (ACP) | `act <event> -W <workflow> -j <job> --json` |
+| permissions | `--permission-mode` + `--allowedTools` | `-s {read-only,workspace-write,danger-full-access}` — **not** `--full-auto`, which the binary rejects | ACP; `streaming-json` is read-only | none: it runs the workflow's own steps and asks nothing |
+| resume | `--resume <id>` | `codex exec resume` | `--resume` | no — a check is run again, not resumed |
 
 ## Events
 
@@ -308,6 +321,7 @@ runs get.
 | Sentinel | Means |
 |---|---|
 | `ErrNotSupported` | the adapter cannot do this at all — a statement about the adapter, not a failed run |
+| `ErrWorkOrder` | the work order cannot be run as written — a check packet missing or malformed; the run goes stuck saying so, with nothing created |
 | `ErrCapability` | a fail-closed refusal; the value is a `*CapabilityError` carrying `Missing []string` |
 | `ErrPlatform` | the adapter does not run on this host; the value is a `*PlatformError` |
 | `ErrPreflight` | the local machine is not ready — wrap it with something a human can act on |

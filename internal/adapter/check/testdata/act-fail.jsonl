@@ -1,0 +1,18 @@
+{"level":"warning","msg":"Couldn't get a valid docker connection: no DOCKER_HOST and an invalid container socket ''","time":"2026-10-24T21:28:52-07:00"}
+level=warning msg= ⚠ You are using Apple M-series chip and you have not specified container architecture, you might encounter issues while running act. If so, try running it with '--container-architecture linux/amd64'. ⚠ 
+
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"⭐ Run Set up job","step":"Set up job","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"  ✅  Success - Set up job","step":"Set up job","stepResult":"success","stepid":["--setup-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"⭐ Run Main echo before","stage":"Main","step":"echo before","stepID":["0"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"before\n","raw_output":true,"stage":"Main","step":"echo before","stepID":["0"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"executionTime":4395292,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"  ✅  Success - Main echo before [4.395292ms]","stage":"Main","step":"echo before","stepID":["0"],"stepResult":"success","time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"⭐ Run Main the failing step","stage":"Main","step":"the failing step","stepID":["1"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"executionTime":3854667,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"  ❌  Failure - Main the failing step [3.854667ms]","stage":"Main","step":"the failing step","stepID":["1"],"stepResult":"failure","time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"error","matrix":{},"msg":"exit status 3","stage":"Main","step":"the failing step","stepID":["1"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"⭐ Run Main echo after","stage":"Main","step":"echo after","stepID":["2"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"after\n","raw_output":true,"stage":"Main","step":"echo after","stepID":["2"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"executionTime":3954000,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"  ✅  Success - Main echo after [3.954ms]","stage":"Main","step":"echo after","stepID":["2"],"stepResult":"success","time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"⭐ Run Complete job","step":"Complete job","stepid":["--complete-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","level":"info","matrix":{},"msg":"  ✅  Success - Complete job","step":"Complete job","stepResult":"success","stepid":["--complete-job"],"time":"2026-10-24T21:28:52-07:00"}
+{"dryrun":false,"job":"failing/red","jobID":"red","jobResult":"failure","level":"info","matrix":{},"msg":"🏁  Job failed","time":"2026-10-24T21:28:52-07:00"}
+Error: Job 'red' failed
