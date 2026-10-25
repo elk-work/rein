@@ -186,6 +186,38 @@ func (r *checkRig) record() check.SuiteRecord {
 	return rec
 }
 
+// inlineRecord is the fenced JSON under the deliverable's last "### Suite
+// record" line, read the way Elk reads it, and checked to be the
+// deliverable's last section.
+func inlineRecord(t *testing.T, deliverable string) string {
+	t.Helper()
+	i := strings.LastIndex(deliverable, "\n### Suite record\n")
+	if i < 0 {
+		t.Fatalf("no ### Suite record section:\n%s", deliverable)
+	}
+	rest := strings.TrimLeft(deliverable[i+len("\n### Suite record\n"):], "\n")
+	if !strings.HasPrefix(rest, "```json\n") {
+		t.Fatalf("the section does not open with a json fence:\n%s", rest)
+	}
+	body, after, ok := strings.Cut(strings.TrimPrefix(rest, "```json\n"), "\n```")
+	if !ok || strings.TrimSpace(after) != "" {
+		t.Fatalf("the json block is unclosed or not last:\n%s", rest)
+	}
+	if !json.Valid([]byte(body)) {
+		t.Fatalf("the block is not JSON:\n%s", body)
+	}
+	return body + "\n"
+}
+
+func (r *checkRig) recordBytes() string {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.records, "run-check-1", "suite-record.json"))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return string(b)
+}
+
 func TestACheckPacketRunsFromClaimToSubmit(t *testing.T) {
 	r := newCheckRig(t, "act-pass.jsonl", 0)
 	sha := r.pushToOrigin()
@@ -201,6 +233,11 @@ func TestACheckPacketRunsFromClaimToSubmit(t *testing.T) {
 	rec := r.record()
 	if rec.Result != "pass" || rec.SHA != sha || rec.Runner != checkQueue || rec.Provider != "linux-lab" {
 		t.Errorf("record: %+v", rec)
+	}
+	// What Elk receives ends with the record, byte for byte the file, and —
+	// with no pulse on this machine — no emitted_by, so Elk forwards it.
+	if body := inlineRecord(t, sub.Arg("deliverable")); body != r.recordBytes() || strings.Contains(body, "emitted_by") {
+		t.Errorf("inline record:\n%s\nfile:\n%s", body, r.recordBytes())
 	}
 	opening := ""
 	for _, c := range r.elk.CallsTo("report_progress") {
@@ -227,6 +264,24 @@ func TestAFailedCheckIsAReadyRunThatSaysFail(t *testing.T) {
 	}
 	if rec := r.record(); rec.Result != "fail" {
 		t.Errorf("record result %q", rec.Result)
+	}
+	if body := inlineRecord(t, sub.Arg("deliverable")); body != r.recordBytes() {
+		t.Errorf("inline record:\n%s", body)
+	}
+}
+
+// A check act could not run is a stuck run, and its deliverable still ends
+// with the record: an error is history too.
+func TestACheckThatCouldNotRunIsStuckAndStillCarriesItsRecord(t *testing.T) {
+	r := newCheckRig(t, "act-setup-failed.jsonl", 1)
+	sha := gitIn(t, r.clone, "rev-parse", "HEAD")
+	r.run(checkOrder(sha))
+	sub := r.submitted()
+	if sub.Arg("status") != "stuck" || !strings.HasPrefix(sub.Arg("title"), "Did not finish") {
+		t.Errorf("status %q, title %q", sub.Arg("status"), sub.Arg("title"))
+	}
+	if body := inlineRecord(t, sub.Arg("deliverable")); body != r.recordBytes() || !strings.Contains(body, `"result": "error"`) {
+		t.Errorf("inline record:\n%s", body)
 	}
 }
 

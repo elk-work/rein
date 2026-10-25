@@ -21,7 +21,8 @@
 // throttles exactly as it throttles an agent's. When act exits, Rein writes the
 // suite record (pulse/docs/suite-records.md, schema_version 1) outside the
 // worktree, sends it with `pulse suite-record` when it can, and finishes with a
-// deliverable naming the result, the record and the last 40 lines of the log.
+// deliverable naming the result, the record and the last 40 lines of the log,
+// and ending with the record itself for Elk to forward (see [recordBlock]).
 //
 // A job that ran and failed is a finished run whose deliverable says fail —
 // the session succeeded at its job, which was to find out. Only a harness

@@ -1,6 +1,7 @@
 package check
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,6 +58,7 @@ func newRecord(c Check, queue, branch, result string, t *tally, started, ended t
 	if paths == nil {
 		paths = []string{}
 	}
+	paths = capChangedPaths(paths)
 	if ended.Before(started) {
 		ended = started
 	}
@@ -69,13 +71,116 @@ func newRecord(c Check, queue, branch, result string, t *tally, started, ended t
 	}
 }
 
-// write saves the record as indented JSON, 0600.
+// write saves the record as indented JSON, 0600: the bytes [recordBlock]
+// carries inline.
 func (r SuiteRecord) write(path string) error {
-	b, err := json.MarshalIndent(r, "", "  ")
+	b, err := encodeRecord(inlineRecord{SuiteRecord: r})
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	return os.WriteFile(path, b, 0o600)
+}
+
+// The schema's bound on changed_paths (pulse/docs/suite-records.md): Stride
+// keeps an attribute of at most 1,024 bytes, so a longer list keeps the
+// longest prefix that fits beside a closing marker. It is not a path.
+const (
+	changedPathsLimit  = 1024
+	changedPathsMarker = "...[truncated]"
+)
+
+// capChangedPaths applies that bound exactly as pulse does when it emits
+// (elk-work/pulse internal/emit capChangedPaths): paths unchanged when their
+// JSON fits, otherwise the longest prefix that fits with the marker last. A
+// path is never split. Rein applies it when it writes the record, so the
+// file, the copy in the deliverable and what pulse sends all agree, and a
+// capped list passes through pulse unchanged.
+func capChangedPaths(paths []string) []string {
+	fits := func(p []string) bool {
+		b, err := json.Marshal(p)
+		return err == nil && len(b) <= changedPathsLimit
+	}
+	if fits(paths) {
+		return paths
+	}
+	with := func(n int) []string {
+		out := make([]string, n+1)
+		copy(out, paths[:n])
+		out[n] = changedPathsMarker
+		return out
+	}
+	best, lo, hi := 0, 1, len(paths)
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if fits(with(mid)) {
+			best, lo = mid, mid+1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return with(best)
+}
+
+// inlineRecord is the record as a deliverable carries it: the record's own
+// fields, in the file's order, then the two the deliverable may add. With
+// both empty it encodes to exactly the bytes of the record file.
+type inlineRecord struct {
+	SuiteRecord
+	// EmittedBy is "rein" when Rein itself sent the record with `pulse
+	// suite-record` and the command succeeded. Elk forwards the record to
+	// Signal only when it is absent, so a record is never sent twice.
+	EmittedBy string `json:"emitted_by,omitempty"`
+	// Note says what was left out to keep the block under maxRecordBlock.
+	Note string `json:"note,omitempty"`
+}
+
+// encodeRecord is the one encoding of a record, for the file and the
+// deliverable alike: indented JSON and a final newline. A backtick can only
+// sit inside a JSON string, and is written as \u0060 — the same string to
+// any JSON reader — so no line of the record can close a markdown fence.
+func encodeRecord(r inlineRecord) ([]byte, error) {
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	b = bytes.ReplaceAll(b, []byte("`"), []byte(`\u0060`))
+	return append(b, '\n'), nil
+}
+
+// RecordHeading introduces the record in a check's deliverable. Elk reads
+// the last line that is exactly this, then the fenced JSON block after it.
+const RecordHeading = "### Suite record"
+
+// maxRecordBlock bounds the fenced block, fences included: it stays under
+// 8 KiB.
+const maxRecordBlock = 8 << 10
+
+// recordBlock is the deliverable's last section: [RecordHeading] and one
+// fenced JSON block holding the record, the bytes of the record file plus
+// `"emitted_by": "rein"` when emitted is true. When the block would reach
+// 8 KiB, changed_paths goes to [] and a note says so; every other field is
+// bounded by the packet's validation, so the rest always fits.
+func recordBlock(rec SuiteRecord, emitted bool) string {
+	in := inlineRecord{SuiteRecord: rec}
+	if emitted {
+		in.EmittedBy = "rein"
+	}
+	fence := func(in inlineRecord) string {
+		b, err := encodeRecord(in)
+		if err != nil {
+			return ""
+		}
+		return "```json\n" + string(b) + "```\n"
+	}
+	block := fence(in)
+	if len(block) >= maxRecordBlock && len(in.ChangedPaths) > 0 {
+		n := len(in.ChangedPaths)
+		in.ChangedPaths = []string{}
+		in.Note = fmt.Sprintf("changed_paths (%d entries) was left out to keep this block under 8 KiB; "+
+			"the record file on the runner holds it, and [] here does not mean the diff was empty", n)
+		block = fence(in)
+	}
+	return RecordHeading + "\n\n" + block
 }
 
 // branchRE is a short branch name pulse accepts: no ref path, no pull ref.

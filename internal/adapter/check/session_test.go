@@ -149,6 +149,16 @@ func runCheck(t *testing.T, a *Adapter, spec adapter.RunSpec, argsFile string) r
 	return r
 }
 
+// recordFile is the bytes Rein wrote to the run's record file.
+func recordFile(t *testing.T, a *Adapter, runID string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(a.RecordRoot, runID, "suite-record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func baseSpec(dir, sha string) adapter.RunSpec {
 	return adapter.RunSpec{
 		RunID: "run-1", AgentKind: Kind, WorktreeDir: dir, Prompt: packetFor(sha, ""),
@@ -219,6 +229,13 @@ func TestAPassingJobIsAPassRecordAndASucceededSession(t *testing.T) {
 	if n := len([]rune(r.res.Summary)); n < 600 {
 		t.Errorf("deliverable is %d characters; the run loop's gate reads under 600 closely", n)
 	}
+	body, m := recordFromDeliverable(t, r.res.Summary)
+	if body != recordFile(t, a, "run-1") {
+		t.Errorf("the inline record is not the record file's bytes:\n%s", body)
+	}
+	if _, ok := m["emitted_by"]; ok || m["result"] != "pass" {
+		t.Errorf("inline record: %v; want result pass and no emitted_by, since pulse is not on PATH", m)
+	}
 }
 
 func TestAFailingJobIsAFailRecordAndStillASucceededSession(t *testing.T) {
@@ -234,6 +251,13 @@ func TestAFailingJobIsAFailRecordAndStillASucceededSession(t *testing.T) {
 	}
 	if !strings.Contains(r.res.Summary, `The floor check failed on tiny: the step "the failing step" failed.`) {
 		t.Errorf("deliverable:\n%s", r.res.Summary)
+	}
+	body, m := recordFromDeliverable(t, r.res.Summary)
+	if body != recordFile(t, a, "run-1") || m["result"] != "fail" {
+		t.Errorf("inline record: %v\n%s", m, body)
+	}
+	if _, ok := m["emitted_by"]; ok {
+		t.Error("emitted_by set on a record Rein did not send")
 	}
 }
 
@@ -251,6 +275,9 @@ func TestAJobActCouldNotSetUpIsAnErrorAndAFailedSession(t *testing.T) {
 	if !strings.Contains(r.res.Summary, "could not be run on this machine") {
 		t.Errorf("deliverable:\n%s", r.res.Summary)
 	}
+	if _, m := recordFromDeliverable(t, r.res.Summary); m["result"] != "error" {
+		t.Errorf("inline record result %v, want error", m["result"])
+	}
 }
 
 func TestACheckPastItsTimeoutIsStopped(t *testing.T) {
@@ -267,6 +294,9 @@ func TestACheckPastItsTimeoutIsStopped(t *testing.T) {
 	}
 	if r.res.Status != adapter.StatusTimedOut || r.rec.Result != ResultError {
 		t.Errorf("status %s, record %s", r.res.Status, r.rec.Result)
+	}
+	if _, m := recordFromDeliverable(t, r.res.Summary); m["result"] != "error" {
+		t.Errorf("inline record result %v, want error", m["result"])
 	}
 	beat := false
 	for _, ev := range r.events {
@@ -333,6 +363,55 @@ func TestTheRecordGoesToPulseWhenTheQueueHoldsStride(t *testing.T) {
 	}
 	if strings.Contains(r.res.Summary, "stride-secret-token") || strings.Contains(r.res.Summary, "ghs_") {
 		t.Fatal("a secret reached the deliverable")
+	}
+	body, m := recordFromDeliverable(t, r.res.Summary)
+	if m["emitted_by"] != "rein" {
+		t.Errorf("emitted_by = %v after a successful send, want rein", m["emitted_by"])
+	}
+	if withoutEmittedBy(body) != recordFile(t, a, "run-1") {
+		t.Errorf("the inline record is not the file's bytes plus emitted_by:\n%s", body)
+	}
+}
+
+// A send that fails leaves the record for Elk to forward: no emitted_by.
+func TestAFailedSendLeavesEmittedByAbsent(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	pulse := stubScript(t, "pulse", "echo 'ingest refused: 401' >&2\nexit 1")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: pulse}
+	spec := baseSpec(dir, sha)
+	spec.Env = map[string]string{"STRIDE_INGEST_URL": "https://ingest.example/x", "STRIDE_TOKEN": "stride-secret-token"}
+	r := runCheck(t, a, spec, argsFile)
+	if r.res.Status != adapter.StatusSucceeded || !strings.Contains(r.res.Summary, "NOT sent") ||
+		!strings.Contains(r.res.Summary, "ingest refused") {
+		t.Errorf("status %s, deliverable:\n%s", r.res.Status, r.res.Summary)
+	}
+	body, m := recordFromDeliverable(t, r.res.Summary)
+	if _, ok := m["emitted_by"]; ok {
+		t.Errorf("emitted_by set although the send failed: %v", m)
+	}
+	if body != recordFile(t, a, "run-1") {
+		t.Errorf("the inline record is not the record file's bytes:\n%s", body)
+	}
+}
+
+// Pulse on PATH but no Stride variables in the queue's secrets: pulse never
+// runs, and the record is Elk's to forward.
+func TestPulseWithoutStrideIsNeverRunAndLeavesEmittedByAbsent(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	ran := filepath.Join(t.TempDir(), "pulse-ran")
+	pulse := stubScript(t, "pulse", "touch '"+ran+"'")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: pulse}
+	r := runCheck(t, a, baseSpec(dir, sha), argsFile)
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("pulse ran with no Stride variables")
+	}
+	if !strings.Contains(r.res.Summary, "hold no STRIDE_INGEST_URL") {
+		t.Errorf("deliverable:\n%s", r.res.Summary)
+	}
+	if _, m := recordFromDeliverable(t, r.res.Summary); m["emitted_by"] != nil {
+		t.Errorf("emitted_by set although nothing was sent: %v", m)
 	}
 }
 

@@ -192,18 +192,101 @@ worktree, beside the full log (`act.log`):
 | `branch` | only when `git ls-remote origin refs/heads/<ref's branch>` is exactly the commit tested |
 | `counts` | step counts from act's log (`steps`, `steps_passed`, `steps_failed`, `steps_skipped`), named for steps because a step is not a test; `{}` when no step ran |
 | `failing_test_ids` | `[]` |
+| `changed_paths` | the packet's, capped as the schema caps it: over 1,024 bytes of JSON, the longest prefix that fits, ending with `...[truncated]` |
 | `retention_class` | `ci-history` |
+
+Rein applies the `changed_paths` cap itself, exactly as pulse applies it
+when it emits. So the file, the copy in the deliverable and what pulse sends
+are the same list, and a capped list passes through pulse unchanged.
 
 When `pulse` is on PATH and the queue's environment holds
 `STRIDE_INGEST_URL` and `STRIDE_TOKEN`, Rein runs `pulse suite-record --file
 <record>`. That is the scoped secrets map, or `inherit_env` for an unscoped
-queue. Otherwise the record stays on the machine, and the deliverable says
-why and carries the record's JSON. A failed send is reported in the
-deliverable, never a stuck run.
+queue. Otherwise the record stays on the machine and the deliverable says
+why. A failed send is reported in the deliverable, never a stuck run. Either
+way the deliverable carries the record, so Elk can send it on.
 
 The deliverable leads with one plain sentence: the suite passed, failed, or
-could not be run. It then gives the check (commit, job, executor), the
-record's path and JSON, and the last 40 lines of the log.
+could not be run. It then gives:
+
+1. the check: commit, job, executor;
+2. the record's path, what happened to it, and the log's path;
+3. the last 40 lines of the log, each cut at 500 characters;
+4. the record itself, last.
+
+## The record in the deliverable
+
+Every check deliverable ends with the suite record, so that Elk can forward
+it to Signal from its own side. A runner with no `pulse` binary and no
+Stride credentials still produces history that way. The scout side reads
+this section, so its shape is a contract:
+
+- It starts with a line that is exactly `### Suite record`. It is the last
+  section, and nothing follows it.
+- Then comes one fenced block, opened by a line that is exactly ```` ```json ````
+  and closed by a line that is exactly ```` ``` ````.
+- The block holds one JSON object, indented and over several lines. Its bytes
+  are the bytes Rein wrote to `suite-record.json`. If that write failed, they
+  are the bytes Rein would have written.
+- One field may be added at the end: `"emitted_by": "rein"`. It is there only
+  when Rein itself ran `pulse suite-record` and the command succeeded.
+- If pulse is missing, the queue lacks the Stride variables, the send fails,
+  or the run was stopped, the field is absent.
+- **Elk forwards the record only when `emitted_by` is absent**, so a record
+  is never sent twice.
+- A backtick inside a string is written as `\u0060`. That is the same string
+  to any JSON reader, and no line of the record can close the fence.
+- The fenced block, fences included, stays under 8 KiB.
+  - The `changed_paths` cap already keeps a real record far below that.
+  - If a record would still reach 8 KiB, the block sets `changed_paths` to
+    `[]` and adds a `"note"` field saying how many entries were left out.
+    The file keeps them.
+  - So `[]` with a `note` means the list was left out, not that the diff was
+    empty. Every other field is bounded by the packet's validation, so the
+    rest always fits.
+
+The section is there on every deliverable a check submits:
+
+- `ready` for a pass or a fail;
+- `stuck` ("Did not finish") for an error or a timeout.
+
+A cancelled run submits nothing, so it has no section.
+
+The run loop's redaction of deliverables still applies to the whole text, as
+the last line of defence. The record holds no secret to begin with. It is
+built from the packet and act's step counts, and never from the environment.
+
+````
+### Suite record
+
+```json
+{
+  "schema_version": 1,
+  "repo": "elk-work/scout",
+  "suite": "migration-numbers",
+  "sha": "10acf20cc78f081edf12dcee619dc5b8d609b636",
+  "pr": 0,
+  "branch": "main",
+  "provider": "linux-lab",
+  "runner": "lab-checks",
+  "result": "pass",
+  "duration_ms": 41873,
+  "counts": {
+    "steps": 3,
+    "steps_failed": 0,
+    "steps_passed": 3
+  },
+  "failing_test_ids": [],
+  "changed_paths": [
+    "supabase/migrations/0550_x.sql"
+  ],
+  "retention_class": "ci-history",
+  "started": "2026-10-25T05:34:28.593Z",
+  "ended": "2026-10-25T05:35:10.466Z",
+  "emitted_by": "rein"
+}
+```
+````
 
 ## Manifest
 

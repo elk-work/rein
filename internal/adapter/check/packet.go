@@ -202,7 +202,7 @@ func fromJSON(doc string) (Check, bool) {
 
 var (
 	shaRE      = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
-	repoRE     = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	repoRE     = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$`) // GitHub's own limits
 	workflowRE = regexp.MustCompile(`^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$`)
 	labelRE    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 	tokenRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
