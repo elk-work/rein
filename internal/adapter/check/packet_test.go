@@ -3,6 +3,7 @@ package check
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -323,5 +324,127 @@ func TestRedactEnv(t *testing.T) {
 	got := redactEnv("posting to https://ingest.example/abc with supersecretvalue from /usr/bin", env)
 	if strings.Contains(got, "supersecretvalue") || strings.Contains(got, "ingest.example") || !strings.Contains(got, "/usr/bin") {
 		t.Errorf("redacted: %q", got)
+	}
+}
+
+const sharedCheck = `{"repo":"elk-work/scout","sha":"` + testSHA + `","ref":"refs/heads/main","suite":"migration-numbers",` +
+	`"suites":["migration-numbers","no-schema-fallbacks"],"workflow":".github/workflows/quick-checks.yml","job":"checks",` +
+	`"runs_on":["self-hosted","linux","linux-lab"],"provider":"linux-lab",` +
+	`"changed_paths":["supabase/migrations/0559_check_runs_per_job.sql"]}`
+
+func TestParsePacketReadsSuites(t *testing.T) {
+	want := []string{"migration-numbers", "no-schema-fallbacks"}
+	cases := map[string]string{
+		"fenced whole packet":   order("```json\n{\"kind\":\"check\",\"repo\":\"elk-work/scout\",\"check\":" + sharedCheck + "}\n```"),
+		"single check: line":    "check: " + sharedCheck + "\n",
+		"check.field lines":     "check.sha: " + testSHA + "\ncheck.suite: migration-numbers\ncheck.suites: [migration-numbers, no-schema-fallbacks]\ncheck.workflow: .github/workflows/quick-checks.yml\ncheck.job: checks\n",
+		"lines under ### Check": "### Check\nsha: " + testSHA + "\nsuites: migration-numbers, no-schema-fallbacks\nworkflow: .github/workflows/quick-checks.yml\njob: checks\n",
+		"suites as one string":  "```json\n{\"sha\":\"" + testSHA + "\",\"suites\":\"migration-numbers, no-schema-fallbacks\",\"workflow\":\".github/workflows/quick-checks.yml\",\"job\":\"checks\"}\n```",
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, err := ParsePacket(text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(c.Suites, want) || c.Suite != want[0] {
+				t.Fatalf("suite %q, suites %v; want %v", c.Suite, c.Suites, want)
+			}
+		})
+	}
+	if _, err := ParsePacket("```json\n{\"sha\":\"" + testSHA + "\",\"suites\":[1,2]}\n```"); err == nil {
+		// A fence that does not parse as a check is skipped, so this is no
+		// packet at all rather than a packet with no suites.
+		t.Error("suites of numbers were read as a check")
+	}
+}
+
+func TestValidateSuites(t *testing.T) {
+	cases := []struct {
+		name      string
+		suite     string
+		suites    []string
+		wantSuite string
+		want      []string
+	}{
+		{"neither: the workflow and job", "", nil, "quick-checks/checks", []string{"quick-checks/checks"}},
+		{"suite alone", "floor", nil, "floor", []string{"floor"}},
+		{"suites empty", "floor", []string{}, "floor", []string{"floor"}},
+		{"suites wins and suite is its first", "floor", []string{"a", "b"}, "a", []string{"a", "b"}},
+		{"a name listed twice is recorded once", "a", []string{"a", " b ", "a", "b"}, "a", []string{"a", "b"}},
+		{"blank entries are skipped", "", []string{"", "  ", "c"}, "c", []string{"c"}},
+	}
+	for _, tc := range cases {
+		c := Check{SHA: testSHA, Workflow: ".github/workflows/quick-checks.yml", Job: "checks", Suite: tc.suite, Suites: tc.suites}
+		if err := c.Validate(); err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if c.Suite != tc.wantSuite || !reflect.DeepEqual(c.Suites, tc.want) {
+			t.Errorf("%s: suite %q, suites %q; want %q, %q", tc.name, c.Suite, c.Suites, tc.wantSuite, tc.want)
+		}
+	}
+
+	many := make([]string, maxSuites+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("s%d", i)
+	}
+	for name, suites := range map[string][]string{
+		"a newline":         {"ok", "a\nb"},
+		"a name over 200":   {"ok", strings.Repeat("s", 201)},
+		"more than allowed": many,
+	} {
+		c := Check{SHA: testSHA, Workflow: ".github/workflows/quick-checks.yml", Job: "checks", Suites: suites}
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "check.suites") {
+			t.Errorf("%s: Validate = %v, want a check.suites refusal", name, err)
+		}
+	}
+	bad := Check{SHA: testSHA, Workflow: ".github/workflows/quick-checks.yml", Job: "checks", Suite: "a\nb", Suites: []string{"ok"}}
+	if err := bad.Validate(); err == nil {
+		t.Error("an invalid suite was accepted because suites was present")
+	}
+}
+
+// scout's quick-checks job covers six suites; one run for all of them must
+// fit, with room for more. Names far longer than any real suite's are
+// refused before the job runs, with a reason a person can act on.
+func TestASharedRunThatCannotBeRecordedIsRefused(t *testing.T) {
+	scout := func(suites []string) Check {
+		return Check{Repo: "elk-work/scout", SHA: testSHA, Ref: "refs/heads/main", Workflow: ".github/workflows/quick-checks.yml",
+			Job: "checks", Provider: "linux-lab", Suites: suites}
+	}
+	six := []string{"ia-parity", "parity-declare", "parity-matrix", "no-schema-fallbacks", "elk-type", "migration-numbers"}
+	c := scout(six)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("scout's quick-checks suites: %v", err)
+	}
+	fit := 0
+	for n := 1; n <= maxSuites; n++ {
+		var suites []string
+		for i := 0; i < n; i++ {
+			suites = append(suites, fmt.Sprintf("no-schema-fallbacks-%02d", i))
+		}
+		c := scout(suites)
+		if c.Validate() != nil {
+			break
+		}
+		fit = n
+	}
+	if fit < 8 {
+		t.Errorf("only %d suites of 22-character names fit in one run", fit)
+	}
+	t.Logf("one run records at most %d suites of 22-character names", fit)
+
+	var long []string
+	for i := 0; i < 8; i++ {
+		long = append(long, strings.Repeat("<", 199)+string(rune('a'+i)))
+	}
+	c = scout(long)
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "separate runs") || !strings.Contains(err.Error(), "8 suites") {
+		t.Errorf("Validate = %v, want a refusal naming the count and saying to split the run", err)
 	}
 }

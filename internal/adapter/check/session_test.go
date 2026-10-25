@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -541,5 +542,150 @@ func TestSecretsStayOutOfTheJobAndOutOfEverythingItPrints(t *testing.T) {
 	}
 	if !strings.Contains(string(log), "token is ") {
 		t.Errorf("the redacted line itself is missing from the log:\n%s", log)
+	}
+}
+
+// packetWithSuites is packetFor with check.suites; check.suite stays floor.
+func packetWithSuites(sha string, suites ...string) string {
+	b, _ := json.Marshal(suites)
+	return packetFor(sha, ",\"suites\":"+string(b))
+}
+
+// countingAct wraps act so each run of a job, not a --list, adds a line to
+// the returned file.
+func countingAct(t *testing.T, act string) (path, count string) {
+	t.Helper()
+	count = filepath.Join(t.TempDir(), "count")
+	path = stubScript(t, "act", "case \" $* \" in *\" --list \"*) ;; *) echo ran >> '"+count+"';; esac\nexec '"+act+"' \"$@\"")
+	return path, count
+}
+
+func recordFileAt(t *testing.T, a *Adapter, i int) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(a.RecordRoot, "run-1", recordFileName(i)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestASharedRunRunsTheJobOnceAndRecordsEverySuite(t *testing.T) {
+	dir, sha := testRepo(t)
+	inner, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	act, count := countingAct(t, inner)
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+	spec := baseSpec(dir, sha)
+	spec.Prompt = packetWithSuites(sha, "floor", "lint", "docs")
+	r := runCheck(t, a, spec, argsFile)
+	if r.res.Status != adapter.StatusSucceeded || r.err != nil {
+		t.Fatalf("status %s, err %v", r.res.Status, r.err)
+	}
+	if b, _ := os.ReadFile(count); strings.Count(string(b), "ran") != 1 {
+		t.Errorf("act ran the job %d times, want once", strings.Count(string(b), "ran"))
+	}
+
+	suites := []string{"floor", "lint", "docs"}
+	body, ms := recordsFromDeliverable(t, r.res.Summary)
+	if len(ms) != len(suites) {
+		t.Fatalf("%d records in the block, want %d:\n%s", len(ms), len(suites), body)
+	}
+	first := recordFileAt(t, a, 0)
+	for i, suite := range suites {
+		file := recordFileAt(t, a, i)
+		if file["suite"] != suite || ms[i]["suite"] != suite {
+			t.Errorf("record %d: file suite %v, block suite %v, want %s", i, file["suite"], ms[i]["suite"], suite)
+		}
+		if !reflect.DeepEqual(ms[i], file) {
+			t.Errorf("record %d in the block is not its file:\n%v\n%v", i, ms[i], file)
+		}
+		file["suite"] = first["suite"]
+		if !reflect.DeepEqual(file, first) {
+			t.Errorf("record %d differs from the first in more than its suite:\n%v\n%v", i, file, first)
+		}
+		if _, ok := ms[i]["emitted_by"]; ok {
+			t.Errorf("record %d: emitted_by set although pulse is not on PATH", i)
+		}
+	}
+	if first["result"] != "pass" || first["sha"] != sha || first["runner"] != "lab-checks" {
+		t.Errorf("record: %v", first)
+	}
+	if _, err := os.Stat(filepath.Join(a.RecordRoot, "run-1", recordFileName(3))); err == nil {
+		t.Error("a fourth record file was written")
+	}
+	for _, want := range []string{"The floor, lint and docs checks passed on tiny.", "- Suites: floor, lint, docs",
+		"  - lint: `" + filepath.Join(a.RecordRoot, "run-1", "suite-record-2.json") + "` — kept on this machine: pulse is not on PATH"} {
+		if !strings.Contains(r.res.Summary, want) {
+			t.Errorf("deliverable lacks %q:\n%s", want, r.res.Summary)
+		}
+	}
+}
+
+func TestOneSuiteInSuitesKeepsTheObjectBlock(t *testing.T) {
+	for _, suites := range [][]string{{"floor"}, {"floor", "floor"}, {}} {
+		dir, sha := testRepo(t)
+		act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+		a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+		spec := baseSpec(dir, sha)
+		spec.Prompt = packetWithSuites(sha, suites...)
+		r := runCheck(t, a, spec, argsFile)
+		body, m := recordFromDeliverable(t, r.res.Summary)
+		if body != recordFile(t, a, "run-1") || m["suite"] != "floor" {
+			t.Errorf("suites %v: the block is not the one record file:\n%s", suites, body)
+		}
+		if _, err := os.Stat(filepath.Join(a.RecordRoot, "run-1", recordFileName(1))); err == nil {
+			t.Errorf("suites %v: a second record file was written", suites)
+		}
+		if !strings.Contains(r.res.Summary, "The floor check passed on tiny.") || !strings.Contains(r.res.Summary, "- Suite: floor ·") {
+			t.Errorf("suites %v: deliverable:\n%s", suites, r.res.Summary)
+		}
+	}
+}
+
+// Each record is sent on its own, and emitted_by marks exactly the ones
+// whose send succeeded: Elk forwards the rest.
+func TestEmittedByIsSetPerRecord(t *testing.T) {
+	dir, sha := testRepo(t)
+	act, argsFile := stubAct(t, "act-pass.jsonl", 0, "")
+	pulseArgs := filepath.Join(t.TempDir(), "pulse-args")
+	pulse := stubScript(t, "pulse", "echo \"$@\" >> '"+pulseArgs+"'\n"+
+		"case \"$*\" in *suite-record-2.json*) echo 'ingest refused: 503' >&2; exit 1;; esac")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: pulse}
+	spec := baseSpec(dir, sha)
+	spec.Prompt = packetWithSuites(sha, "floor", "lint", "docs")
+	spec.Env = map[string]string{"STRIDE_INGEST_URL": "https://ingest.example/x", "STRIDE_TOKEN": "stride-secret-token"}
+	r := runCheck(t, a, spec, argsFile)
+	if r.res.Status != adapter.StatusSucceeded {
+		t.Fatalf("a failed send must not fail the check: status %s", r.res.Status)
+	}
+	b, err := os.ReadFile(pulseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(calls) != 3 {
+		t.Fatalf("pulse ran %d times, want once per record: %q", len(calls), calls)
+	}
+	for i, call := range calls {
+		if want := "suite-record --file " + filepath.Join(a.RecordRoot, "run-1", recordFileName(i)); call != want {
+			t.Errorf("pulse call %d = %q, want %q", i, call, want)
+		}
+	}
+	_, ms := recordsFromDeliverable(t, r.res.Summary)
+	for i, want := range []bool{true, false, true} {
+		v, ok := ms[i]["emitted_by"]
+		if ok != want || (ok && v != "rein") {
+			t.Errorf("record %d (%v): emitted_by = %v, present %v; want present %v", i, ms[i]["suite"], v, ok, want)
+		}
+	}
+	if !strings.Contains(r.res.Summary, "  - lint: `"+filepath.Join(a.RecordRoot, "run-1", "suite-record-2.json")+"` — NOT sent") ||
+		!strings.Contains(r.res.Summary, "  - docs: `"+filepath.Join(a.RecordRoot, "run-1", "suite-record-3.json")+"` — sent to Elk's suite history") {
+		t.Errorf("deliverable does not say what happened to each record:\n%s", r.res.Summary)
+	}
+	if strings.Contains(r.res.Summary, "stride-secret-token") {
+		t.Fatal("a secret reached the deliverable")
 	}
 }

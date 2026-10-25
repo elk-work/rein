@@ -25,8 +25,14 @@ type Check struct {
 	// `refs/heads/main`, `main`, `refs/pull/7/head`. It decides only whether
 	// the record may name a branch, and only after the remote confirms it.
 	Ref string `json:"ref"`
-	// Suite is the suite the result is recorded as (ci/suites.yml).
+	// Suite is the suite the result is recorded as (ci/suites.yml). With
+	// Suites present it is always Suites[0].
 	Suite string `json:"suite"`
+	// Suites is every suite the run satisfies. Elk makes one run per
+	// (workflow, job, runs_on) at a commit and lists here each suite that job
+	// covers, Suite first. Absent or empty, it is [Suite]. Rein runs the job
+	// once and writes one record per entry.
+	Suites []string `json:"suites"`
 	// Workflow is the workflow file, relative to the repository root.
 	Workflow string `json:"workflow"`
 	// Job is the job's id in that file. A job's name is accepted too, and a
@@ -44,14 +50,15 @@ type Check struct {
 	Event string `json:"event"`
 }
 
-// UnmarshalJSON reads a check tolerantly: runs_on and changed_paths may be a
-// string or an array, and anything unknown is ignored.
+// UnmarshalJSON reads a check tolerantly: suites, runs_on and changed_paths
+// may be a string or an array, and anything unknown is ignored.
 func (c *Check) UnmarshalJSON(b []byte) error {
 	var raw struct {
 		Repo         string          `json:"repo"`
 		SHA          string          `json:"sha"`
 		Ref          string          `json:"ref"`
 		Suite        string          `json:"suite"`
+		Suites       json.RawMessage `json:"suites"`
 		Workflow     string          `json:"workflow"`
 		Job          string          `json:"job"`
 		RunsOn       json.RawMessage `json:"runs_on"`
@@ -65,6 +72,9 @@ func (c *Check) UnmarshalJSON(b []byte) error {
 	*c = Check{Repo: raw.Repo, SHA: raw.SHA, Ref: raw.Ref, Suite: raw.Suite, Workflow: raw.Workflow,
 		Job: raw.Job, Provider: raw.Provider, Event: raw.Event}
 	var err error
+	if c.Suites, err = stringList(raw.Suites); err != nil {
+		return fmt.Errorf("suites: %w", err)
+	}
 	if c.RunsOn, err = stringList(raw.RunsOn); err != nil {
 		return fmt.Errorf("runs_on: %w", err)
 	}
@@ -175,7 +185,8 @@ func ParsePacket(text string) (Check, error) {
 	unquote := func(s string) string { return strings.Trim(strings.TrimSpace(s), "`\"'") }
 	return Check{
 		Repo: unquote(fields["repo"]), SHA: unquote(fields["sha"]), Ref: unquote(fields["ref"]),
-		Suite: unquote(fields["suite"]), Workflow: unquote(fields["workflow"]), Job: unquote(fields["job"]),
+		Suite: unquote(fields["suite"]), Suites: splitList(fields["suites"]),
+		Workflow: unquote(fields["workflow"]), Job: unquote(fields["job"]),
 		RunsOn: splitList(fields["runs_on"]), Provider: unquote(fields["provider"]),
 		ChangedPaths: splitList(fields["changed_paths"]), Event: unquote(fields["event"]),
 	}, nil
@@ -249,12 +260,36 @@ func (c *Check) Validate() error {
 			return fmt.Errorf("check.runs_on label %q is not a runner label", l)
 		}
 	}
-	if c.Suite != "" && (len(c.Suite) > 200 || strings.ContainsAny(c.Suite, "\r\n")) {
+	if c.Suite != "" && !suiteName(c.Suite) {
 		return fmt.Errorf("check.suite %q is not a suite name", c.Suite)
 	}
-	if c.Suite == "" {
-		c.Suite = strings.TrimSuffix(strings.TrimSuffix(path.Base(c.Workflow), ".yml"), ".yaml") + "/" + c.Job
+	if len(c.Suites) > maxSuites {
+		return fmt.Errorf("check.suites has %d suites; at most %d", len(c.Suites), maxSuites)
 	}
+	// suites, when present, is the list and suite its first entry; a name
+	// listed twice is recorded once.
+	var suites []string
+	seen := map[string]bool{}
+	for i, s := range c.Suites {
+		s = strings.TrimSpace(s)
+		switch {
+		case s == "", seen[s]:
+			continue
+		case !suiteName(s):
+			return fmt.Errorf("check.suites[%d] %q is not a suite name", i, s)
+		}
+		seen[s] = true
+		suites = append(suites, s)
+	}
+	if len(suites) > 0 {
+		c.Suite = suites[0]
+	} else {
+		if c.Suite == "" {
+			c.Suite = strings.TrimSuffix(strings.TrimSuffix(path.Base(c.Workflow), ".yml"), ".yaml") + "/" + c.Job
+		}
+		suites = []string{c.Suite}
+	}
+	c.Suites = suites
 	if c.Provider == "" {
 		c.Provider = "rein"
 	}
@@ -264,7 +299,22 @@ func (c *Check) Validate() error {
 	if c.ChangedPaths == nil {
 		c.ChangedPaths = []string{}
 	}
+	// Last, once every default is in: the deliverable must be able to carry
+	// one record per suite inside its 8 KiB block, whatever the run fills in.
+	if n := c.worstRecordBlock(); n >= maxRecordBlock {
+		return fmt.Errorf("check.suites names %d suites, more than one deliverable can record: their records "+
+			"would take up to %d bytes, and the block holds under %d. Send them as separate runs", len(c.Suites), n, maxRecordBlock)
+	}
 	return nil
+}
+
+// maxSuites bounds check.suites before anything else reads it; the block's
+// own bound is the tighter one in practice.
+const maxSuites = 64
+
+// suiteName is the rule for a suite's name, in suite and in suites alike.
+func suiteName(s string) bool {
+	return s != "" && len(s) <= 200 && !strings.ContainsAny(s, "\r\n")
 }
 
 // Family is the platform a set of runs-on labels asks for: "linux", "macos",

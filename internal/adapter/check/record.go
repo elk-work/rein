@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/elk-work/rein/internal/config"
 )
 
 // SuiteRecord is the suite run record, schema_version 1, exactly as
@@ -48,6 +51,21 @@ const (
 	ResultCancelled = "cancelled"
 )
 
+// newRecords is one record per suite the check satisfies, from the one run
+// of its job: identical but for suite.
+func newRecords(c Check, queue, branch, result string, t *tally, started, ended time.Time) []SuiteRecord {
+	suites := c.Suites
+	if len(suites) == 0 {
+		suites = []string{c.Suite}
+	}
+	recs := make([]SuiteRecord, len(suites))
+	for i, suite := range suites {
+		recs[i] = newRecord(c, queue, branch, result, t, started, ended)
+		recs[i].Suite = suite
+	}
+	return recs
+}
+
 // newRecord fills a record from the check and how the job went.
 func newRecord(c Check, queue, branch, result string, t *tally, started, ended time.Time) SuiteRecord {
 	counts := map[string]int{}
@@ -72,13 +90,23 @@ func newRecord(c Check, queue, branch, result string, t *tally, started, ended t
 }
 
 // write saves the record as indented JSON, 0600: the bytes [recordBlock]
-// carries inline.
+// carries inline when the check has one suite.
 func (r SuiteRecord) write(path string) error {
 	b, err := encodeRecord(inlineRecord{SuiteRecord: r})
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, b, 0o600)
+}
+
+// recordFileName is the file the i-th record (from 0) is written to: the
+// first suite's is suite-record.json, as it was before a check could carry
+// several, and the rest are numbered from 2.
+func recordFileName(i int) string {
+	if i == 0 {
+		return "suite-record.json"
+	}
+	return fmt.Sprintf("suite-record-%d.json", i+1)
 }
 
 // The schema's bound on changed_paths (pulse/docs/suite-records.md): Stride
@@ -138,8 +166,11 @@ type inlineRecord struct {
 // deliverable alike: indented JSON and a final newline. A backtick can only
 // sit inside a JSON string, and is written as \u0060 — the same string to
 // any JSON reader — so no line of the record can close a markdown fence.
-func encodeRecord(r inlineRecord) ([]byte, error) {
-	b, err := json.MarshalIndent(r, "", "  ")
+func encodeRecord(r inlineRecord) ([]byte, error) { return encodeJSON(r) }
+
+// encodeJSON is [encodeRecord] for a record or an array of them.
+func encodeJSON(v any) ([]byte, error) {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -155,32 +186,86 @@ const RecordHeading = "### Suite record"
 // 8 KiB.
 const maxRecordBlock = 8 << 10
 
-// recordBlock is the deliverable's last section: [RecordHeading] and one
-// fenced JSON block holding the record, the bytes of the record file plus
-// `"emitted_by": "rein"` when emitted is true. When the block would reach
-// 8 KiB, changed_paths goes to [] and a note says so; every other field is
-// bounded by the packet's validation, so the rest always fits.
+// recordBlock is [recordsBlock] for a check with one suite.
 func recordBlock(rec SuiteRecord, emitted bool) string {
-	in := inlineRecord{SuiteRecord: rec}
-	if emitted {
-		in.EmittedBy = "rein"
-	}
-	fence := func(in inlineRecord) string {
-		b, err := encodeRecord(in)
-		if err != nil {
-			return ""
+	return recordsBlock([]SuiteRecord{rec}, []bool{emitted})
+}
+
+// recordsBlock is the deliverable's last section: [RecordHeading] and one
+// fenced JSON block. For one record the block holds that record as an
+// object, the bytes of the record file plus `"emitted_by": "rein"` when
+// emitted[0] is true. For several it holds an array of them, in suite order,
+// each with its own emitted_by. When the block would reach 8 KiB,
+// changed_paths goes to [] on every record and a note on each says so;
+// [Check.Validate] refused any check whose records would not fit even then.
+func recordsBlock(recs []SuiteRecord, emitted []bool) string {
+	ins := make([]inlineRecord, len(recs))
+	paths := false
+	for i, rec := range recs {
+		ins[i] = inlineRecord{SuiteRecord: rec}
+		if i < len(emitted) && emitted[i] {
+			ins[i].EmittedBy = "rein"
 		}
-		return "```json\n" + string(b) + "```\n"
+		paths = paths || len(rec.ChangedPaths) > 0
 	}
-	block := fence(in)
-	if len(block) >= maxRecordBlock && len(in.ChangedPaths) > 0 {
-		n := len(in.ChangedPaths)
-		in.ChangedPaths = []string{}
-		in.Note = fmt.Sprintf("changed_paths (%d entries) was left out to keep this block under 8 KiB; "+
-			"the record file on the runner holds it, and [] here does not mean the diff was empty", n)
-		block = fence(in)
+	block := fenceRecords(ins)
+	if len(block) >= maxRecordBlock && paths {
+		for i := range ins {
+			ins[i].Note = droppedNote(len(ins[i].ChangedPaths))
+			ins[i].ChangedPaths = []string{}
+		}
+		block = fenceRecords(ins)
 	}
 	return RecordHeading + "\n\n" + block
+}
+
+// fenceRecords is the fenced block: one record as an object, several as an
+// array.
+func fenceRecords(ins []inlineRecord) string {
+	var v any = ins
+	if len(ins) == 1 {
+		v = ins[0]
+	}
+	b, err := encodeJSON(v)
+	if err != nil {
+		return ""
+	}
+	return "```json\n" + string(b) + "```\n"
+}
+
+func droppedNote(n int) string {
+	return fmt.Sprintf("changed_paths (%d entries) was left out to keep this block under 8 KiB; "+
+		"the record file on the runner holds it, and [] here does not mean the diff was empty", n)
+}
+
+// worstRecordBlock is the size of the largest record block the check can
+// produce: its own repository, commit, provider and suites, with everything
+// the run fills in later at its longest — the ref's branch, a queue name of
+// [config.QueueNameMax] bytes, counts and duration at their maximum, the
+// longest result, millisecond timestamps — and on every record emitted_by
+// and the note that replaces changed_paths. [Check.Validate] refuses a check
+// whose worst case reaches 8 KiB, so every block a run writes fits.
+func (c Check) worstRecordBlock() int {
+	repo := c.Repo
+	if repo == "" { // origin fills it in, and repoRE bounds it there
+		repo = strings.Repeat("o", 39) + "/" + strings.Repeat("r", 100)
+	}
+	suites := c.Suites
+	if len(suites) == 0 {
+		suites = []string{c.Suite}
+	}
+	at := time.Date(9999, 12, 31, 23, 59, 59, 999_000_000, time.UTC)
+	ins := make([]inlineRecord, len(suites))
+	for i, suite := range suites {
+		ins[i] = inlineRecord{SuiteRecord: SuiteRecord{
+			SchemaVersion: 1, Repo: repo, Suite: suite, SHA: c.SHA, PR: 0, Branch: candidateBranch(c.Ref),
+			Provider: c.Provider, Runner: strings.Repeat("q", config.QueueNameMax), Result: ResultCancelled,
+			DurationMS: math.MaxInt64, Counts: map[string]int{"steps": math.MaxInt, "steps_passed": math.MaxInt,
+				"steps_failed": math.MaxInt, "steps_skipped": math.MaxInt},
+			FailingTestIDs: []string{}, ChangedPaths: []string{}, RetentionClass: "ci-history", Started: at, Ended: at,
+		}, EmittedBy: "rein", Note: droppedNote(len(c.ChangedPaths))}
+	}
+	return len(fenceRecords(ins))
 }
 
 // branchRE is a short branch name pulse accepts: no ref path, no pull ref.
