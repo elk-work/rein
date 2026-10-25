@@ -77,9 +77,109 @@ func Slots(h Headroom, hard int) (int, string) {
 		fmt.Fprintf(&why, " — the floor: %s, short of the %s of RAM and %s of disk one run is budgeted",
 			strings.Join(limits, " and "), humanBytes(RAMPerRun), humanBytes(DiskPerRun))
 	default:
-		fmt.Fprintf(&why, " — held down by %s (cap %d)", strings.Join(limits, " and "), hard)
+		fmt.Fprintf(&why, " — held down by %s, budgeting %s (cap %d)", strings.Join(limits, " and "), budget(kindsOf(h, hard)), hard)
 	}
 	return n, why.String()
+}
+
+// The hysteresis margins: how far past the line for a slot count a reading
+// has to move before the count follows it (ark:rein#33). A quarter of one
+// run's budget each — enough to swallow the few hundred megabytes a busy Mac's
+// free memory wanders between two readings five seconds apart, small enough
+// that a real change is still followed within a tick.
+const (
+	RAMHysteresis  = RAMPerRun / 4
+	DiskHysteresis = DiskPerRun / 4
+)
+
+// StableSlots is [Slots] for a gate whose count was prev at its last reading,
+// with hysteresis, so that one steady machine gives one steady answer.
+//
+// Without it the count flapped (ark:rein#33): a Mac reading just either side
+// of 8 GiB free — 7.98 one tick, 8.02 the next — is one slot, then two, then
+// one, five seconds apart, each logged, and each logged as "8.0 GiB" because
+// that is what both readings round to. Here the count rises to k only when the
+// reading clears k runs' budget by a margin, and falls below k only when it is
+// short of it by a margin; a reading inside the band keeps the last count.
+// prev <= 0 means nothing has been measured, and the reading is taken as it
+// stands.
+func StableSlots(h Headroom, hard, prev int) (int, string) {
+	raw, why := Slots(h, hard)
+	if prev <= 0 || raw == prev {
+		return raw, why
+	}
+	if hard < MinSlots {
+		hard = MinSlots
+	}
+	low, _, _, _ := slots(shift(h, false), hard)
+	high, _, _, _ := slots(shift(h, true), hard)
+	n := prev
+	switch {
+	case low > prev:
+		n = low
+	case high < prev:
+		n = high
+	}
+	if n > hard {
+		n = hard
+	}
+	if n == raw {
+		return raw, why
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d slot", n)
+	if n != 1 {
+		b.WriteString("s")
+	}
+	fmt.Fprintf(&b, " — kept from the last reading, within %s of RAM or %s of disk of the line for %d (%s; budgeting %s, cap %d)",
+		humanBytes(RAMHysteresis), humanBytes(DiskHysteresis), raw, describe(h), budget(nil), hard)
+	return n, b.String()
+}
+
+// shift moves each known half of a reading by its hysteresis margin, up or
+// down, without wrapping below zero.
+func shift(h Headroom, up bool) Headroom {
+	move := func(v, by uint64) uint64 {
+		if up {
+			return v + by
+		}
+		if v < by {
+			return 0
+		}
+		return v - by
+	}
+	if h.RAMKnown {
+		h.FreeRAM = move(h.FreeRAM, RAMHysteresis)
+	}
+	if h.DiskKnown {
+		h.FreeDisk = move(h.FreeDisk, DiskHysteresis)
+	}
+	return h
+}
+
+// kindsOf is the binding limits of a reading as bare nouns.
+func kindsOf(h Headroom, hard int) []string {
+	_, _, kinds, _ := slots(h, hard)
+	return kinds
+}
+
+// budget names what one run is budgeted, for the limits that bind — so a
+// sentence saying a reading holds the count down also says what it is
+// measured against. nil names both.
+func budget(kinds []string) string {
+	var parts []string
+	for _, k := range kinds {
+		switch k {
+		case "memory":
+			parts = append(parts, humanBytes(RAMPerRun)+" of RAM")
+		case "disk":
+			parts = append(parts, humanBytes(DiskPerRun)+" of disk")
+		}
+	}
+	if len(parts) == 0 {
+		parts = []string{humanBytes(RAMPerRun) + " of RAM", humanBytes(DiskPerRun) + " of disk"}
+	}
+	return strings.Join(parts, " and ") + " a run"
 }
 
 // slots is the arithmetic behind [Slots], separated from the prose so the
@@ -97,14 +197,14 @@ func slots(h Headroom, hard int) (n int, limits, kinds []string, floored bool) {
 	if h.RAMKnown {
 		if byRAM := int(h.FreeRAM / RAMPerRun); byRAM < n {
 			n = byRAM
-			limits = append(limits, fmt.Sprintf("%s RAM free", humanBytes(h.FreeRAM)))
+			limits = append(limits, fmt.Sprintf("%s RAM free", humanBytesDown(h.FreeRAM)))
 			kinds = append(kinds, "memory")
 		}
 	}
 	if h.DiskKnown {
 		if byDisk := int(h.FreeDisk / DiskPerRun); byDisk < n {
 			n = byDisk
-			limits = append(limits, fmt.Sprintf("%s disk free under the work directory", humanBytes(h.FreeDisk)))
+			limits = append(limits, fmt.Sprintf("%s disk free under the work directory", humanBytesDown(h.FreeDisk)))
 			kinds = append(kinds, "disk")
 		}
 	}
@@ -158,6 +258,26 @@ func humanBytes(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
+}
+
+// humanBytesDown is [humanBytes] rounded down rather than to nearest, for a
+// reading that is said to hold a count down. Rounding to nearest is what made
+// "1 slot — held down by 8.0 GiB RAM free" possible at a 4 GiB budget: the
+// reading was 7.98 GiB, which floors to one run and rounds to 8.0
+// (ark:rein#33). Rounded down, the figure and the count agree.
+func humanBytesDown(n uint64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for m := n / unit; m >= unit && exp < 4; m /= unit {
+		div *= unit
+		exp++
+	}
+	// n*10 cannot overflow for any reading under an exbibyte.
+	tenths := n * 10 / div
+	return fmt.Sprintf("%d.%d %ciB", tenths/10, tenths%10, "KMGTP"[exp])
 }
 
 // DetectHeadroom measures free memory and the free space under dir. It is the

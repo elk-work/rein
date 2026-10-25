@@ -115,6 +115,24 @@ func (e *NotRunningError) AwaitingReview() bool {
 	return !e.Cancelled && e.Status == "ready"
 }
 
+// ReviewPassedLine is the sentence Elk adds to "This run is `ready`, not
+// running." once its review pass has let the deliverable through to the person
+// — byte-identical to notRunningWhy in elk-mcp/queue.ts. While the pass is
+// still thinking, the same `ready` reply says instead that the review "has not
+// finished — this means wait, not stop".
+const ReviewPassedLine = "It is with the person for review now; there is nothing more to do on it."
+
+// ReviewPassed reports a `ready` run whose review Elk has finished and let
+// through (ark:rein#78). Until Rein read this it could not tell an approval
+// from a pass that had not run, and waited out the whole review timeout: on
+// the hosted proof, twenty minutes after an approval Elk gave 56 seconds in.
+//
+// It matches the sentence positively, so a reply without it — an older Elk, or
+// a review still running — keeps meaning "wait", exactly as before.
+func (e *NotRunningError) ReviewPassed() bool {
+	return e.AwaitingReview() && strings.Contains(e.Text, ReviewPassedLine)
+}
+
 // TierRefusalError reports a token whose tier is too low for the tool it was
 // used on. Rein meets exactly one of these in normal life: `connect_executor`
 // needs the `interactive` tier, while an invited agent's durable token is

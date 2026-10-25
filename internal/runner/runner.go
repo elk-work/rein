@@ -109,9 +109,11 @@ const (
 	// DefaultReviewTimeout is how long Rein waits for Elk's auto-review pass
 	// after submitting, before treating silence as approval.
 	//
-	// It has to be a timeout rather than a signal: an approved run has its
-	// auto_review cleared and stays `ready`, which through the poll is
-	// indistinguishable from a pass that has not run yet.
+	// An approved run has its auto_review cleared and stays `ready`. Elk now
+	// says so in the poll's reply ([elk.ReviewPassedLine]) and Rein stops
+	// waiting the moment it reads that (ark:rein#78); the timeout remains for
+	// an Elk that does not, where approval and a pass that has not run yet
+	// look the same. Hosted runs do not wait at all.
 	DefaultReviewTimeout = 20 * time.Minute
 
 	// DefaultReviewPollInterval is how often the review wait asks. The poll

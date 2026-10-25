@@ -273,9 +273,18 @@ attached for context. Bounded to `--max-review-rounds` (3), after which it
 submits `stuck` carrying the last verdict — a request that has not been
 satisfied in three attempts is one a person should read.
 
-**Approval is silence.** An approved run has its `auto_review` cleared and stays
-`ready`, which through the poll is indistinguishable from a pass that has not
-run yet. So the settlement is `--review-timeout` (20 minutes), not a signal.
+**Approval is heard on the next poll.** An approved run has its `auto_review`
+cleared and stays `ready`, and Elk's reply to the poll then says "It is with the
+person for review now"; while the pass is still thinking it says the review "has
+not finished". Rein settles the moment it reads the first (ark:rein#78) — the
+hosted proof waited 20 minutes for an approval Elk gave 56 seconds after the
+submit. `--review-timeout` (20 minutes) remains for an Elk that does not say,
+where approval and a pass that has not run yet look the same.
+
+**A hosted run does not wait at all.** Under `--hosted` Rein exits right after
+the submit rather than idle in a billed container while Elk reviews. A revision
+the review asks for is taken by a fresh attempt, from the work order and the
+verdict, since the session file died with the container.
 
 **A revision's reply replaces the deliverable**, so the resume prompt says so:
 the agent ends with the whole deliverable again, answering the review in its
@@ -811,7 +820,7 @@ has no run id Rein knows, so the reason rides the queue's **heartbeat** as
 
 | When | `waiting_on` |
 |---|---|
-| no slot is free | `waiting for a slot on this machine: 1 slot — held down by 5.0 GiB RAM free (cap 4); in use by mac-codex run arun-48e658fb for 25m; next in line mac-claude (Wrangler)` |
+| no slot is free | `waiting for a slot on this machine: 1 slot — held down by 5.0 GiB RAM free, budgeting 4.0 GiB of RAM a run (cap 4); in use by mac-codex run arun-48e658fb for 25m; next in line mac-claude (Wrangler)` |
 | Elk refuses the claim — a parked agent, a wrong tier | `claim_run refused: ` and Elk's own sentence |
 | Elk cannot answer | `claim_run failed: Elk answered error -32603: …`, or `… could not be reached` |
 | the beat counted runs the claim would not hand over | `Elk's heartbeat counted 2 waiting on this queue, but claim_run handed none over: Queue "mac-grok" is clear: …` |

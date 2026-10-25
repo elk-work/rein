@@ -188,7 +188,9 @@ func (r *Runner) hostReading() *elk.HostReading {
 	// The runner's own half. slots_total is what the machine can afford right
 	// now, not the configured ceiling — the two differ on any laptop with a
 	// simulator open, and the difference IS the interesting number.
-	total, _ := Slots(m.Headroom, r.opts.MaxConcurrent)
+	// Through the gate's hysteresis, so the fleet reading and the gate agree
+	// rather than the reading flapping where the gate holds (ark:rein#33).
+	total, _ := StableSlots(m.Headroom, r.opts.MaxConcurrent, r.gate.lastCount())
 	h.Runner = &elk.RunnerReading{
 		Name:           RunnerName,
 		Version:        r.opts.Version,

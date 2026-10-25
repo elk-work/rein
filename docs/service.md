@@ -349,7 +349,7 @@ memory and says so.
 The slot count is logged **whenever it changes**, with the reason:
 
 ```
-20:01:28 concurrency: 1 slot — held down by 5.0 GiB RAM free (cap 4)
+20:01:28 concurrency: 1 slot — held down by 5.0 GiB RAM free, budgeting 4.0 GiB of RAM a run (cap 4)
 ```
 
 That line matters because a throttled runner and an idle one look identical
@@ -414,7 +414,7 @@ then a line per queue whenever the depth changes and otherwise once a lease:
 ```
 20:01:27 mac-claude: serving claude in "Elk Scout", permission mode full
 20:01:27 mac-claude: host capabilities: claude (claude on PATH), …
-20:01:28 concurrency: 1 slot — held down by 5.0 GiB RAM free (cap 4)
+20:01:28 concurrency: 1 slot — held down by 5.0 GiB RAM free, budgeting 4.0 GiB of RAM a run (cap 4)
 20:01:29 mac-claude: online — 0 waiting
 ```
 

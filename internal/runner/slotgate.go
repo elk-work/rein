@@ -225,10 +225,15 @@ func (g *slotGate) enter(ctx context.Context, req slotRequest, onWait func(reaso
 // not get to take it, because the Wrangler is in line ahead of it and the slot
 // is counted as the Wrangler's.
 func (g *slotGate) tryEnter(w *slotWaiter) (*slotHold, string) {
-	n, why := Slots(g.probe(g.workDir), g.hard)
+	reading := g.probe(g.workDir)
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// Hysteresis against the last count, not a fresh answer per reading:
+	// several queues ask every five seconds, and a reading that straddles a
+	// slot's line must not flap the count — and the log — between them
+	// (ark:rein#33).
+	n, why := StableSlots(reading, g.hard, g.last)
 	if n != g.last {
 		g.logf("concurrency: %s", why)
 		g.last = n
@@ -292,6 +297,14 @@ func (g *slotGate) reasonLocked(why string, ahead []*slotWaiter) string {
 		b.WriteString(strings.Join(parts, ", "))
 	}
 	return b.String()
+}
+
+// lastCount is the slot count as of the gate's most recent measurement, 0
+// before the first.
+func (g *slotGate) lastCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.last
 }
 
 // grantCount is how many slots the gate has handed out since it started.
