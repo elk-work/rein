@@ -961,6 +961,46 @@ an outward-facing action no one asked for. **The control is the repository's
 branch protection**: a `pr` queue belongs on a repository that requires a
 review before merge, and then a breach is impossible rather than reported.
 
+### Repositories in reach beyond the worktree
+
+The prompt keeps a run inside its worktree: "Do not reach outside it", "never
+open, read or search the user's own files outside this worktree", and
+"anything reaching outside this repository" at the end of every landing
+section. A few runs are cross-repository by design, and an agent that reads
+those lines literally refuses them. The org-wide PR sweep Pace sends every six
+hours (Elk Scout #928) did exactly that on mac-codex and mac-claude, nine sends
+in ten from 2026-10-21, because the handoff's `cd ~/dev/elk` and its
+sweep-state claim sit in the woven half of the work order, where the prompt
+rightly tells the agent not to take orders (`ark:rein#85 (01M536ABWC)`).
+
+So a run gets a **Repositories in reach** section, appended after "This run",
+when either of the two trusted inputs says so:
+
+1. **The packet declares a repository beyond the run's own** — `repo:owner/name`,
+   or the older `git push access to owner/name`. The section lists every
+   declared repository with its clone, the run's own included.
+2. **The direction names a workflow that is cross-repository by design.** Only
+   the PR sweep today ("the org-wide PR sweep", "run the PR sweep",
+   `/pr-sweep`): its section lists the `elk-work` clones, the `elk-work`
+   repositories on GitHub through `gh`, and `scripts/pr-sweep-state.mjs` —
+   the worktree's copy when the run is in elk, else the elk clone's.
+
+Only the direction counts, never the woven text, so a capture that mentions
+the sweep widens nothing. Only checkouts the queue's workspace maps
+(`RepositoriesFor`) are named, so a customer queue is never told about Elk's
+clones, and a workflow arm needs at least one clone of its owner's to apply.
+Hosted runs get no section. When the section applies, the three lines above are
+reworded to point at it, and it says in words that they do not cover what it
+names. Two limits stay: a clone is a person's checkout — no branch switch, no
+commit, nothing left behind in it — and secrets still come only the way the
+secrets paragraph says. A step the run cannot do (no connector, no tool) is
+named and recorded partial rather than refusing the whole run.
+
+A run that reaches nothing beyond its own repository gets the prompt it had
+before, byte for byte. `internal/runner/reach.go` has the rules and
+`reach_test.go` holds prompt.md and the landing sections to carrying the lines
+it rewords.
+
 ### The pull request closes nothing
 
 The first version of that instruction told the agent to put `Closes elk:<id>`

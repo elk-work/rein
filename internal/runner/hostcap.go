@@ -514,26 +514,9 @@ func (h *HostCapabilities) missingWhere(required []string, has func(string) bool
 func RepoCapabilities(ctx context.Context, repos map[string]string) []string {
 	seen := map[string]bool{}
 	for key, path := range repos {
-		path = expand(path)
-		info, err := os.Stat(path)
-		if err != nil || !info.IsDir() {
-			continue
+		if identity, ok := repoIdentity(ctx, key, path); ok {
+			seen["repo:"+identity] = true
 		}
-		identity := key
-		if !strings.Contains(key, "/") {
-			probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-			remote, err := exec.CommandContext(probeCtx, "git", "-C", path, "remote", "get-url", "origin").Output()
-			cancel()
-			if err != nil {
-				continue
-			}
-			identity = githubOriginRepo(strings.TrimSpace(string(remote)))
-		}
-		parts := strings.Split(identity, "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			continue
-		}
-		seen["repo:"+identity] = true
 	}
 	out := make([]string, 0, len(seen))
 	for name := range seen {
@@ -541,6 +524,32 @@ func RepoCapabilities(ctx context.Context, repos map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// repoIdentity is the GitHub owner/name of one configured checkout, and false
+// when the checkout does not exist or has no GitHub identity. A slash key is
+// its own identity; a bare alias is resolved from the checkout's origin.
+func repoIdentity(ctx context.Context, key, path string) (string, bool) {
+	path = expand(path)
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	identity := key
+	if !strings.Contains(key, "/") {
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		remote, err := exec.CommandContext(probeCtx, "git", "-C", path, "remote", "get-url", "origin").Output()
+		cancel()
+		if err != nil {
+			return "", false
+		}
+		identity = githubOriginRepo(strings.TrimSpace(string(remote)))
+	}
+	parts := strings.Split(identity, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	return identity, true
 }
 
 func githubOriginRepo(remote string) string {

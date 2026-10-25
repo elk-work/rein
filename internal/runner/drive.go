@@ -258,6 +258,14 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	defer qr.reap(wt)
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
+	if !qr.r.opts.Hosted {
+		// Repositories the packet declares, or the direction's workflow
+		// reaches, beyond this one (reach.go, ark:rein#85).
+		if reach := resolveReach(ctx, qr.r.opts.Config, qr.q, wo, repo.Path); !reach.empty() {
+			spec.SystemPrompt = applyReach(spec.SystemPrompt, reach)
+			qr.logf("run %s: repositories in reach: %s", wo.RunID, reach.summary())
+		}
+	}
 	if qr.r.opts.Hosted {
 		var names []string
 		for _, name := range hosted.Names {
