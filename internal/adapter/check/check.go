@@ -208,19 +208,33 @@ func (a *Adapter) dockerAnswers(ctx context.Context, env []string) error {
 // passes the daemon's own along unless the queue's environment sets them.
 var dockerVariables = []string{"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"}
 
+// strideVariables are pulse's, and only pulse's: the record's emitter needs
+// them and the workflow's own steps never should, so they are kept out of
+// act's environment, where the host executor would hand them to every step.
+var strideVariables = map[string]bool{"STRIDE_INGEST_URL": true, "STRIDE_TOKEN": true}
+
+// githubTokens reach a check only from the queue's scoped secrets map — a
+// token the daemon happens to inherit is not one the queue granted.
+var githubTokens = map[string]bool{"GITHUB_TOKEN": true, "GH_TOKEN": true}
+
 // env is act's environment: the run's inherited environment, the daemon's
 // Docker location, the queue's scoped secrets, and a pager that never pages.
+// Stride's variables are left out (they are pulse's; see [Adapter.pulseEnv]),
+// and so is a GitHub token the queue's secrets did not provide.
 func (a *Adapter) env(spec adapter.RunSpec) []string {
 	set := map[string]string{}
 	var order []string
 	put := func(k, v string) {
+		if strideVariables[k] {
+			return
+		}
 		if _, ok := set[k]; !ok {
 			order = append(order, k)
 		}
 		set[k] = v
 	}
 	for _, kv := range spec.InheritedEnv() {
-		if k, v, ok := strings.Cut(kv, "="); ok {
+		if k, v, ok := strings.Cut(kv, "="); ok && !githubTokens[k] {
 			put(k, v)
 		}
 	}
@@ -237,6 +251,33 @@ func (a *Adapter) env(spec adapter.RunSpec) []string {
 	out := make([]string, 0, len(order))
 	for _, k := range order {
 		out = append(out, k+"="+set[k])
+	}
+	return out
+}
+
+// pulseEnv is `pulse suite-record`'s environment: the run's inherited
+// environment and the queue's Stride variables, nothing else of its secrets.
+func (a *Adapter) pulseEnv(spec adapter.RunSpec) []string {
+	out := spec.InheritedEnv()
+	for k, v := range spec.Env {
+		if strideVariables[k] {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
+}
+
+// secretValues is every value the run must never print: the queue's scoped
+// secrets, and any Stride or GitHub variable it inherits.
+func secretValues(spec adapter.RunSpec) map[string]string {
+	out := map[string]string{}
+	for k, v := range spec.Env {
+		out[k] = v
+	}
+	for _, kv := range spec.InheritedEnv() {
+		if k, v, ok := strings.Cut(kv, "="); ok && (strideVariables[k] || githubTokens[k]) {
+			out[k] = v
+		}
 	}
 	return out
 }

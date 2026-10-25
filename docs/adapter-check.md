@@ -128,9 +128,18 @@ the job could resolve to, not only the packet's:
 An unmapped label sends act to its own default Docker image. That fails
 "Set up job", which Rein records as an error, not a failure.
 
-`GITHUB_TOKEN` reaches the job only when the queue's secrets map holds one.
-It is passed as `-s GITHUB_TOKEN`, by name, and act reads the value from its
-environment, so it is never on a command line.
+`GITHUB_TOKEN` reaches the job only when the queue's secrets map holds one; a
+token the daemon inherits does not count. It is passed as `-s GITHUB_TOKEN`,
+by name, and act reads the value from its environment, so it is never on a
+command line.
+
+On the host executor, act hands its own environment to every step. So:
+
+- `STRIDE_INGEST_URL` and `STRIDE_TOKEN` never reach act at all; only pulse
+  gets them.
+- Every secret value is taken out of each line before it reaches the log, a
+  progress event or the deliverable. That covers the queue's scoped secrets
+  and any Stride or GitHub variable the queue inherits.
 
 ## Queue settings
 
