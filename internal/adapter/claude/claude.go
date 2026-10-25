@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/power"
 )
 
 // Kind is the agent kind this adapter registers under.
@@ -125,6 +126,10 @@ type Adapter struct {
 	BackgroundWait   time.Duration
 	BackgroundSettle time.Duration
 	BackgroundBeat   time.Duration
+
+	// clock is what the session's timeouts are measured on; nil is
+	// [power.System]. Tests set it to move awake time and wall time apart.
+	clock power.Clock
 }
 
 // Setting-source policies for [Adapter.SettingSources].
@@ -379,6 +384,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		events:     make(chan adapter.Event),
 		done:       make(chan struct{}),
 		started:    time.Now(),
+		clock:      a.clock,
 		grace:      a.InterruptGrace,
 		dec:        &decoder{},
 		hookEvents: make(chan hookPayload, 16),
@@ -386,6 +392,10 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if s.grace <= 0 {
 		s.grace = defaultInterruptGrace
 	}
+	if s.clock == nil {
+		s.clock = power.System
+	}
+	s.startedAwake = s.clock.Awake()
 	s.bgWait = orDefault(a.BackgroundWait, defaultBackgroundWait)
 	s.bgSettle = orDefault(a.BackgroundSettle, defaultBackgroundSettle)
 	s.bgBeat = orDefault(a.BackgroundBeat, defaultBackgroundBeat)

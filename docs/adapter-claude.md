@@ -397,6 +397,17 @@ the wait for the `init` line (default 2 minutes), `Idle` the gap between events,
 `Total` the whole session. Zero means unbounded for `Idle` and `Total` — the run
 loop's own watchdog ladder owns those — and the default for `Startup`.
 
+**Every one of them counts awake time** (`ark:rein#90 (01M5RM05Y6KVVVA5ZAM2BC6MXV)`).
+The session's clocks — the three timeouts, the exit grace after the terminal
+`result`, and the background-work wait — read `internal/power`'s awake clock,
+which stops while the machine sleeps. Until then the activity and result times
+were Unix nanoseconds rebuilt with `time.Unix`, which carries no monotonic
+reading, so `now.Sub` measured wall time: a Mac asleep with its lid closed for
+longer than the idle limit had its agent killed for silence the moment it
+woke. `TestIdleGuardDoesNotCountSleep` moves wall time and awake time apart
+and holds the guard to the second. The run loop's side is in
+`docs/run-loop.md`, *When the machine sleeps*.
+
 When `Idle` fires after a model request or turn, with a known session id and
 no unanswered tool calls, the adapter kills and reaps the child, then resumes
 the same conversation once with `--resume` and a short continue prompt. A

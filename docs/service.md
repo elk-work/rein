@@ -241,6 +241,18 @@ install` — or it will not be found.
 Nothing else is copied. The environment list is closed on purpose: a plist is
 world-readable, so a token that reached it would stop being a secret.
 
+### A run in flight keeps the Mac from idle sleep
+
+While a run is in flight, from its claim to its end, `rein run` holds
+`caffeinate -i -w <rein's pid>`: the PreventUserIdleSystemSleep assertion,
+tied to Rein's own process so that a crash or a `rein service stop` lets go of
+it too. `pmset -g assertions` lists it under `caffeinate`. It keeps an open or
+docked Mac awake for the run. It does not keep a Mac awake once its lid is
+closed (IOPMLib.h: the system "may still sleep for lid close"); for that case
+every clock a run is measured on counts awake time, and the run renews its
+lease the moment the Mac wakes. `docs/run-loop.md`, *When the machine sleeps*, has the whole
+account (`ark:rein#90 (01M5RM05Y6KVVVA5ZAM2BC6MXV)`).
+
 ### What the service does *not* get
 
 `SSH_AUTH_SOCK` is not captured, because on macOS it is a per-login-session

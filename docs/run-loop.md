@@ -52,6 +52,7 @@ bug.
         │  permission        → Respond(deny) + kind=gate            │
         │  usage             → accumulate a delta                   │
         │  nothing, 10 min   → report_progress (the lease)          │
+        │  machine woke      → report_progress (the lease)          │
         │  nothing, 15 min   → STALL                                │
         │  any report says   → CANCELLED                            │
         │    "Not recorded:"                                        │
@@ -496,8 +497,9 @@ reported zero from an omitted field.
 
 Borrowed from Loom, and bounded at one restart:
 
-1. No events for `--stall-after` (default 15 minutes). `EventIdle` does **not**
-   reset the clock — it is the watchdog's input, not evidence of life.
+1. No events for `--stall-after` (default 15 minutes) of **awake** time — a
+   sleep does not count; see *When the machine sleeps*. `EventIdle` does
+   **not** reset the clock — it is the watchdog's input, not evidence of life.
 2. Interrupt the session. If the adapter declares `resume` **and** the session
    has an id: start once more with `RunSpec.ResumeID` set, and say so in a
    progress report.
@@ -506,6 +508,75 @@ Borrowed from Loom, and bounded at one restart:
 
 A third attempt would burn the lease and the tokens on an agent that has
 already failed twice. Loom's own ladder ends in quarantine for the same reason.
+
+## When the machine sleeps
+
+Every clock a run is measured on counts **awake time**, so a sleep costs a run
+nothing, and the run reports the moment the machine wakes, so its lease
+survives the sleep (`ark:rein#90 (01M5RM05Y6KVVVA5ZAM2BC6MXV)`).
+
+**The finding.** A MacBook asleep on battery with its lid closed wakes for
+about 45 seconds every 4 to 18 minutes: a maintenance wake, `DarkWake` in
+`pmset -g log`. Rein claimed runs in those wakes. The worktree step then took
+20 to 30 minutes of wall time with under two of them awake, and the claude
+adapter's idle guard, which measured wall time, killed the agent for silence
+across a single long sleep. Four PR sweeps and a Wrangler cycle on Issac's Mac
+ended "The agent failed" that way between 10-16 and 10-24.
+
+No power assertion keeps a closed-lid Mac on battery awake. IOPMLib.h says of
+PreventUserIdleSystemSleep that "the system may still sleep for lid close"
+and that the assertion "has no effect if the system is in Dark Wake". So there
+are two halves, and both are needed:
+
+- **Keep an open or docked Mac awake for the run.** From the claim to the end
+  of the run, `rein run` holds `caffeinate -i -w <rein's pid>`:
+  PreventUserIdleSystemSleep, tied to Rein's process so that a crash lets go
+  of it too. It is taken only once a work order is in hand, never for a claim
+  that comes back empty, and several runs share one. `pmset -g assertions`
+  lists it under `caffeinate` while a run is in flight. Other platforms hold
+  nothing, and hosted runs do not take it.
+- **Measure the run in awake time.** The stall timer, the 10-minute lease
+  ticker and the slot clock run on Go's monotonic clock, which on macOS
+  (`mach_absolute_time`) and Linux (`CLOCK_MONOTONIC`) stops while the machine
+  sleeps. The slot line that gave this away said a run had "held its slot for
+  50s" 23 minutes after its claim. The claude adapter's idle, startup, total,
+  exit-grace and background-work clocks were Unix timestamps, which are wall
+  time, until `ark:rein#90`; they read the same awake clock now
+  (`internal/power`).
+
+Awake-time clocks have one cost: the lease ticker cannot fire during a sleep,
+while Elk's 15-minute lease is wall time on the server. So Rein watches for
+sleep. Every two seconds it reads wall time and awake time together, and a gap
+of ten seconds or more between them is a sleep. (It is built without cgo, so
+IOKit's sleep notifications are out of reach; the two clocks give the same
+answer within one reading.) The moment the machine wakes, Rein:
+
+- reports on every run in flight — "This machine slept for 23m. Rein paused
+  the run's clocks while it slept, and the run carries on." — which renews
+  the lease, retrying up to four times five seconds apart while the network
+  comes back;
+- beats `heartbeat_executor` for every queue, so `list_executors` shows the
+  machine online again rather than waiting a minute of awake time for the
+  telemetry tick, which a maintenance wake never has;
+- logs `this machine slept for 23m` in the service log, which carries no dates
+  and otherwise shows a sleep only as a gap.
+
+**What a lapsed lease still costs.** `report_progress`'s guarded touch in
+elk-mcp checks only that the run is still `running`, so a report after a sleep
+longer than fifteen minutes still renews the lease, and nothing on the server
+requeues a lapsed run by itself. The exposure is `claim_run`, which may hand a
+lapsed run to another claimer on the same queue while this machine is asleep.
+That claimer then holds it, and this machine's next report reads "Not
+recorded" and discards its work, as for a cancellation. Reporting on every
+wake narrows that to one unbroken sleep longer than the lease.
+
+**What Rein does not do.** It does not decline to claim during a maintenance
+wake. A claim made in one survives, advancing 45 seconds at a time, where it
+used to fail. `pmset -g systemstate` lists no `Graphics` capability during a
+dark wake, which could gate claims, but that reading is unverified, and a gate
+built on it could stop a headless Mac from ever claiming. On Windows, Go's
+monotonic clock counts sleep, so a sleep there still reads as time passing;
+the Windows lab machines do not sleep.
 
 ## The exact calls
 

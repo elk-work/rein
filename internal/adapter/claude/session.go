@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/power"
 )
 
 // maxStreamLine bounds one NDJSON line. The `system/init` line alone runs to
@@ -57,16 +58,27 @@ type Session struct {
 
 	started time.Time
 
-	// Activity clocks, read by the watch goroutine.
-	lastActivity atomic.Int64 // unix nanos
+	// clock is what every timeout below is measured on. Its Awake reading
+	// stops while the machine sleeps, which is the point: a Mac asleep with
+	// its lid closed is not an agent gone silent (ark:rein#90). Until then
+	// these were unix nanos rebuilt with time.Unix, which carries no
+	// monotonic reading, so every minute of sleep counted as silence and the
+	// idle guard killed agents across a single long sleep.
+	clock        power.Clock
+	startedAwake time.Duration
+
+	// Activity clocks, read by the watch goroutine. Each is an awake-clock
+	// reading in nanoseconds (see [Session.awakeNow]), never 0 once set.
+	lastActivity atomic.Int64
 	initSeen     atomic.Bool
-	resultAt     atomic.Int64 // unix nanos, 0 until the terminal result line
+	resultAt     atomic.Int64 // 0 until the terminal result line
 	killed       atomic.Bool
 
 	// The background-work clocks, written by the stream goroutine and read
-	// by the watch goroutine. bgSince is the unix nanos at which a turn ended
-	// with background work still running, 0 when the session is not waiting
-	// on any; bgLive is how many tasks are running now; bgSummary names them.
+	// by the watch goroutine. bgSince is the awake reading at which a turn
+	// ended with background work still running, 0 when the session is not
+	// waiting on any; bgLive is how many tasks are running now; bgSummary
+	// names them.
 	// bgGivenUp is set by watch once the wait has run out and the agent has
 	// been told to finish in the foreground.
 	bgSince   atomic.Int64
@@ -311,7 +323,19 @@ func (s *Session) finish(ev adapter.Event) {
 	close(s.events)
 }
 
-func (s *Session) markActivity() { s.lastActivity.Store(time.Now().UnixNano()) }
+func (s *Session) markActivity() { s.lastActivity.Store(s.awakeNow()) }
+
+// awakeNow is the session clock's awake reading in nanoseconds, kept above 0
+// because 0 means "not set" in resultAt and bgSince.
+func (s *Session) awakeNow() int64 {
+	if n := int64(s.clock.Awake()); n > 0 {
+		return n
+	}
+	return 1
+}
+
+// since is how much awake time has passed since an awake reading.
+func since(now, then int64) time.Duration { return time.Duration(now - then) }
 
 // run reads the NDJSON stream, translates it, and produces the terminal event.
 func (s *Session) run(stdout io.ReadCloser) {
@@ -421,7 +445,7 @@ func (s *Session) runAttempt(stdout io.ReadCloser) adapter.Event {
 			// a new turn by itself when the work reports back.
 			pending = res
 			if s.bgSince.Load() == 0 {
-				s.bgSince.Store(time.Now().UnixNano())
+				s.bgSince.Store(s.awakeNow())
 			}
 			s.emit(adapter.Event{
 				Kind: adapter.EventProgress,
@@ -441,7 +465,7 @@ func (s *Session) runAttempt(stdout io.ReadCloser) adapter.Event {
 		}
 		result = res
 		s.bgSince.Store(0)
-		s.resultAt.Store(time.Now().UnixNano())
+		s.resultAt.Store(s.awakeNow())
 		s.closeStdin()
 	}
 	scanErr := scanner.Err()
@@ -593,6 +617,10 @@ func (s *Session) noResultError(scanErr, waitErr error) error {
 // but the contract says an adapter must not accept a timeout it will not
 // enforce, so all three are enforced here. It also runs the background-work
 // wait (ark:rein#80) — see [Session.watchBackground].
+//
+// Every one of them is measured in awake time, on s.clock: the ticker only
+// says when to look. A machine that slept for twenty minutes between two
+// ticks has used none of the idle budget (ark:rein#90).
 func (s *Session) watch(stop <-chan struct{}) {
 	startup := s.spec.Timeouts.Startup
 	if startup <= 0 {
@@ -605,29 +633,30 @@ func (s *Session) watch(stop <-chan struct{}) {
 	defer tick.Stop()
 
 	var bg bgWaitState
-	attemptStarted := time.Now()
+	attemptStarted := s.awakeNow()
 	for {
 		select {
 		case <-stop:
 			return
-		case now := <-tick.C:
+		case <-tick.C:
+			now := s.awakeNow()
 			// Waiting on live background work is not idleness: a background
 			// shell watching a CI run is silent for as long as the run takes.
 			// The wait has its own bound instead.
 			waitingOnWork := s.bgSince.Load() != 0 && s.bgLive.Load() > 0
 			switch {
-			case !s.initSeen.Load() && now.Sub(attemptStarted) > startup:
+			case !s.initSeen.Load() && since(now, attemptStarted) > startup:
 				s.timeout(fmt.Sprintf("no session start within %s", startup))
 				return
-			case total > 0 && now.Sub(s.started) > total:
+			case total > 0 && since(now, int64(s.startedAwake)) > total:
 				s.timeout(fmt.Sprintf("exceeded the total budget of %s", total))
 				return
 			case idle > 0 && s.resultAt.Load() == 0 && !waitingOnWork &&
-				now.Sub(time.Unix(0, s.lastActivity.Load())) > idle:
+				since(now, s.lastActivity.Load()) > idle:
 				s.idleTimeout(idle)
 				return
 			case s.resultAt.Load() > 0 &&
-				now.Sub(time.Unix(0, s.resultAt.Load())) > defaultExitGrace:
+				since(now, s.resultAt.Load()) > defaultExitGrace:
 				// The turn is over and stdin is closed, but the process has
 				// not exited. Reap it rather than leaking it.
 				_ = s.killNow()
@@ -640,13 +669,14 @@ func (s *Session) watch(stop <-chan struct{}) {
 	}
 }
 
-// bgWaitState is watch's own memory of one background-work wait.
+// bgWaitState is watch's own memory of one background-work wait. Every field
+// is an awake reading like bgSince, 0 when it has not happened.
 type bgWaitState struct {
-	since    int64     // the bgSince this state belongs to
-	lastBeat time.Time // the last "still waiting" progress event
-	drained  time.Time // when the live count was first seen at zero
-	nudged   time.Time // when the agent was told its work had finished
-	steered  time.Time // when the agent was told to finish in the foreground
+	since    int64 // the bgSince this state belongs to
+	lastBeat int64 // the last "still waiting" progress event
+	drained  int64 // when the live count was first seen at zero
+	nudged   int64 // when the agent was told its work had finished
+	steered  int64 // when the agent was told to finish in the foreground
 }
 
 // Nudges sent to the agent during a background-work wait. They are user
@@ -671,20 +701,20 @@ const (
 //   - After bgWait the agent is told to finish in the foreground, and the next
 //     result is terminal whatever is still running. If none comes within
 //     bgSettle the process is killed, and the run fails as abandoned.
-func (s *Session) watchBackground(now time.Time, st *bgWaitState) bool {
-	since := s.bgSince.Load()
-	if since == 0 || s.resultAt.Load() != 0 {
+func (s *Session) watchBackground(now int64, st *bgWaitState) bool {
+	started := s.bgSince.Load()
+	if started == 0 || s.resultAt.Load() != 0 {
 		return false
 	}
-	if st.since != since {
-		*st = bgWaitState{since: since, lastBeat: now}
+	if st.since != started {
+		*st = bgWaitState{since: started, lastBeat: now}
 	}
 	live := s.bgLive.Load()
-	quiet := now.Sub(time.Unix(0, s.lastActivity.Load()))
+	quiet := since(now, s.lastActivity.Load())
 
 	if live > 0 {
-		st.drained, st.nudged = time.Time{}, time.Time{}
-		if now.Sub(st.lastBeat) >= s.bgBeat {
+		st.drained, st.nudged = 0, 0
+		if since(now, st.lastBeat) >= s.bgBeat {
 			st.lastBeat = now
 			summary, _ := s.bgSummary.Load().(string)
 			s.emit(adapter.Event{
@@ -692,19 +722,19 @@ func (s *Session) watchBackground(now time.Time, st *bgWaitState) bool {
 				Text: "waiting for the agent's background work: " + summary,
 			})
 		}
-	} else if st.drained.IsZero() {
+	} else if st.drained == 0 {
 		st.drained = now
 	}
 
 	switch {
-	case !st.steered.IsZero():
-		if now.Sub(st.steered) > s.bgSettle && quiet > s.bgSettle {
+	case st.steered != 0:
+		if since(now, st.steered) > s.bgSettle && quiet > s.bgSettle {
 			s.abandon("the agent did not finish in the foreground after Rein stopped waiting for its background work")
 			_ = s.killNow()
 			return true
 		}
 
-	case now.Sub(time.Unix(0, since)) > s.bgWait:
+	case since(now, started) > s.bgWait:
 		s.bgGivenUp.Store(true)
 		st.steered = now
 		if err := s.writeUserMessage(bgSteer); err != nil {
@@ -715,20 +745,20 @@ func (s *Session) watchBackground(now time.Time, st *bgWaitState) bool {
 		s.emit(adapter.Event{Kind: adapter.EventProgress,
 			Text: fmt.Sprintf("background work still running after %s; told the agent to finish in the foreground", s.bgWait)})
 
-	case live == 0 && st.nudged.IsZero() &&
-		now.Sub(st.drained) > s.bgSettle && quiet > s.bgSettle:
+	case live == 0 && st.nudged == 0 &&
+		since(now, st.drained) > s.bgSettle && quiet > s.bgSettle:
 		st.nudged = now
 		if err := s.writeUserMessage(bgNudge); err == nil {
 			s.emit(adapter.Event{Kind: adapter.EventProgress,
 				Text: "the agent's background work has finished; nudged it to pick up the results"})
 		}
 
-	case live == 0 && !st.nudged.IsZero() &&
-		now.Sub(st.nudged) > s.bgSettle && quiet > s.bgSettle:
+	case live == 0 && st.nudged != 0 &&
+		since(now, st.nudged) > s.bgSettle && quiet > s.bgSettle:
 		// Its work is done and it will not take another turn. The last
 		// result stands; closing stdin ends the session.
 		// watch keeps running: the exit grace now applies.
-		s.resultAt.Store(now.UnixNano())
+		s.resultAt.Store(now)
 		s.closeStdin()
 	}
 	return false
