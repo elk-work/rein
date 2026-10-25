@@ -46,6 +46,20 @@ kind: check
 ```
 ````
 
+Since scout#2480, Elk makes one run per (workflow, job, runs_on) at a
+commit, so one run can satisfy several suites. Its packet lists them all in
+`check.suites`, and `check.suite` stays set to the first:
+
+```json
+{"repo":"elk-work/scout","sha":"<40 hex>","ref":"refs/heads/main","suite":"migration-numbers",
+ "suites":["migration-numbers","no-schema-fallbacks"],"workflow":".github/workflows/quick-checks.yml",
+ "job":"checks","runs_on":["self-hosted","linux","linux-lab"],"provider":"linux-lab",
+ "changed_paths":["supabase/migrations/0559_check_runs_per_job.sql"]}
+```
+
+Rein runs the job once and writes one record per suite in `suites`; see
+[One run, several suites](#one-run-several-suites).
+
 The block may also hold `{"check": {…}}` or the whole packet
 (`{"kind":"check","check":{…}}`). Rein also accepts:
 
@@ -65,8 +79,17 @@ Every value is validated before it reaches git or act:
 | `sha` | a full 40- or 64-hex commit |
 | `workflow` | a file directly under `.github/workflows/` |
 | `job` | an id or a name, never a flag |
+| `suite` | optional; at most 200 bytes, no line break; default `<workflow file name>/<job>` |
+| `suites` | optional; an array (or one comma-separated string) of names under `suite`'s rule, at most 64. When present and not empty it is the list and `suite` becomes its first entry; a name listed twice is recorded once. When absent or empty it is `[suite]` |
 | `runs_on` | runner labels, at most 16 |
 | `event` | optional; one of `workflow_dispatch`, `push`, `pull_request`, `schedule` |
+
+One more rule covers the packet as a whole. Its records must fit the 8 KiB
+block that ends the deliverable, even when every field the run fills in
+later is at its longest. Rein refuses a packet whose suites could not all fit
+there, before anything runs, and the run goes stuck saying to send them as
+separate runs. With ordinary names that is about nine suites per run: nine
+22-character names fit, and scout's six quick-checks suites fit easily.
 
 A run that reaches a runner queue without a packet goes stuck: "The work
 order cannot be run as written". A runner runs checks, not tasks.
@@ -182,7 +205,10 @@ the session.
 
 The suite record follows [pulse/docs/suite-records.md] schema_version 1. It
 is written to `<Rein home>/checks/<run id>/suite-record.json`, outside the
-worktree, beside the full log (`act.log`):
+worktree, beside the full log (`act.log`). A run that satisfies several
+suites writes one record per suite: the first to `suite-record.json`, the
+rest to `suite-record-2.json`, `suite-record-3.json` and so on, in the
+order of `check.suites`. The fields are:
 
 | Field | Value |
 |---|---|
@@ -201,18 +227,20 @@ are the same list, and a capped list passes through pulse unchanged.
 
 When `pulse` is on PATH and the queue's environment holds
 `STRIDE_INGEST_URL` and `STRIDE_TOKEN`, Rein runs `pulse suite-record --file
-<record>`. That is the scoped secrets map, or `inherit_env` for an unscoped
-queue. Otherwise the record stays on the machine and the deliverable says
-why. A failed send is reported in the deliverable, never a stuck run. Either
-way the deliverable carries the record, so Elk can send it on.
+<record>`, once per record. That is the scoped secrets map, or `inherit_env`
+for an unscoped queue. Otherwise the record stays on the machine and the
+deliverable says why. A failed send is reported in the deliverable, never a
+stuck run. Each send has its own time limit, so a slow first send cannot cut
+a later one short. Either way the deliverable carries every record, so Elk
+can send on the ones Rein did not.
 
 The deliverable leads with one plain sentence: the suite passed, failed, or
 could not be run. It then gives:
 
-1. the check: commit, job, executor;
-2. the record's path, what happened to it, and the log's path;
+1. the check: commit, job, executor, and the suite or suites;
+2. each record's path, what happened to it, and the log's path;
 3. the last 40 lines of the log, each cut at 500 characters;
-4. the record itself, last.
+4. the records themselves, last.
 
 ## The record in the deliverable
 
@@ -225,24 +253,34 @@ this section, so its shape is a contract:
   section, and nothing follows it.
 - Then comes one fenced block, opened by a line that is exactly ```` ```json ````
   and closed by a line that is exactly ```` ``` ````.
-- The block holds one JSON object, indented and over several lines. Its bytes
-  are the bytes Rein wrote to `suite-record.json`. If that write failed, they
-  are the bytes Rein would have written.
-- One field may be added at the end: `"emitted_by": "rein"`. It is there only
-  when Rein itself ran `pulse suite-record` and the command succeeded.
+- For a packet with one suite, the block holds one JSON object, indented and
+  over several lines. Its bytes are the bytes Rein wrote to
+  `suite-record.json`. If that write failed, they are the bytes Rein would
+  have written.
+- **An array appears only when a packet carried more than one distinct
+  suite.** Then the block holds a JSON array of record objects, one per
+  suite, in the order of `check.suites`, indented and over several lines.
+  The records are identical except for `suite`. Each element is the JSON of
+  its record file, re-indented as an array element. It is equal as JSON,
+  not byte for byte.
+- One field may be added at the end of a record: `"emitted_by": "rein"`. It
+  is there only when Rein itself ran `pulse suite-record` for that record and
+  the command succeeded. In an array each record carries its own: one send
+  can fail while the others succeed.
 - If pulse is missing, the queue lacks the Stride variables, the send fails,
   or the run was stopped, the field is absent.
-- **Elk forwards the record only when `emitted_by` is absent**, so a record
+- **Elk forwards a record only when its `emitted_by` is absent**, so a record
   is never sent twice.
 - A backtick inside a string is written as `\u0060`. That is the same string
   to any JSON reader, and no line of the record can close the fence.
 - The fenced block, fences included, stays under 8 KiB.
   - The `changed_paths` cap already keeps a real record far below that.
-  - If a record would still reach 8 KiB, the block sets `changed_paths` to
-    `[]` and adds a `"note"` field saying how many entries were left out.
-    The file keeps them.
+  - If the block would still reach 8 KiB, it sets `changed_paths` to `[]`
+    and adds a `"note"` field saying how many entries were left out. In an
+    array it does so on every record. The files keep them.
   - So `[]` with a `note` means the list was left out, not that the diff was
-    empty. Every other field is bounded by the packet's validation, so the
+    empty. Every other field is bounded by the packet's validation, and a
+    packet whose suites could not all fit is refused before it runs. So the
     rest always fits.
 
 The section is there on every deliverable a check submits:
@@ -309,5 +347,73 @@ Measured on 2026-10-24 against act 0.2.89 on darwin/arm64:
   arguments are covered by the stub tests only.
 - The act spike that measured which workflow keywords act ignores is on
   ark:pulse#78 (01M56D1BR2B7ZGBPR8JNEJYVQG).
+
+### One run, several suites
+
+A packet whose `check.suites` names two suites ends with this. Here the
+first record's send succeeded and the second's failed, so Elk forwards only
+the second:
+
+````
+### Suite record
+
+```json
+[
+  {
+    "schema_version": 1,
+    "repo": "elk-work/scout",
+    "suite": "migration-numbers",
+    "sha": "10acf20cc78f081edf12dcee619dc5b8d609b636",
+    "pr": 0,
+    "branch": "main",
+    "provider": "linux-lab",
+    "runner": "lab-checks",
+    "result": "pass",
+    "duration_ms": 41873,
+    "counts": {
+      "steps": 3,
+      "steps_failed": 0,
+      "steps_passed": 3
+    },
+    "failing_test_ids": [],
+    "changed_paths": [
+      "supabase/migrations/0559_check_runs_per_job.sql"
+    ],
+    "retention_class": "ci-history",
+    "started": "2026-10-25T05:34:28.593Z",
+    "ended": "2026-10-25T05:35:10.466Z",
+    "emitted_by": "rein"
+  },
+  {
+    "schema_version": 1,
+    "repo": "elk-work/scout",
+    "suite": "no-schema-fallbacks",
+    "sha": "10acf20cc78f081edf12dcee619dc5b8d609b636",
+    "pr": 0,
+    "branch": "main",
+    "provider": "linux-lab",
+    "runner": "lab-checks",
+    "result": "pass",
+    "duration_ms": 41873,
+    "counts": {
+      "steps": 3,
+      "steps_failed": 0,
+      "steps_passed": 3
+    },
+    "failing_test_ids": [],
+    "changed_paths": [
+      "supabase/migrations/0559_check_runs_per_job.sql"
+    ],
+    "retention_class": "ci-history",
+    "started": "2026-10-25T05:34:28.593Z",
+    "ended": "2026-10-25T05:35:10.466Z"
+  }
+]
+```
+````
+
+Every record carries the job's one result. Under `workflow_dispatch`,
+scout's quick-checks runs every step, so a pass covers each suite it lists.
+Rein does not attribute steps to suites.
 
 [pulse/docs/suite-records.md]: https://github.com/elk-work/pulse/blob/main/docs/suite-records.md

@@ -17,6 +17,34 @@ import (
 // nothing after the fence, and the fenced block under 8 KiB.
 func recordFromDeliverable(t *testing.T, deliverable string) (string, map[string]any) {
 	t.Helper()
+	body := recordBody(t, deliverable)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatalf("the block is not one JSON object: %v\n%s", err, body)
+	}
+	return body, m
+}
+
+// recordsFromDeliverable is [recordFromDeliverable] for a check that carried
+// several suites: the same contract, and the block holds a JSON array of
+// records.
+func recordsFromDeliverable(t *testing.T, deliverable string) (string, []map[string]any) {
+	t.Helper()
+	body := recordBody(t, deliverable)
+	if !strings.HasPrefix(body, "[\n") {
+		t.Fatalf("the block is not an array:\n%s", body)
+	}
+	var ms []map[string]any
+	if err := json.Unmarshal([]byte(body), &ms); err != nil {
+		t.Fatalf("the block is not a JSON array of objects: %v\n%s", err, body)
+	}
+	return body, ms
+}
+
+// recordBody is the JSON between the record's fences, after holding the
+// contract around it.
+func recordBody(t *testing.T, deliverable string) string {
+	t.Helper()
 	lines := strings.Split(deliverable, "\n")
 	at := -1
 	for i, l := range lines {
@@ -54,12 +82,7 @@ func recordFromDeliverable(t *testing.T, deliverable string) (string, map[string
 	if block := strings.Join(lines[open:end+1], "\n") + "\n"; len(block) >= maxRecordBlock {
 		t.Errorf("the fenced block is %d bytes; it must stay under 8 KiB", len(block))
 	}
-	body := strings.Join(lines[open+1:end], "\n") + "\n"
-	var m map[string]any
-	if err := json.Unmarshal([]byte(body), &m); err != nil {
-		t.Fatalf("the block is not one JSON object: %v\n%s", err, body)
-	}
-	return body, m
+	return strings.Join(lines[open+1:end], "\n") + "\n"
 }
 
 // withoutEmittedBy is the block's JSON with the field Rein adds taken out
@@ -223,4 +246,158 @@ func TestTheLargestPossibleRecordFitsOnceItsPathsAreDropped(t *testing.T) {
 	if m["note"] == nil {
 		t.Error("no note on a record whose paths were dropped")
 	}
+}
+
+// sharedRecords is one run's records for three suites, as newRecords makes
+// them.
+func sharedRecords(t *testing.T, paths []string) []SuiteRecord {
+	t.Helper()
+	c := Check{Repo: "elk-work/scout", SHA: testSHA, Workflow: ".github/workflows/quick-checks.yml", Job: "checks",
+		Suite: "migration-numbers", Suites: []string{"migration-numbers", "no-schema-fallbacks", "elk-type"},
+		Provider: "linux-lab", ChangedPaths: paths}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC)
+	tl := tally{steps: 3, passed: 3}
+	return newRecords(c, "lab-checks", "main", ResultPass, &tl, start, start.Add(2*time.Second))
+}
+
+func TestASharedRunsRecordsDifferOnlyInSuite(t *testing.T) {
+	recs := sharedRecords(t, []string{"supabase/migrations/0559_x.sql"})
+	if len(recs) != 3 {
+		t.Fatalf("%d records, want 3", len(recs))
+	}
+	for i, want := range []string{"migration-numbers", "no-schema-fallbacks", "elk-type"} {
+		if recs[i].Suite != want {
+			t.Errorf("record %d is for %q, want %q", i, recs[i].Suite, want)
+		}
+		same := recs[i]
+		same.Suite = recs[0].Suite
+		a, _ := json.Marshal(same)
+		b, _ := json.Marshal(recs[0])
+		if !bytes.Equal(a, b) {
+			t.Errorf("record %d differs from the first in more than its suite:\n%s\n%s", i, a, b)
+		}
+	}
+}
+
+func TestASharedRunsBlockIsAnArrayOfTheRecordFiles(t *testing.T) {
+	recs := sharedRecords(t, []string{"supabase/migrations/0559_x.sql", "docs/a```b.md"})
+	block := recordsBlock(recs, []bool{true, false, true})
+	body, ms := recordsFromDeliverable(t, block)
+	if strings.Contains(body, "`") {
+		t.Fatalf("a backtick reached the block:\n%s", body)
+	}
+	if len(ms) != len(recs) {
+		t.Fatalf("%d records in the block, want %d", len(ms), len(recs))
+	}
+	for i, rec := range recs {
+		file, err := encodeRecord(inlineRecord{SuiteRecord: rec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want map[string]any
+		if err := json.Unmarshal(file, &want); err != nil {
+			t.Fatal(err)
+		}
+		got := ms[i]
+		emitted, has := got["emitted_by"]
+		if wantEmitted := i != 1; has != wantEmitted || (has && emitted != "rein") {
+			t.Errorf("record %d: emitted_by = %v (present %v), want present %v", i, emitted, has, wantEmitted)
+		}
+		delete(got, "emitted_by")
+		if _, ok := got["note"]; ok {
+			t.Errorf("record %d has a note although the block fits", i)
+		}
+		gb, _ := json.Marshal(got)
+		wb, _ := json.Marshal(want)
+		if !bytes.Equal(gb, wb) {
+			t.Errorf("record %d is not its file's JSON:\n%s\nfile:\n%s", i, gb, wb)
+		}
+	}
+	if ms[1]["changed_paths"].([]any)[1] != "docs/a```b.md" {
+		t.Errorf("the escaped path did not read back: %v", ms[1]["changed_paths"])
+	}
+}
+
+func TestASharedRunsBlockStaysUnder8KiB(t *testing.T) {
+	recs := sharedRecords(t, nil)
+	for i := range recs {
+		for j := 0; j < 10000; j++ {
+			recs[i].ChangedPaths = append(recs[i].ChangedPaths, fmt.Sprintf("Apps/ElkKit/Sources/Module%05d/File.swift", j))
+		}
+	}
+	_, ms := recordsFromDeliverable(t, recordsBlock(recs, []bool{false, true, false}))
+	for i, m := range ms {
+		if paths, ok := m["changed_paths"].([]any); !ok || len(paths) != 0 {
+			t.Errorf("record %d: changed_paths = %v, want []", i, m["changed_paths"])
+		}
+		note, _ := m["note"].(string)
+		if !strings.Contains(note, "10000") || !strings.Contains(note, "8 KiB") {
+			t.Errorf("record %d: note = %q", i, note)
+		}
+		if _, ok := m["emitted_by"]; ok != (i == 1) {
+			t.Errorf("record %d: emitted_by present = %v", i, ok)
+		}
+	}
+	for i := range recs {
+		if len(recs[i].ChangedPaths) != 10000 {
+			t.Error("building the block changed the records it was given")
+		}
+	}
+}
+
+// Validate refuses a check whose records could not all fit, measuring the
+// worst case; so the largest shared run it accepts, filled in with the
+// longest values a run can produce, still fits.
+func TestTheLargestSharedRunValidateAcceptsFits(t *testing.T) {
+	longest := func(n int) Check {
+		c := Check{
+			Repo:     strings.Repeat("o", 39) + "/" + strings.Repeat("r", 100),
+			SHA:      strings.Repeat("f", 64),
+			Ref:      strings.Repeat("b", 200),
+			Workflow: ".github/workflows/" + strings.Repeat("w", 60) + ".yml",
+			Job:      strings.Repeat("j", 100),
+			Provider: strings.Repeat("p", 64),
+		}
+		for i := 0; i < n; i++ {
+			c.Suites = append(c.Suites, strings.Repeat("<", 199)+string(rune('a'+i)))
+		}
+		return c
+	}
+	n := 1
+	for ; n < maxSuites; n++ {
+		c := longest(n + 1)
+		if c.Validate() != nil {
+			break
+		}
+	}
+	if n < 2 {
+		t.Fatalf("Validate accepts only %d suites of the longest names; the test needs a shared run", n)
+	}
+	c := longest(n)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 24, 22, 0, 0, 123_000_000, time.UTC)
+	for i := 0; i < 5000; i++ {
+		c.ChangedPaths = append(c.ChangedPaths, strings.Repeat("x", 200))
+	}
+	recs := newRecords(c, strings.Repeat("q", 12), candidateBranch(c.Ref), ResultCancelled, nil, start, start.Add(time.Hour))
+	for i := range recs {
+		recs[i].DurationMS = math.MaxInt64
+		recs[i].Counts = map[string]int{"steps": math.MaxInt, "steps_passed": math.MaxInt, "steps_failed": math.MaxInt,
+			"steps_skipped": math.MaxInt}
+		recs[i].ChangedPaths = c.ChangedPaths // past the cap, to force the drop
+	}
+	emitted := make([]bool, len(recs))
+	for i := range emitted {
+		emitted[i] = true
+	}
+	_, ms := recordsFromDeliverable(t, recordsBlock(recs, emitted))
+	if len(ms) != n || ms[0]["note"] == nil {
+		t.Errorf("%d records, note %v", len(ms), ms[0]["note"])
+	}
+	t.Logf("Validate accepts at most %d suites of the longest possible names", n)
 }

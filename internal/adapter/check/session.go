@@ -367,16 +367,24 @@ func (s *session) run() {
 	}
 
 	result, why := classify(t, exitErr, timedOut, interrupted, s.timeout)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	branch := verifiedBranch(ctx, s.git, s.spec.WorktreeDir, s.check.Ref, s.check.SHA)
-	rec := newRecord(s.check, s.spec.Queue, branch, result, &t, s.started, ended)
-	recPath := filepath.Join(s.recDir, "suite-record.json")
-	em := emission{note: "kept on this machine"}
-	if err := rec.write(recPath); err != nil {
-		em = emission{note: "NOT written: " + err.Error()}
-	} else if !interrupted {
-		em = emit(ctx, s.lookPulse(), recPath, s.pulseEnv)
+	// verifiedBranch and emit bound themselves; each send gets its own
+	// budget, so a slow first send cannot cut a later one short.
+	branch := verifiedBranch(context.Background(), s.git, s.spec.WorktreeDir, s.check.Ref, s.check.SHA)
+	pulse := ""
+	if !interrupted {
+		pulse = s.lookPulse()
+	}
+	// One record per suite the check satisfies, all from this one run of the
+	// job, and each sent on its own: emitted_by is per record.
+	var recs []kept
+	for i, rec := range newRecords(s.check, s.spec.Queue, branch, result, &t, s.started, ended) {
+		k := kept{rec: rec, path: filepath.Join(s.recDir, recordFileName(i)), em: emission{note: "kept on this machine"}}
+		if err := rec.write(k.path); err != nil {
+			k.em = emission{note: "NOT written: " + err.Error()}
+		} else if !interrupted {
+			k.em = emit(context.Background(), pulse, k.path, s.pulseEnv)
+		}
+		recs = append(recs, k)
 	}
 
 	status := adapter.StatusSucceeded
@@ -388,7 +396,7 @@ func (s *session) run() {
 	case result == ResultError:
 		status = adapter.StatusFailed
 	}
-	summary := s.deliverable(rec, result, why, &t, em, recPath, filepath.Join(s.recDir, "act.log"), tail)
+	summary := s.deliverable(recs, result, why, &t, filepath.Join(s.recDir, "act.log"), tail)
 	s.result = adapter.Result{
 		Status: status, Summary: summary, ExitCode: exitCode, Duration: ended.Sub(s.started),
 		TranscriptPath: filepath.Join(s.recDir, "act.log"),
@@ -397,6 +405,14 @@ func (s *session) run() {
 		s.err = fmt.Errorf("check: %s: %s", result, why)
 	}
 	s.emit(adapter.Event{Kind: adapter.EventDone, Result: &s.result})
+}
+
+// kept is one suite record as the run left it: the record, the file it was
+// written to, and what happened to it then.
+type kept struct {
+	rec  SuiteRecord
+	path string
+	em   emission
 }
 
 // noise is act's own chatter that says nothing about the job: the
@@ -444,25 +460,37 @@ func classify(t tally, exitErr error, timedOut, interrupted bool, limit time.Dur
 }
 
 // deliverable is what a person reads in Elk: a plain lead, the check, the
-// record, and the end of the log.
-func (s *session) deliverable(rec SuiteRecord, result, why string, t *tally, em emission,
-	recPath, logPath string, tail []string) string {
-
+// records, and the end of the log.
+func (s *session) deliverable(recs []kept, result, why string, t *tally, logPath string, tail []string) string {
 	var b strings.Builder
-	name := s.check.Suite
+	rec := recs[0].rec
+	suites := make([]string, len(recs))
+	for i, k := range recs {
+		suites[i] = k.rec.Suite
+	}
+	name := joinNames(suites)
 	repo := rec.Repo
 	if i := strings.LastIndex(repo, "/"); i >= 0 {
 		repo = repo[i+1:]
 	}
-	switch result {
-	case ResultPass:
+	one := len(recs) == 1
+	switch {
+	case result == ResultPass && one:
 		fmt.Fprintf(&b, "The %s check passed on %s. Rein ran the workflow job on this machine at the commit Elk asked for, and recorded the result.\n", name, repo)
-	case ResultFail:
+	case result == ResultPass:
+		fmt.Fprintf(&b, "The %s checks passed on %s. Rein ran their workflow job once on this machine at the commit Elk asked for, and recorded the result for each suite.\n", name, repo)
+	case result == ResultFail && one:
 		fmt.Fprintf(&b, "The %s check failed on %s: %s. Rein ran the workflow job on this machine at the commit Elk asked for, and recorded the failure.\n", name, repo, why)
-	case ResultCancelled:
+	case result == ResultFail:
+		fmt.Fprintf(&b, "The %s checks failed on %s: %s. Rein ran their workflow job once on this machine at the commit Elk asked for, and recorded the failure for each suite.\n", name, repo, why)
+	case result == ResultCancelled && one:
 		fmt.Fprintf(&b, "The %s check on %s was stopped before it finished, so it has no result.\n", name, repo)
-	default:
+	case result == ResultCancelled:
+		fmt.Fprintf(&b, "The %s checks on %s were stopped before their job finished, so they have no result.\n", name, repo)
+	case one:
 		fmt.Fprintf(&b, "The %s check on %s could not be run on this machine, so it says nothing about the code: %s. It is recorded as an error, not a failure.\n", name, repo, why)
+	default:
+		fmt.Fprintf(&b, "The %s checks on %s could not be run on this machine, so they say nothing about the code: %s. Each is recorded as an error, not a failure.\n", name, repo, why)
 	}
 
 	b.WriteString("\n### Check\n\n")
@@ -482,14 +510,25 @@ func (s *session) deliverable(rec SuiteRecord, result, why string, t *tally, em 
 	} else {
 		b.WriteString("- Executor: host — the steps ran on this machine itself\n")
 	}
-	fmt.Fprintf(&b, "- Suite: %s · provider %s · runner %s\n", rec.Suite, rec.Provider, rec.Runner)
+	if one {
+		fmt.Fprintf(&b, "- Suite: %s · provider %s · runner %s\n", rec.Suite, rec.Provider, rec.Runner)
+	} else {
+		fmt.Fprintf(&b, "- Suites: %s · provider %s · runner %s\n", strings.Join(suites, ", "), rec.Provider, rec.Runner)
+	}
 	if t.steps > 0 {
 		fmt.Fprintf(&b, "- Steps: %d ran, %d failed\n", t.steps, t.failed)
 	}
 	fmt.Fprintf(&b, "- Duration: %s\n", time.Duration(rec.DurationMS)*time.Millisecond)
 
 	b.WriteString("\n### Record and log\n\n")
-	fmt.Fprintf(&b, "- Record: `%s` — %s\n", recPath, em.note)
+	if one {
+		fmt.Fprintf(&b, "- Record: `%s` — %s\n", recs[0].path, recs[0].em.note)
+	} else {
+		b.WriteString("- Records, one per suite:\n")
+		for _, k := range recs {
+			fmt.Fprintf(&b, "  - %s: `%s` — %s\n", k.rec.Suite, k.path, k.em.note)
+		}
+	}
 	fmt.Fprintf(&b, "- Full log: `%s`\n", logPath)
 
 	fmt.Fprintf(&b, "\n### Last %d lines of the log\n\n", len(tail))
@@ -499,11 +538,27 @@ func (s *session) deliverable(rec SuiteRecord, result, why string, t *tally, em 
 	}
 	b.WriteString("```\n")
 
-	// Last, and for Elk rather than a person: the record itself, which Elk
-	// forwards to Signal unless it says Rein already sent it. A runner with no
-	// pulse and no Stride credentials still produces history this way.
-	b.WriteString("\n" + recordBlock(rec, em.sent))
+	// Last, and for Elk rather than a person: the records themselves, which
+	// Elk forwards to Signal unless one says Rein already sent it. A runner
+	// with no pulse and no Stride credentials still produces history this way.
+	sr := make([]SuiteRecord, len(recs))
+	sent := make([]bool, len(recs))
+	for i, k := range recs {
+		sr[i], sent[i] = k.rec, k.em.sent
+	}
+	b.WriteString("\n" + recordsBlock(sr, sent))
 	return b.String()
+}
+
+// joinNames is "a", "a and b", or "a, b and c".
+func joinNames(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // listJobs asks act which jobs the workflow has.
