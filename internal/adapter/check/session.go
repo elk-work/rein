@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/secretenv"
 )
 
 // Start implements [adapter.Adapter]: it checks the worktree is the commit
@@ -145,6 +146,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	s := &session{
 		a: a, spec: spec, check: c, jobID: jobID, jobNote: jobNote, executor: executor, image: st.Image,
 		cmd: cmd, out: pr, log: logFile, recDir: recDir, git: git, env: env, timeout: timeout,
+		pulseEnv: a.pulseEnv(spec), redact: secretenv.NewRedactor(secretValues(spec)),
 		started: started, events: make(chan adapter.Event, 64), done: make(chan struct{}),
 		stop: make(chan struct{}),
 	}
@@ -166,6 +168,14 @@ type session struct {
 	env      []string
 	timeout  time.Duration
 	started  time.Time
+
+	// pulseEnv is the emitter's environment, which alone holds Stride's
+	// variables; redact takes every secret value out of a line before the
+	// log, a progress event or the deliverable sees it — a workflow step can
+	// print its environment, and on the host executor that environment is
+	// act's own.
+	pulseEnv []string
+	redact   *secretenv.Redactor
 
 	cmd    *exec.Cmd
 	out    *os.File
@@ -298,6 +308,7 @@ func (s *session) run() {
 				continue
 			}
 			for _, l := range t.render(line) {
+				l = s.redact.String(l)
 				count++
 				lastLine = time.Now()
 				fmt.Fprintln(s.log, l)
@@ -366,7 +377,7 @@ func (s *session) run() {
 	if err := rec.write(recPath); err != nil {
 		em = emission{note: "NOT written: " + err.Error()}
 	} else if !interrupted {
-		em = emit(ctx, s.lookPulse(), recPath, s.env)
+		em = emit(ctx, s.lookPulse(), recPath, s.pulseEnv)
 	}
 
 	status := adapter.StatusSucceeded

@@ -419,3 +419,48 @@ func TestManifestIsValidAndDeclaresNoAgentPowers(t *testing.T) {
 		t.Error("the check adapter did not register under runner")
 	}
 }
+
+// A workflow step can print its environment, and on the host executor that
+// environment is act's own. So Stride's variables never reach act at all, a
+// GitHub token reaches it only from the queue's secrets, and every secret
+// value is taken out of the log, the progress events and the deliverable.
+func TestSecretsStayOutOfTheJobAndOutOfEverythingItPrints(t *testing.T) {
+	dir, sha := testRepo(t)
+	envFile := filepath.Join(t.TempDir(), "env")
+	list, _ := filepath.Abs(filepath.Join("testdata", "act-list.txt"))
+	pass, _ := filepath.Abs(filepath.Join("testdata", "act-pass.jsonl"))
+	act := stubScript(t, "act", "case \" $* \" in *\" --list \"*) cat '"+list+"'; exit 0;; esac\n"+
+		"env | grep -c '^STRIDE_' > '"+envFile+"'\n"+
+		"env | grep -c '^GITHUB_TOKEN=' >> '"+envFile+"'\n"+
+		`echo '{"msg":"token is ghs_not_on_the_command_line and stride-secret-token","raw_output":true,"stage":"Main","step":"leak"}'`+"\n"+
+		"cat '"+pass+"'\n")
+	a := &Adapter{Act: act, RecordRoot: t.TempDir(), Pulse: "no-such-pulse-binary"}
+	spec := baseSpec(dir, sha)
+	spec.Env = map[string]string{"STRIDE_INGEST_URL": "https://ingest.example/x", "STRIDE_TOKEN": "stride-secret-token",
+		"GITHUB_TOKEN": "ghs_not_on_the_command_line"}
+	r := runCheck(t, a, spec, "")
+
+	b, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(b)); len(got) != 2 || got[0] != "0" || got[1] != "1" {
+		t.Errorf("act's environment held %v (STRIDE_ variables, GITHUB_TOKEN); want 0 and 1, the token from the queue's secrets", got)
+	}
+	log, err := os.ReadFile(filepath.Join(a.RecordRoot, "run-1", "act.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	everything := string(log) + r.res.Summary
+	for _, ev := range r.events {
+		everything += ev.Text
+	}
+	for _, secret := range []string{"ghs_not_on_the_command_line", "stride-secret-token"} {
+		if strings.Contains(everything, secret) {
+			t.Fatalf("%s reached the log, an event or the deliverable", secret)
+		}
+	}
+	if !strings.Contains(string(log), "token is ") {
+		t.Errorf("the redacted line itself is missing from the log:\n%s", log)
+	}
+}
