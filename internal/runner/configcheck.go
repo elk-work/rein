@@ -116,6 +116,16 @@ func CheckConfig(cfg config.Config, version string) ConfigReport {
 			qr.Problems = append(qr.Problems,
 				"no default repository: a Wrangler cycle names none, so every cycle would end stuck; set repo on this queue")
 		}
+		// Unscoped, so a run that names a checkout path still works — but
+		// nothing else does, and this is the shape a bare `rein enrol` leaves
+		// behind (ark:rein#82): online in Elk, and every run it claims stuck.
+		if len(qr.Problems) == 0 && len(qr.Repositories) == 0 && qr.Default == "" {
+			r.Warnings = append(r.Warnings, fmt.Sprintf(
+				"queue %s has no repository: nothing in [repos] and no default, so every run it claims that does not name a checkout path will end stuck. "+
+					"Fix: rein enrol --force --workspace %q --queue %q --agent-kind %s --repo <name>=<path> --default-repo <name> (with the same credential), "+
+					"or add [repos] and repo = \"<name>\" to config.toml",
+				qr.Queue, qr.Workspace, q.Name, q.AgentKind))
+		}
 		if len(qr.Problems) > 0 {
 			r.OK = false
 		}
@@ -124,7 +134,7 @@ func CheckConfig(cfg config.Config, version string) ConfigReport {
 	return r
 }
 
-// strandedBy lists what a move from the running build's reading of a config
+// StrandedBy lists what a move from the running build's reading of a config
 // (cur) to a newly installed build's reading of the same file (next) would
 // take away from the queues being served: a file the new build cannot load,
 // a queue it drops, a repository a queue can no longer use, a default a queue
@@ -133,7 +143,7 @@ func CheckConfig(cfg config.Config, version string) ConfigReport {
 // It compares rather than reading next.OK, so a queue that is already broken
 // on the running build does not hold every later upgrade hostage — only a
 // change the upgrade itself would make counts.
-func strandedBy(cur, next ConfigReport) []string {
+func StrandedBy(cur, next ConfigReport) []string {
 	if next.Error != "" {
 		// The detail is in the log; this sentence may reach Elk.
 		return []string{"it cannot load config.toml"}

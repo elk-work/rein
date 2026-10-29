@@ -131,11 +131,26 @@ func ResolveRepo(cfg config.Config, q config.Queue, workOrder string) (RepoResol
 		return RepoResolution{}, fmt.Errorf("repository %q is not declared for queue %q in workspace %q", name, q.Name, cfg.WorkspaceFor(q))
 	}
 	if q.Repo != "" {
+		name := q.Repo
+		if looksLikePath(name) {
+			name = ""
+		}
 		if scoped {
 			if path, ok := lookupRepoScoped(cfg, q.Repo, true); ok {
-				return RepoResolution{Path: path, Source: RepoFromQueue}, nil
+				return RepoResolution{Path: path, Name: name, Source: RepoFromQueue}, nil
 			}
 			return RepoResolution{}, fmt.Errorf("queue repository is not declared for workspace %q", cfg.WorkspaceFor(q))
+		}
+		// A queue's repo is a [repos] name as often as a path — `rein enrol
+		// --default-repo` writes a name — so it is looked up like one, and
+		// only a path is taken as written (ark:rein#61). A name nothing maps
+		// is not a directory either, and saying so beats a worktree failure.
+		if path, ok := lookupRepoScoped(cfg, q.Repo, false); ok {
+			return RepoResolution{Path: path, Name: name, Source: RepoFromQueue}, nil
+		}
+		if name != "" {
+			return RepoResolution{}, fmt.Errorf("queue %q has repo = %q, which is not a key in [repos] or a path; map it under [repos] or give the checkout's path (names this machine knows: %s)",
+				q.Name, q.Repo, orNone(repoNames(cfg)))
 		}
 		return RepoResolution{Path: expand(q.Repo), Source: RepoFromQueue}, nil
 	}
@@ -217,6 +232,13 @@ func repoNames(cfg config.Config) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func orNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // expand resolves a leading ~ so a config written by a person works.
