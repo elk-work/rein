@@ -45,6 +45,33 @@ whole top-level map, and machine-wide `default_repo` applies to a queue with no
 sees only the lists declared in its own workspace, and a workspace with no
 lists has no declared repositories. Add lists to every queue in one edit.
 
+## Declaring repositories at enrolment
+
+`rein enrol` writes the same table, so a new worker needs no hand edit
+(`ark:rein#82`):
+
+```sh
+rein enrol --workspace Scout --agent-kind claude --claim-code … --repo elk-work/elk=~/dev/elk --repo elk-work/scout=~/dev/elk/scout --default-repo elk-work/elk
+```
+
+Each `--repo name=path` must be a git checkout. It is added to `[repos]` and
+to the queue's `repos` list; `--default-repo` (a name, or a path a `--repo`
+maps) becomes the queue's `repo`. With a single `--repo` and no
+`--default-repo`, that repository is the default. Flags only add: a
+re-enrolment with `--force` keeps the repositories the queue already had, and
+re-pointing an existing `[repos]` name at another path needs `--force`.
+
+Because a list scopes the whole config, enrol refuses — before Elk is called,
+when the workspace is known — a declaration that would take a repository or a
+default from any other queue on the machine, and names the queue.
+
+An enrolment without either flag still works, but prints `repos NONE`, and
+`rein status` and `rein config check` warn about any queue with no repository
+and no default: every run it claims that names no checkout path ends stuck.
+
+A queue's `repo` may be a `[repos]` name or a path, scoped or not; a name is
+looked up in the table rather than used as a relative path (`ark:rein#61`).
+
 ## Configs written before lists
 
 Before v0.8.4 there were no lists, so a machine serving several workspaces had

@@ -193,16 +193,16 @@ func TestStrandedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cur := CheckConfig(cfg, "v1")
-	if got := strandedBy(cur, cur); len(got) != 0 {
+	if got := StrandedBy(cur, cur); len(got) != 0 {
 		t.Errorf("the same reading strands %v", got)
 	}
-	if got := strandedBy(cur, ConfigReport{Schema: 1, Error: "config: /home/x/.rein/config.toml: queues[0]: boom"}); len(got) != 1 || strings.Contains(got[0], "/home/x") {
+	if got := StrandedBy(cur, ConfigReport{Schema: 1, Error: "config: /home/x/.rein/config.toml: queues[0]: boom"}); len(got) != 1 || strings.Contains(got[0], "/home/x") {
 		t.Errorf("an unloadable config = %v, want one sentence without the path", got)
 	}
 	lost := CheckConfig(cfg, "v2")
 	lost.Queues[0].Repositories = []string{"elk-work/scout"}
 	lost.Queues = lost.Queues[:1]
-	got := strings.Join(strandedBy(cur, lost), "\n")
+	got := strings.Join(StrandedBy(cur, lost), "\n")
 	for _, want := range []string{"Elk Scout/mac-codex would lose [signal]", "Signal/mac-claude would not be served"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stranded = %q, want %q", got, want)
@@ -210,7 +210,7 @@ func TestStrandedBy(t *testing.T) {
 	}
 	// A queue already broken on the running build does not hold the upgrade.
 	broken := v084Reading("v1")
-	if got := strandedBy(broken, v084Reading("v2")); len(got) != 0 {
+	if got := StrandedBy(broken, v084Reading("v2")); len(got) != 0 {
 		t.Errorf("an already-stranded config held the upgrade: %v", got)
 	}
 }

@@ -192,3 +192,23 @@ func TestUnknownURLNeverFallsBack(t *testing.T) {
 		t.Fatal("unknown repository URL used a default")
 	}
 }
+
+// ark:rein#61: a queue's repo is a [repos] name as often as a path, and a
+// name must be looked up, not handed to git as a relative path.
+func TestResolveRepoLooksUpAQueueRepoName(t *testing.T) {
+	cfg := config.Config{Repos: map[string]string{"ijroth/epitune": "/dev/epitune"}}
+	res, err := runner.ResolveRepo(cfg, config.Queue{Name: "mac-claude", Repo: "ijroth/epitune"}, "")
+	if err != nil || res.Path != "/dev/epitune" || res.Name != "ijroth/epitune" {
+		t.Fatalf("got %+v, %v", res, err)
+	}
+	// An absolute path keeps working as written, mapped or not.
+	res, err = runner.ResolveRepo(cfg, config.Queue{Name: "mac-claude", Repo: "/dev/elsewhere"}, "")
+	if err != nil || res.Path != "/dev/elsewhere" {
+		t.Fatalf("got %+v, %v", res, err)
+	}
+	// A name nothing maps is refused with what the machine does know.
+	_, err = runner.ResolveRepo(cfg, config.Queue{Name: "mac-claude", Repo: "ijroth/gone"}, "")
+	if err == nil || !strings.Contains(err.Error(), "ijroth/epitune") {
+		t.Fatalf("err = %v", err)
+	}
+}

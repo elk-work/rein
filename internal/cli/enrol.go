@@ -64,6 +64,15 @@ in Elk → Settings → Connected agents. On the --claim-code path the inviting
 person already chose it on the invite sheet, so Elk ignores --shared there and
 says so in its reply.
 
+Tell the queue which repositories it works in, or every run it claims that
+names no checkout path ends stuck:
+
+  --repo elk-work/scout=~/dev/scout   repeatable; each must be a git checkout
+  --default-repo elk-work/scout       where a run that names none is cut from
+
+Both only add to what a re-enrolment already had. See
+docs/workspace-repositories.md.
+
   rein enrol --revoke --queue mac-claude
 
 forgets a queue locally: it deletes the keychain entry first, then drops the
@@ -86,6 +95,8 @@ that in Settings → Connected agents.`,
 	f.Bool("shared", false, "let any workspace member send work to this queue (default: private to you; ignored with --claim-code)")
 	f.Bool("revoke", false, "forget a queue: delete its keychain entry, then drop it from the config")
 	f.Bool("force", false, "replace an existing enrolment for this queue")
+	f.StringArray("repo", nil, "a repository this queue serves, as name=path (repeatable); adds to [repos] and the queue's repos list")
+	f.String("default-repo", "", "the repository a run that names none is cut from: a --repo name, a [repos] key, or a mapped path (default: the only repository, when there is one)")
 	return cmd
 }
 
@@ -155,6 +166,13 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 
 	workspace, _ := f.GetString("workspace")
 
+	repoFlags, _ := f.GetStringArray("repo")
+	defaultRepo, _ := f.GetString("default-repo")
+	repos, err := parseEnrolRepos(repoFlags, defaultRepo)
+	if err != nil {
+		return err
+	}
+
 	flagCode, _ := f.GetString("claim-code")
 	flagToken, _ := f.GetString("token")
 	claimCode := firstNonEmpty(flagCode, os.Getenv(EnvClaimCode))
@@ -197,7 +215,18 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	enrolQueue, _ := cfg.QueueIn(workspace, queue)
 	enrolQueue.Name = queue
 	enrolQueue.Workspace = workspace
-	host := runner.DetectHostCapabilities(cmdContext(cmd), cfg).ForQueue(cfg, enrolQueue)
+	hostCfg := cfg
+	if workspace != "" {
+		// Checked now, before Elk binds anything, and declared too: the
+		// repositories are capabilities Pace routes on.
+		planCfg, planQ, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
+		if err != nil {
+			return err
+		}
+		hostCfg, enrolQueue = planCfg, planQ
+		enrolQueue.Workspace = workspace
+	}
+	host := runner.DetectHostCapabilities(cmdContext(cmd), hostCfg).ForQueue(hostCfg, enrolQueue)
 	if claimCode != "" {
 		host = host.ForQueue(config.Config{}, config.Queue{})
 	}
@@ -294,14 +323,11 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	// without its config row is a secret nothing can find again, while a
 	// config row without a token is visible in `rein status` as
 	// "missing — run `rein enrol`" and costs one re-run.
-	cfg.Workspace = firstNonEmpty(cfg.Workspace, workspace)
-	q, _ := cfg.QueueIn(workspace, queue)
-	q.Name = queue
-	q.AgentKind = agentKind
-	if workspace != cfg.Workspace {
-		q.Workspace = workspace
+	_, replaced := cfg.QueueIn(workspace, queue)
+	cfg, q, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
+	if err != nil {
+		return fmt.Errorf("Elk bound queue %q, but nothing was written here: %w", queue, err)
 	}
-	replaced := cfg.SetQueue(q)
 	if err := cfg.SaveFile(path); err != nil {
 		return err
 	}
@@ -319,6 +345,7 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	if len(declared) > 0 {
 		fmt.Fprintf(out, "declared %s\n", strings.Join(declared, ", "))
 	}
+	printEnrolRepos(out, cfg, q)
 	// Who may send work here. Only on the self-connect path: a claim exchange
 	// takes the inviting person's choice, which Rein never learns — Elk's own
 	// reply above is the authority there, and it says so when --shared was

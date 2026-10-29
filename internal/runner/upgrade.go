@@ -156,7 +156,7 @@ func (r *Runner) upgradeGuard(ctx context.Context, path, version string) []strin
 	if next.Error != "" {
 		r.logf("upgrade: %s cannot load the config: %s", version, next.Error)
 	}
-	return strandedBy(r.currentReport(), next)
+	return StrandedBy(r.currentReport(), next)
 }
 
 // currentReport is this build's reading of the live config file, or of the
