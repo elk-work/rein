@@ -137,25 +137,60 @@ func (a *Adapter) Manifest() adapter.Manifest {
 // asks xAI what models this account has, prints "You are logged in with …",
 // and returns in about a second. It reads no credential — that is Grok's job,
 // on the developer's own login (elk `docs/rein.md` §3).
+//
+// A call that exits 0 without "logged in" is asked once more, and the second
+// answer is the one judged (ark:rein#94). Grok's access token lives six hours
+// and its refresh token days; started with an expired access token, `grok
+// models` prints its login from the token it started with and then refreshes
+// in the same call. So the first answer said "not authenticated" for a login
+// that was fine — every mac-grok fault from 2026-10-06 to 10-28 was this —
+// while a login that is really gone says so both times. A call that fails or
+// times out is not asked again.
 func (a *Adapter) Preflight(ctx context.Context) error {
 	path, err := a.resolveBinary()
 	if err != nil {
 		return err
 	}
+	text, err := a.models(ctx, path)
+	if err != nil {
+		return err
+	}
+	if loggedIn(text) {
+		return nil
+	}
+	if text, err = a.models(ctx, path); err != nil {
+		return err
+	}
+	if !loggedIn(text) {
+		return fmt.Errorf("%w: %s reports no login, twice: %s; %s",
+			adapter.ErrPreflight, a.binary, firstLine(text), loginAdvice)
+	}
+	return nil
+}
 
+// loginAdvice is what a person reads when Preflight refuses. Running `grok
+// models` is a sign-in in its own right: if the refresh token is good, that
+// call renews the login, and only a second "not authenticated" means one is
+// needed.
+const loginAdvice = "run `grok models` once; if it still says not authenticated, " +
+	"run `grok login`, or `grok login --device-auth` on a headless box"
+
+// models runs `grok models`, each call with its own thirty seconds, and
+// returns what it printed.
+func (a *Adapter) models(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, path, "models").CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("%w: `%s models` failed (%v): %s; run `grok login`, or `grok login --device-auth` on a headless box",
-			adapter.ErrPreflight, a.binary, err, firstLine(text))
+		return text, fmt.Errorf("%w: `%s models` failed (%v): %s; %s",
+			adapter.ErrPreflight, a.binary, err, firstLine(text), loginAdvice)
 	}
-	if !strings.Contains(strings.ToLower(text), "logged in") {
-		return fmt.Errorf("%w: %s reports no login: %s; run `grok login`, or `grok login --device-auth` on a headless box",
-			adapter.ErrPreflight, a.binary, firstLine(text))
-	}
-	return nil
+	return text, nil
+}
+
+func loggedIn(text string) bool {
+	return strings.Contains(strings.ToLower(text), "logged in")
 }
 
 func (a *Adapter) resolveBinary() (string, error) {

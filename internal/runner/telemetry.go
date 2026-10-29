@@ -621,18 +621,96 @@ func (qr *queueRunner) setPreflightState(state string) {
 	qr.telMu.Unlock()
 }
 
+// The states [agentSetupFailure] reports: the agent's own setup failed, as
+// opposed to one run asking for something this machine lacks.
+const (
+	setupMissing  = "Missing agent capability"
+	setupLogin    = "Agent authentication required"
+	setupNotReady = "The agent is not ready on this machine"
+)
+
 func agentSetupFailure(err error) string {
 	if errors.Is(err, exec.ErrNotFound) {
-		return "Missing agent capability"
+		return setupMissing
 	}
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "login") || strings.Contains(text, "auth") || errors.Is(err, adapter.ErrNotPlanAuth) {
-		return "Agent authentication required"
+		return setupLogin
 	}
-	return "The agent is not ready on this machine"
+	return setupNotReady
+}
+
+// DefaultSetupRecheckInterval is how often a queue whose agent setup failed
+// checks it again, on a heartbeat. The heartbeat is the poll, every thirty
+// seconds; checking on every one would start the agent's login check — for
+// Grok two `grok models`, each a call to xAI — some 5,700 times a day on a
+// machine whose login really is gone.
+const DefaultSetupRecheckInterval = 5 * time.Minute
+
+func (qr *queueRunner) setupRecheckInterval() time.Duration {
+	if d := qr.r.opts.SetupRecheckInterval; d > 0 {
+		return d
+	}
+	return DefaultSetupRecheckInterval
+}
+
+// recheckSetup runs the setup check again for a queue whose agent setup
+// failed, so that a login that has come back — refreshed by the vendor's own
+// CLI, or signed in again by a person — clears the fault on its own
+// (ark:rein#94). Until then the state changed only on a claim, so a queue
+// reporting "Agent authentication required" stayed that way, and Elk kept
+// asking somebody to sign in, until a run was requeued onto it.
+//
+// Only a queue in one of [agentSetupFailure]'s states looks again, so a
+// healthy machine never starts its agent's login check on a heartbeat. Every
+// other state stays as it is today: "ready", the states one run's
+// requirements set, hosted mode, and an adapter whose claim-time check is
+// [adapter.RunPreparer.Prepare] rather than Preflight — the check adapter's
+// Prepare asks Docker, which its Preflight does not, so a passing Preflight
+// would say ready while Docker is still down.
+//
+// It is throttled by [DefaultSetupRecheckInterval] from the last time this
+// queue ran its own check. A failure found at a claim does not stamp that
+// time, and neither does a beat that finds the queue healthy, so the first
+// beat after a run goes stuck looks again at once unless this queue already
+// looked inside the interval: that is the case that matters, because the
+// failed check has usually just refreshed the login itself.
+func (qr *queueRunner) recheckSetup(ctx context.Context) {
+	if qr.r.opts.Hosted {
+		return
+	}
+	qr.telMu.Lock()
+	state := qr.preflightState
+	failed := state == setupMissing || state == setupLogin || state == setupNotReady
+	due := failed && time.Since(qr.setupCheckedAt) >= qr.setupRecheckInterval()
+	if due {
+		// Claimed under the lock, so the tick and the loop beating at once
+		// run one check, not two. Only a check that runs stamps the time: a
+		// healthy beat must not push back the first look after a failure.
+		qr.setupCheckedAt = time.Now()
+	}
+	qr.telMu.Unlock()
+	if !due {
+		return
+	}
+	if a, ok := adapter.Lookup(qr.q.AgentKind); ok {
+		if _, prepares := a.(adapter.RunPreparer); prepares {
+			return
+		}
+	}
+	qr.checkAgentSetup(ctx)
+	qr.telMu.Lock()
+	now := qr.preflightState
+	qr.telMu.Unlock()
+	if now != state {
+		qr.logf("agent setup: %s (was: %s)", now, state)
+	}
 }
 
 func (qr *queueRunner) checkAgentSetup(ctx context.Context) {
+	qr.telMu.Lock()
+	qr.setupCheckedAt = time.Now()
+	qr.telMu.Unlock()
 	a, ok := adapter.Lookup(qr.q.AgentKind)
 	if !ok {
 		qr.setPreflightState("No adapter for this queue")

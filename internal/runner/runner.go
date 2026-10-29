@@ -251,6 +251,11 @@ type Options struct {
 	// should need to.
 	ReclaimInterval time.Duration
 
+	// SetupRecheckInterval overrides [DefaultSetupRecheckInterval] as how
+	// often a queue whose agent setup failed checks it again on a heartbeat
+	// (ark:rein#94). Tests shorten it; nothing else should need to.
+	SetupRecheckInterval time.Duration
+
 	// ReviewTimeout overrides [DefaultReviewTimeout] — how long to wait for
 	// Elk's auto-review pass after a submit.
 	ReviewTimeout time.Duration
@@ -712,6 +717,9 @@ type queueRunner struct {
 	tel            queueTelemetry
 	lastReplyShape string
 	preflightState string
+	// setupCheckedAt is when this queue last ran its own setup check
+	// ([queueRunner.checkAgentSetup]), guarded by telMu like the state.
+	setupCheckedAt time.Time
 
 	// sub is this queue's subscription headroom: the last reading, carried
 	// forward, and whether the queue is holding off claiming because the
@@ -980,6 +988,9 @@ func (qr *queueRunner) heartbeatRequest() elk.HeartbeatRequest {
 // rather than treating silence as an empty queue. It never fails the loop: a
 // blip must not stop a runner that can still claim and report.
 func (qr *queueRunner) heartbeat(ctx context.Context) (depth int, known bool) {
+	// A queue whose agent setup failed looks again first, so that this beat
+	// carries what it finds (telemetry.go, ark:rein#94).
+	qr.recheckSetup(ctx)
 	hb, err := qr.elk.HeartbeatExecutor(ctx, qr.heartbeatRequest())
 	switch {
 	case err == nil:
