@@ -244,6 +244,37 @@ type Prepared struct {
 	Commit string
 }
 
+// RunReaper is implemented by an adapter that keeps something of its own
+// outside the worktree — today the check adapter, whose records and whose
+// tool's scratch directories would otherwise pile up on a runner forever
+// (ark:rein#91).
+//
+// The run loop calls ReapRun where it reaps the worktree: once at the end of
+// every run that got one, after the session has ended, with that run's spec.
+// It calls it only when it can tell which runs are live on this machine, and
+// an adapter must never remove anything a run in [ReapPolicy.Live] could be
+// using. The lines it returns say what it removed, for the daemon's log. An
+// error is logged and never fails the run: the deliverable is already saved.
+type RunReaper interface {
+	ReapRun(spec RunSpec, policy ReapPolicy) ([]string, error)
+}
+
+// ReapPolicy is what the run loop tells a [RunReaper].
+type ReapPolicy struct {
+	// KeepRuns is how many runs' records to keep, newest first, live runs
+	// counted against it and never removed. Zero or less keeps everything.
+	// It is the machine's log_keep_runs, so a run's records and its event
+	// log age out together.
+	KeepRuns int
+
+	// Live is every run still being driven on this machine, the one just
+	// ending included, by run id, with when it started.
+	Live map[string]time.Time
+
+	// Now is when the policy was taken.
+	Now time.Time
+}
+
 // InheritedEnv is the base environment for the child process, before Env and
 // an adapter's own isolation variables are laid over it: the daemon's system
 // variables plus those [RunSpec.PassEnv] names, never a metered-billing one.

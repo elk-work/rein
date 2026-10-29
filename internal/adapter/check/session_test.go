@@ -199,6 +199,8 @@ func TestAPassingJobIsAPassRecordAndASucceededSession(t *testing.T) {
 	}
 	for _, want := range [][]string{
 		{"workflow_dispatch", "-W", ".github/workflows/floor.yml", "-j", "floor", "--json"},
+		// act tears the job down only after a success unless told to.
+		{"--json", "--rm"},
 		{"-P", "ubuntu-latest=-self-hosted"},
 	} {
 		if !hasArgs(r.args, want...) {

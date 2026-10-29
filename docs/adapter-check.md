@@ -126,9 +126,14 @@ created.
 ## The two executors
 
 ```
-act <event> -W <workflow> -j <job> --json -P <label>=<image>        # container
-act <event> -W <workflow> -j <job> --json -P <label>=-self-hosted   # host
+act <event> -W <workflow> -j <job> --json --rm -P <label>=<image>        # container
+act <event> -W <workflow> -j <job> --json --rm -P <label>=-self-hosted   # host
 ```
+
+`--rm` is there because act tears a job's environment down only after a
+success unless told otherwise. Without it, every failed check left its job
+container running on the Docker daemon, or its host-executor directory in
+act's cache, for good. See [What a check leaves behind](#what-a-check-leaves-behind).
 
 | | container | host |
 |---|---|---|
@@ -326,6 +331,50 @@ built from the packet and act's step counts, and never from the environment.
 ```
 ````
 
+## What a check leaves behind
+
+**ark:rein#91 (01M5RP54QM0XFQZBKVTDPMRB1V).** The run loop reaps the
+worktree as it does for every run. At the same moment it asks the check
+adapter to tidy up the rest:
+
+| What | Where | When it goes |
+|---|---|---|
+| The records and act.log | `<Rein home>/checks/<run id>/` | past the newest `log_keep_runs` check runs (50 by default), like the run logs |
+| act's scratch directory for a host-executor job | `<act cache>/<16 hex>/` holding `act/`, `hostexecutor/` and `tmp/` | once nothing has touched it for a day |
+| act's action clones | `<act cache>/<owner>-<repo>@<ref>/` | never |
+| act's tool cache | `<act cache>/tool_cache/` | never |
+
+`<act cache>` is where act itself puts it, read from the environment Rein
+hands act: `$XDG_CACHE_HOME/act`, else `~/.cache/act`.
+
+- **Records follow `log_keep_runs`**, so a run's record and its event log age
+  out together. A negative number keeps everything. The copy in Elk is the
+  one people read; the file is for looking into a recent run.
+- **act names a host-executor directory with eight random bytes**, so nothing
+  ties it to a run but its age. act removes it itself when the job ends, and
+  `--rm` makes that true of a failed job too. What is still there was left by
+  an act that was killed. Only a directory named sixteen hex digits with a
+  `hostexecutor/` inside, not a link, is ever removed. Its age is the newest
+  modification time of the directory and its children.
+- **Action clones and the tool cache stay.** They are bounded by the actions
+  and tool versions the workflows use, and act refreshes them in place. They
+  are also expensive to lose: the Linux lab's first check spent 88 of its
+  123 seconds downloading node. On a desktop the same directory is a
+  person's own act cache too. On the container executor the tool cache is a
+  Docker volume, not a directory. act's `actions/cache` server
+  (`~/.cache/actcache`) expires its own entries.
+
+Nothing a live run could be using is ever removed. Which runs are live is
+what the run logs say, exactly as for pruning the logs themselves:
+
+- a live run's record counts against `log_keep_runs` and is kept;
+- no act directory counts as a day old while a run that started before it
+  was last touched is still going;
+- with no run logs (an unwritable Rein home) nothing is removed at all.
+
+`--keep-worktrees` does not change any of this. It keeps the run's
+worktree; act has already removed its own directory by then.
+
 ## Manifest
 
 | Capability | Declared | Why |
@@ -343,8 +392,9 @@ Measured on 2026-10-24 against act 0.2.89 on darwin/arm64:
 - `REIN_REAL_ACT=1 go test ./internal/adapter/check -run RealAct -v` runs the
   real act. `REIN_REAL_ACT_REPO` pointed at a checkout of elk-work/scout also
   runs its quick-checks job through the adapter.
-- The container executor has not been run against a real Docker daemon. Its
-  arguments are covered by the stub tests only.
+- The container executor ran against a real Docker daemon on the Linux lab
+  on 2026-10-25, and the round trip through Elk with it; both are quoted on
+  ark:rein#91 (01M5RP54QM0XFQZBKVTDPMRB1V).
 - The act spike that measured which workflow keywords act ignores is on
   ark:pulse#78 (01M56D1BR2B7ZGBPR8JNEJYVQG).
 

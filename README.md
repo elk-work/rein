@@ -688,7 +688,7 @@ host_id    = "mac"          # short label; the readable half of a queue name
 machine_id = "9f1c…"        # opaque, minted once; Elk stores it as host_id
 workspace  = "Elk Scout"    # default Elk workspace for queues below
 work_dir   = "/Users/you/.rein/work"  # per-run git worktrees
-log_keep_runs = 50          # run event logs kept under <home>/log/runs
+log_keep_runs = 50          # run event logs kept under <home>/log/runs, and check records under <home>/checks
 
 [elk]
 mcp_url = "https://<project>.supabase.co/functions/v1/elk-mcp"
