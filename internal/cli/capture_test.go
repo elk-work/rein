@@ -61,6 +61,12 @@ func TestCaptureSiteUsesHeadlessChromeAndRefusesAFile(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("chrome was launched for a refused url")
 	}
+	// LookPath("chrome") on Windows only finds a PATHEXT name such as
+	// chrome.exe. The arguments themselves are tested in PlanSite, on every
+	// platform. This half checks the command actually launches that chrome.
+	if runtime.GOOS == "windows" {
+		return
+	}
 
 	_, stderr, code = run(t, "capture", "site", "--out", out, "https://example.com/page")
 	if code != 0 {

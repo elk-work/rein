@@ -2,6 +2,7 @@ package capture
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,9 @@ func TestShimForwardsToReinAndDoesNotCallTheSystemTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&0o111 == 0 {
+	// Windows does not record a Unix executable bit. The shim is a macOS PATH
+	// entry; the file still has to be executable everywhere else.
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 		t.Fatalf("shim mode %v is not executable", info.Mode())
 	}
 }
