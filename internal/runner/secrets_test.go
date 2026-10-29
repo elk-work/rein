@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/capture"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/runlog"
@@ -132,8 +133,8 @@ func TestAScopedQueueRunGetsExactlyItsSecrets(t *testing.T) {
 	}
 	spec := specs[0]
 	want := map[string]string{"POSTHOG_API_KEY": posthogValue, "AWS_ACCESS_KEY_ID": awsValue}
-	if len(spec.Env) != len(want) {
-		t.Fatalf("RunSpec.Env has %d variables, want exactly %d: %v", len(spec.Env), len(want), keys(spec.Env))
+	if got := credentialEnv(spec.Env); len(got) != len(want) {
+		t.Fatalf("RunSpec.Env has %d variables, want exactly %d: %v", len(got), len(want), keys(spec.Env))
 	}
 	for k, v := range want {
 		if spec.Env[k] != v {
@@ -205,7 +206,7 @@ func TestAQueueWithoutAMapIsScopedByName(t *testing.T) {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}
 	spec := h.agent.Specs()[0]
-	if spec.Env != nil {
+	if credentialEnv(spec.Env) != nil {
 		t.Errorf("a run with no secrets map got Env=%v; want none", keys(spec.Env))
 	}
 	// It keeps what it declared it holds, and nothing else the daemon has.
@@ -254,8 +255,8 @@ func TestTwoScopedQueuesNeverShareASecret(t *testing.T) {
 	}
 	var sawPosthog, sawAWS bool
 	for _, s := range specs {
-		if len(s.Env) != 1 {
-			t.Errorf("a run got %d variables, want exactly its own queue's one: %v", len(s.Env), keys(s.Env))
+		if got := credentialEnv(s.Env); len(got) != 1 {
+			t.Errorf("a run got %d variables, want exactly its own queue's one: %v", len(got), keys(s.Env))
 		}
 		switch {
 		case s.Env["POSTHOG_API_KEY"] == posthogValue:
@@ -345,7 +346,7 @@ func TestAnEmptyScopedQueueGetsNoCredentials(t *testing.T) {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}
 	spec := h.agent.Specs()[0]
-	if len(spec.Env) != 0 || len(spec.PassEnv) != 0 {
+	if credentialEnv(spec.Env) != nil || len(spec.PassEnv) != 0 {
 		t.Errorf("Env=%v PassEnv=%v; want no variables at all", keys(spec.Env), spec.PassEnv)
 	}
 	if !strings.Contains(spec.SystemPrompt, "it holds none") || strings.Contains(spec.SystemPrompt, "vault-run --only KEY -- <cmd>") {
@@ -464,6 +465,29 @@ func machineHolds(names ...string) *runner.HostCapabilities {
 		append([]string{"elk-connector", "git", "worktree", "github-cli"}, names...)...)
 }
 
+// credentialEnv is spec.Env without the screencapture gate. On macOS every
+// run gets PATH and REIN_CAPTURE_BIN so the command named screencapture
+// refuses the person's screen. Those two are Rein's, not credentials: a
+// scoped queue that gained any other variable still fails.
+func credentialEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	dir := env[capture.EnvBin]
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		out[k] = v
+	}
+	if dir != "" && strings.HasPrefix(out["PATH"], dir+string(os.PathListSeparator)) {
+		delete(out, "PATH")
+		delete(out, capture.EnvBin)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func keys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -496,8 +520,8 @@ func TestAScopedWranglerCycleGetsExactlyItsSecrets(t *testing.T) {
 	}
 	spec := specs[0]
 	want := map[string]string{"POSTHOG_API_KEY": posthogValue, "AWS_ACCESS_KEY_ID": awsValue}
-	if len(spec.Env) != len(want) {
-		t.Fatalf("RunSpec.Env has %d variables, want exactly %d: %v", len(spec.Env), len(want), keys(spec.Env))
+	if got := credentialEnv(spec.Env); len(got) != len(want) {
+		t.Fatalf("RunSpec.Env has %d variables, want exactly %d: %v", len(got), len(want), keys(spec.Env))
 	}
 	for k, v := range want {
 		if spec.Env[k] != v {

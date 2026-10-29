@@ -221,6 +221,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		// the system variables, only what it names (env.go).
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
 	}
+	// The capture gate first, then Chrome, so `chrome` stays at the front of
+	// PATH and the gate stays ahead of /usr/sbin/screencapture.
+	defer qr.giveCapture(&spec)()
 	defer qr.giveChrome(&spec)()
 
 	var repo RepoResolution

@@ -132,12 +132,18 @@ he was using it.
 A LaunchAgent is **its own responsible process with its own, empty TCC
 record**. `screencapture` from it returns a black image and `osascript` aimed at
 another app is refused, with no prompt, because a launchd agent has no way to
-raise one. The prompt now forbids all of this outright
-(`internal/runner/prompt.md`), but a prompt is an instruction and this is a
-wall. `docs/run-loop.md` § *What the prompt cannot enforce* has the whole
-argument.
+raise one. The prompt forbids capturing the person's screen, and anything the
+run did not itself launch (`internal/runner/prompt.md`). A window of a process
+the run launched is the exception, and only through `rein capture`, which
+refuses every other window. A prompt is an instruction and the empty TCC
+record is still the wall. `docs/run-loop.md` § *What the prompt cannot enforce*
+has the whole argument.
 
-Do not "fix" that by granting the Rein agent those permissions.
+Do not "fix" that by granting the Rein agent those permissions. `rein capture`
+does not change this. From the service it sees no windows and refuses, which
+is the wall working. Granting Screen Recording so a service run could
+photograph an app it launched would also let that run call
+`/usr/sbin/screencapture` on the person's desktop. Leave the grant off.
 
 #### "rein was prevented from modifying apps"
 
