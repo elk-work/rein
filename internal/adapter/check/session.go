@@ -79,7 +79,12 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	}
 
 	executor := ChooseExecutor(st, c.RunsOn)
-	args := []string{c.Event, "-W", c.Workflow, "-j", jobID, "--json"}
+	// --rm: act tears a job's environment down only when the job succeeded,
+	// unless told otherwise. Without it every failed check left its job
+	// container running on the Docker daemon, or its host-executor directory
+	// in act's cache, for good (ark:rein#91). Nobody inspects either: the
+	// record and act.log are the account of the run.
+	args := []string{c.Event, "-W", c.Workflow, "-j", jobID, "--json", "--rm"}
 	args = append(args, platformArgs(executor, st.Image, c.RunsOn, st.Labels)...)
 	if executor == ExecutorContainer {
 		// A worktree's .git is a file pointing into the source repository,

@@ -14,8 +14,8 @@
 // the provider. [Adapter.Prepare] hands the commit to the run loop, which cuts
 // the worktree detached at exactly that commit (internal/worktree). Then:
 //
-//	act <event> -W <workflow> -j <job> --json -P <label>=<image>          # container executor
-//	act <event> -W <workflow> -j <job> --json -P <label>=-self-hosted     # host executor
+//	act <event> -W <workflow> -j <job> --json --rm -P <label>=<image>          # container executor
+//	act <event> -W <workflow> -j <job> --json --rm -P <label>=-self-hosted     # host executor
 //
 // Every line act prints becomes an [adapter.EventProgress], which the run loop
 // throttles exactly as it throttles an agent's. When act exits, Rein writes the
@@ -58,8 +58,16 @@ type Adapter struct {
 	Act, Git, Docker, Pulse string
 
 	// RecordRoot is where each run's record and log are kept. Empty means
-	// `<Rein home>/checks`.
+	// `<Rein home>/checks`. The oldest are removed at the end of each run,
+	// keeping as many as log_keep_runs (see [Adapter.ReapRun]).
 	RecordRoot string
+
+	// CacheRoot is act's own cache directory, where it clones actions and
+	// makes a scratch directory for every host-executor job. Empty means
+	// where act itself puts it, read from the environment Rein hands act:
+	// `$XDG_CACHE_HOME/act`, else `~/.cache/act` (see [actCacheRoot]). Only
+	// the scratch directories are ever removed (see [Adapter.ReapRun]).
+	CacheRoot string
 
 	// Heartbeat is how long act may print nothing before the session says it
 	// is still running. The run loop treats fifteen silent minutes as a

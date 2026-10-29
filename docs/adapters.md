@@ -62,6 +62,15 @@ The check adapter is the one implementation. A `Prepare` error wrapping
 `ErrWorkOrder` is the work order's fault — a missing or malformed check
 packet — and is reported as such, not as a broken binary or login.
 
+An adapter that keeps something of its own outside the worktree implements
+`RunReaper`. The run loop calls its `ReapRun(spec, policy)` where it reaps the
+worktree, once at the end of every run that got one. The policy carries
+`log_keep_runs` and every run the run logs say is live. The adapter must never
+remove anything a live run could be using, and with no run logs the loop does
+not call it at all. An error is logged and never fails the run. The check
+adapter is the one implementation; see
+[`adapter-check.md`](adapter-check.md#what-a-check-leaves-behind).
+
 `RunSpec.Queue` and `RunSpec.Settings` carry the queue's name and its
 `[queues.settings]` table, verbatim. An adapter reads the keys its own doc
 names and refuses a value it does not understand; the others ignore them.
