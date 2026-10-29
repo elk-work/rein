@@ -342,6 +342,36 @@ is the backstop.
 logged in with …", and returns in about a second. It reads no credential;
 that is Grok's job, on the developer's own login.
 
+**An expired access token is not a lost login** (ark:rein#94
+(01M64K9VJ2RQQ93DKMB1X3W7FF)). Grok's access token lives six hours and its
+refresh token for days. Started with an expired access token, `grok models`
+says "You are not authenticated." and then refreshes the login in the same
+call: in `~/.grok/logs/unified.jsonl`, `oidc try_refresh_pure succeeded` and
+`model catalog: fetch succeeded` follow within about a second. Every mac-grok
+"not ready" from 2026-10-06 to 2026-10-28 was this, on grok 1.0.13 to 1.0.50.
+So:
+
+- A call that exits 0 without "logged in" is asked **once more**, and the
+  second answer is the one judged. A login that really is gone says so both
+  times.
+- A call that fails or times out is not asked again.
+- The advice when it still refuses: run `grok models` once; if it still says
+  not authenticated, run `grok login`, or `grok login --device-auth` on a
+  headless box.
+
+**A faulted queue heals itself.** A queue whose agent setup failed ("Agent
+authentication required", "Missing agent capability", "The agent is not ready
+on this machine") runs the check again on a heartbeat, so it reports `ready`
+once the login is back without waiting for a claim. It looks at most once
+every five minutes: the heartbeat is the thirty-second poll, and checking on
+every one would be two calls to xAI a minute for a login that is really
+gone. The first beat after a run goes stuck looks at once, unless the queue
+already looked in the last five minutes. A healthy queue
+never runs the check on a heartbeat. This is the run loop's
+(`internal/runner/telemetry.go`), so it holds for every adapter. The
+exceptions are hosted mode and the check adapter, whose claim-time check is
+`Prepare`.
+
 The binary is looked up on `PATH`, falling back to `~/.grok/bin/grok` for a
 daemon started from a shell that never sourced a profile. The fallback applies
 only to the default binary name, so a configured `grok-nightly` that is missing
