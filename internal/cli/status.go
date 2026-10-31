@@ -113,8 +113,16 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 	if err := qw.Flush(); err != nil {
 		return err
 	}
-	if w := cfg.RepositoryCompatibilityWarning(); w != "" {
+	// The same reading `rein config check` gives, so a queue that will strand
+	// its runs says so here too rather than only showing as online in Elk.
+	rep := runner.CheckConfig(cfg, cmd.Root().Version)
+	for _, w := range rep.Warnings {
 		fmt.Fprintf(out, "\nWARNING: %s\n", w)
+	}
+	for _, q := range rep.Queues {
+		for _, p := range q.Problems {
+			fmt.Fprintf(out, "\nPROBLEM %s: %s\n", q.Queue, p)
+		}
 	}
 
 	if online {

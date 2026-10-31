@@ -276,6 +276,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			"\n\nRepository: "+repo.String(), code)
 	}
 	defer qr.reap(wt)
+	defer qr.reapAdapter(a, wo.RunID, &spec)
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
 	if !qr.r.opts.Hosted {

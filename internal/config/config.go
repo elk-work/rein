@@ -96,7 +96,8 @@ type Config struct {
 	// docs/run-loop.md.
 	DefaultRepo string `toml:"default_repo"`
 
-	// LogKeepRuns is how many runs' event logs are kept under <Dir>/log/runs.
+	// LogKeepRuns is how many runs' event logs are kept under <Dir>/log/runs,
+	// and how many check runs' records under <Dir>/checks (ark:rein#91).
 	// Zero means [DefaultLogKeepRuns]; a negative number keeps everything.
 	//
 	// The logs are pruned where the worktree reaper runs, for the reason the

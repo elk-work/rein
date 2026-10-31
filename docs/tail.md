@@ -86,6 +86,9 @@ run is the one thing a live view is reading. Active runs do count against the
 budget, so a machine with fifty runs in flight prunes nothing, which is the
 right answer.
 
+A runner's check records under `<home>/checks/` are kept to the same number,
+by the same rule; see [`adapter-check.md`](adapter-check.md#what-a-check-leaves-behind).
+
 ## The view
 
 ### All queues

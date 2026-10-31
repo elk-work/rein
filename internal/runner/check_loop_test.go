@@ -17,6 +17,7 @@ import (
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk/elktest"
 	"github.com/elk-work/rein/internal/keyring"
+	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/runner"
 	"github.com/elk-work/rein/internal/worktree"
 )
@@ -45,9 +46,15 @@ type checkRig struct {
 	cfg     config.Config
 	store   keyring.Store
 	records string
+	cache   string // act's cache, never the real one
 	origin  string
 	clone   string
 	log     *strings.Builder
+
+	// logs and keepRuns, when set, are the run logs and log_keep_runs the
+	// loop is given; without logs nothing is tidied after the run.
+	logs     *runlog.Store
+	keepRuns int
 }
 
 func gitIn(t *testing.T, dir string, args ...string) string {
@@ -68,7 +75,8 @@ func newCheckRig(t *testing.T, fixture string, code int) *checkRig {
 		t.Skip("git is not on PATH")
 	}
 	home := t.TempDir()
-	r := &checkRig{t: t, elk: elktest.New(t, token), records: filepath.Join(home, "checks"), log: &strings.Builder{}}
+	r := &checkRig{t: t, elk: elktest.New(t, token), records: filepath.Join(home, "checks"),
+		cache: filepath.Join(home, "cache", "act"), log: &strings.Builder{}}
 
 	r.origin = filepath.Join(home, "origin")
 	if err := os.MkdirAll(filepath.Join(r.origin, ".github", "workflows"), 0o755); err != nil {
@@ -96,7 +104,7 @@ func newCheckRig(t *testing.T, fixture string, code int) *checkRig {
 		t.Fatal(err)
 	}
 	adapter.Unregister(check.Kind)
-	if err := adapter.Register(&check.Adapter{Act: stub, RecordRoot: r.records, Pulse: "rein-test-no-pulse"}); err != nil {
+	if err := adapter.Register(&check.Adapter{Act: stub, RecordRoot: r.records, CacheRoot: r.cache, Pulse: "rein-test-no-pulse"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -153,6 +161,7 @@ func (r *checkRig) run(claim string) {
 		HostCapabilities: runner.NewHostCapabilities("a test", "elk-connector", "git", "worktree", "act"),
 		StallAfter:       30 * time.Second,
 		ReviewTimeout:    time.Second, ReviewPollInterval: 100 * time.Millisecond,
+		Logs: r.logs, LogKeepRuns: r.keepRuns,
 	})
 	if err != nil {
 		r.t.Fatal(err)
@@ -251,6 +260,62 @@ func TestACheckPacketRunsFromClaimToSubmit(t *testing.T) {
 	entries, _ := os.ReadDir(r.cfg.WorkDir)
 	if len(entries) != 0 {
 		t.Errorf("the worktree was not reaped: %v", entries)
+	}
+}
+
+// A check leaves nothing to pile up (ark:rein#91): where the worktree is
+// reaped, the oldest records go past log_keep_runs and a host-executor
+// directory act left behind a day ago goes too, while this run's own record,
+// act's action clones and its tool cache stay.
+func TestACheckTidiesUpItsRecordsAndActsLeftovers(t *testing.T) {
+	r := newCheckRig(t, "act-pass.jsonl", 0)
+	sha := r.pushToOrigin()
+	r.logs, r.keepRuns = openRunLogs(t), 2
+	aged := func(dir string, age time.Duration, children ...string) {
+		t.Helper()
+		at := time.Now().Add(-age)
+		for _, c := range append(children, "") {
+			if err := os.MkdirAll(filepath.Join(dir, c), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(filepath.Join(dir, c), at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for i, id := range []string{"old-1", "old-2", "old-3"} {
+		aged(filepath.Join(r.records, id), time.Duration(3-i)*time.Hour)
+	}
+	aged(filepath.Join(r.cache, "ea7e347e5de3bc16"), 48*time.Hour, "act", "hostexecutor", "tmp")
+	aged(filepath.Join(r.cache, "actions-setup-node@v7"), 48*time.Hour, "dist")
+	aged(filepath.Join(r.cache, "tool_cache"), 48*time.Hour, "node")
+
+	r.run(checkOrder(sha))
+
+	if sub := r.submitted(); sub.Arg("status") != "ready" {
+		t.Errorf("status = %q, want ready", sub.Arg("status"))
+	}
+	left, err := os.ReadDir(r.records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, e := range left {
+		ids = append(ids, e.Name())
+	}
+	if strings.Join(ids, ",") != "old-3,run-check-1" {
+		t.Errorf("records left = %v, want this run's and the newest old one\n%s", ids, r.log)
+	}
+	cached, err := os.ReadDir(r.cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, e := range cached {
+		kept = append(kept, e.Name())
+	}
+	if strings.Join(kept, ",") != "actions-setup-node@v7,tool_cache" {
+		t.Errorf("act's cache left = %v\n%s", kept, r.log)
 	}
 }
 
