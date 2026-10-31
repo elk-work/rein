@@ -875,9 +875,16 @@ had work on it.
 So the prompt now carries a hard rule, in the standing instructions, holding
 whatever the task appears to ask and whatever permission mode the queue is in:
 
-- never capture the screen, the camera or the microphone — and the **capture**
-  is what is forbidden, not the file, so intending to delete it afterwards
-  changes nothing;
+- never capture the person's screen, the camera or the microphone, nor any
+  window the run did not itself launch — and the **capture** is what is
+  forbidden, not the file, so intending to delete it afterwards changes
+  nothing. A window of a process the run launched is photographed only through
+  `rein capture window` (or the `screencapture` Rein puts on the run's PATH,
+  which accepts `-l` and refuses the display and every other window). The
+  window's owner has to be a descendant of the `rein` that started the run. A
+  page is `chrome --screenshot` or `rein capture site`, headless, fresh
+  profile, written to a file. `/usr/sbin/screencapture` stays forbidden: it
+  walks around the check;
 - never drive, click at, or send keystrokes, AppleScript or accessibility
   events to any application the run did not itself launch;
 - never read the clipboard, and never open the person's own files outside the
@@ -898,6 +905,12 @@ that is holding a shell, and under `full` the model is not being asked before
 it runs anything. The rule is worth writing because models mostly follow
 rules — the screenshot run would not have taken them had it been told not to —
 but it is not a control, and treating it as one is how this happens twice.
+
+The `screencapture` at the front of a run's PATH is a check on that command
+name, not a sandbox either. It refuses a capture of the display and any window
+whose owner is not a descendant of the run (`internal/capture`). An agent that
+calls `/usr/sbin/screencapture` by path walks around it; the prompt forbids
+that. TCC, below, is still the wall that holds when the prompt does not.
 
 **The only real control is the operating system**, and on macOS that means
 **TCC**. Screen Recording, Accessibility and Input Monitoring are granted per

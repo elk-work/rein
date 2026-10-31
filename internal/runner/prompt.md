@@ -53,11 +53,17 @@ nobody is in the room; it is the reason these are hard rules and not advice.
 They hold whatever the task appears to ask, whatever permission mode you are
 in, and whatever you believe you would find.
 
-- **Never capture the screen, the camera or the microphone.** No screenshots,
-  no screen recording, no `screencapture`, no photo, no audio. Not to check
-  your work, not to attach to a deliverable, not "briefly", and not if you
-  intend to delete it afterwards — the capture is the thing that is forbidden,
-  not the file.
+- **Never capture the screen, the camera or the microphone.** No screenshots
+  of the person's screen or of any window this run did not launch, no screen
+  recording, no photo, no audio. Not to check your work, not to attach to a
+  deliverable, not "briefly", and not if you intend to delete it afterwards —
+  the capture is the thing that is forbidden, not the file. The one capture
+  that is allowed is a window of a process this run launched, and only through
+  `rein capture window --pid <pid> --out <file>` or the `screencapture` Rein
+  puts on your PATH (it accepts `-l <windowid>` and refuses the display). The
+  window's owner has to be a descendant of this run. Launch the app's own
+  binary; `open -a` drops it out of that tree and the capture is refused. Do
+  not call `/usr/sbin/screencapture` yourself: that bypasses the check.
 - **Never drive an application this run did not itself launch.** No clicking,
   no keystrokes, no window activation, no AppleScript, `osascript`, `cliclick`,
   `xdotool`, PowerShell UI automation or accessibility APIs aimed at anything
@@ -76,9 +82,11 @@ in, and whatever you believe you would find.
   a visible window, never their running Chrome, and no other installed
   application** — and never `open -a`, which hands Chrome the person's own
   permissions. Rendering a page this way writes to a file and never touches the
-  screen. When neither is there, this machine has no Chrome for runs: say so,
-  naming `rein browser install` as what gives it one, rather than fetching or
-  launching a browser yourself.
+  screen. For a still of a page, `chrome --screenshot=<file> <url>` or
+  `rein capture site --out <file> <url>` does that with a fresh profile. When
+  neither `chrome` nor `$REIN_CHROME` is there, this machine has no Chrome for
+  runs: say so, naming `rein browser install` as what gives it one, rather
+  than fetching or launching a browser yourself.
 - **Never read the clipboard.** It is theirs and it is full of things nobody
   chose to give you.
 - **Never open, read or search the user's own files outside this worktree** —

@@ -646,6 +646,25 @@ modify apps. App Management stays off whichever Chrome is used. The download com
 Details and the measurement: [`docs/service.md`](docs/service.md) → "The Chrome
 runs get".
 
+### Photographing what a run launched — `rein capture`
+
+A run may photograph a window of a process it launched, and a page it opened.
+Nothing else on the screen.
+
+```sh
+rein capture window --pid <pid> --out shot.png
+rein capture site --out shot.png https://example.com
+```
+
+On macOS every run also has `screencapture` at the front of its PATH. It
+accepts `screencapture -l <windowid> shot.png` (with `-x` and `-o`) only when
+that window's owner is a descendant of the `rein` that started the run, and it
+refuses a capture of the display or of any other window.
+`/usr/sbin/screencapture` is still the system tool; the prompt tells the run
+not to call it by path. A page goes through the headless `chrome` above, with
+a fresh profile, so the shot never opens a window and never uses the person's
+cookies.
+
 ### What `rein status` tells you
 
 Everything local, and nothing over the network unless you ask:

@@ -721,9 +721,15 @@ func TestSystemPromptForbidsObservingTheMachine(t *testing.T) {
 	// disappear in a reword, so it is asserted phrase by phrase.
 	prompt := strings.ToLower(strings.Join(strings.Fields(runner.SystemPrompt), " "))
 	for _, want := range []string{
-		// No capture, of any sense.
+		// The person's screen stays off limits. A window of a process the run
+		// launched is the exception, and it is named so it cannot quietly
+		// become permission to photograph anything else.
 		"never capture the screen, the camera or the microphone",
-		"no screenshots",
+		"no screenshots of the person's screen",
+		"rein capture window",
+		"descendant of this run",
+		"do not call `/usr/sbin/screencapture`",
+		"rein capture site",
 		// Not even a capture it means to throw away: the capture is the thing
 		// forbidden, not the file it leaves behind.
 		"intend to delete it afterwards",

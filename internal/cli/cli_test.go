@@ -37,7 +37,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	for _, want := range []string{"enrol", "run", "attach", "tail", "status", "version", "service", "config"} {
+	for _, want := range []string{"enrol", "run", "attach", "tail", "status", "version", "service", "config", "capture"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help does not mention %q:\n%s", want, out)
 		}
