@@ -41,6 +41,10 @@ type SuiteRecord struct {
 	RetentionClass string         `json:"retention_class"`
 	Started        time.Time      `json:"started"`
 	Ended          time.Time      `json:"ended"`
+	// Artifacts is what a passing build suite produced, as recorded in Ark
+	// (artifacts.go): absent on every other record, so a record with none
+	// encodes exactly as it did before the field existed.
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Results a record may carry (pulse: pass, fail, error, cancelled, skip).
@@ -245,7 +249,19 @@ func droppedNote(n int) string {
 // longest result, millisecond timestamps — and on every record emitted_by
 // and the note that replaces changed_paths. [Check.Validate] refuses a check
 // whose worst case reaches 8 KiB, so every block a run writes fits.
-func (c Check) worstRecordBlock() int {
+func (c Check) worstRecordBlock() int { return c.worstRecordBlockWith(nil) }
+
+// worstArtifact is an artifact entry at its longest: the longer kind, and a
+// ref and run of an Ark record id's length.
+var worstArtifact = Artifact{Kind: KindContainer, Ref: strings.Repeat("R", 26), Digest: strings.Repeat("d", 64),
+	Run: strings.Repeat("U", 26)}
+
+// worstRecordBlockWith is [Check.worstRecordBlock] with each declared
+// artifact on its suite's record. [Check.Validate] runs before the worktree
+// exists and cannot know what the commit declares, so the check's session
+// asks again with the declarations once it has read them, and records no
+// artifacts rather than write a block Elk would refuse.
+func (c Check) worstRecordBlockWith(decls []Declaration) int {
 	repo := c.Repo
 	if repo == "" { // origin fills it in, and repoRE bounds it there
 		repo = strings.Repeat("o", 39) + "/" + strings.Repeat("r", 100)
@@ -264,6 +280,11 @@ func (c Check) worstRecordBlock() int {
 				"steps_failed": math.MaxInt, "steps_skipped": math.MaxInt},
 			FailingTestIDs: []string{}, ChangedPaths: []string{}, RetentionClass: "ci-history", Started: at, Ended: at,
 		}, EmittedBy: "rein", Note: droppedNote(len(c.ChangedPaths))}
+		for _, d := range decls {
+			if d.Suite == suite {
+				ins[i].Artifacts = append(ins[i].Artifacts, worstArtifact)
+			}
+		}
 	}
 	return len(fenceRecords(ins))
 }
