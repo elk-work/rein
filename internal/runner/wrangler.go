@@ -58,14 +58,19 @@ func wranglerCycle(q config.Queue, required []string) bool {
 // opted in.
 func runSystemPrompt(q config.Queue, cycle bool) string {
 	prompt := landingPrompt(q.LandOrDefault())
+	if cycle && q.IsWrangler() {
+		prompt = wranglerPrompt(prompt)
+	}
+	// A queue may be both scoped and Wrangler (ark:rein#54), so the scoped
+	// paragraph goes on top of whichever prompt the run got (ark:rein#68).
 	if q.Scoped() {
-		// Exclusive with the Wrangler by config validation, so the early
-		// return is exact rather than a shortcut.
-		return scopedSecretsPrompt(prompt, q)
+		prompt = scopedSecretsPrompt(prompt, q)
 	}
-	if !cycle || !q.IsWrangler() {
-		return prompt
-	}
+	return prompt
+}
+
+// wranglerPrompt swaps the ordinary consent paragraph for the Wrangler rule.
+func wranglerPrompt(prompt string) string {
 	start := strings.Index(prompt, "- A queued run is not standing consent")
 	end := strings.Index(prompt[start:], "\n\n## Where you are") + start
 	prompt = prompt[:start] + wranglerRule + prompt[end:]

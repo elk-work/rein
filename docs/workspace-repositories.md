@@ -146,8 +146,10 @@ a repository or a default away from any queue. See
 ## Scoped resolution
 
 A scoped run must name an exact declared repository (case-insensitive), or its
-mapped checkout path. Names with another owner and the same last segment do
-not match. An undeclared repository hint or GitHub URL ends the run stuck with
+mapped checkout path, or `owner/name` when a declared checkout's `origin` remote
+is `github.com/owner/name` (so the short key `website` satisfies
+`elk-work/website`). Names with another owner and the same last segment do
+not match, and a checkout the queue does not declare is never consulted. An undeclared repository hint or GitHub URL ends the run stuck with
 a plain reason; it cannot fall through to a default. A queue's `repo` must also
 be declared. Machine-wide `default_repo` applies only to legacy unscoped configs.
 Existing single-workspace configs keep their top-level repository mappings and

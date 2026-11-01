@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -210,5 +211,68 @@ func TestResolveRepoLooksUpAQueueRepoName(t *testing.T) {
 	_, err = runner.ResolveRepo(cfg, config.Queue{Name: "mac-claude", Repo: "ijroth/gone"}, "")
 	if err == nil || !strings.Contains(err.Error(), "ijroth/epitune") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// ark:rein#57: the real work-order shape. A handoff block above the work order
+// carries its own "Repository:" line and a sibling deliverable cites a pulse
+// PR; the packet's repo line under "### Work order" still decides.
+func TestResolveRepoPrefersTheWorkOrderLine(t *testing.T) {
+	cfg := config.Config{Repos: map[string]string{
+		"elk-work/scout":  "/dev/scout",
+		"elk-work/pulse":  "/dev/pulse",
+		"elk-work/signal": "/dev/signal",
+	}}
+	q := config.Queue{Name: "mac-claude"}
+	for _, tc := range []struct {
+		name, order, want string
+	}{
+		{"work order beats an earlier handoff line", "## Handoff\n\nRepository: https://github.com/elk-work/signal\n\nPrior: https://github.com/elk-work/pulse/pull/9\n\n### Work order\nrepo: elk-work/scout\nkind: do\n\n### Prior deliverables\nrepo: pulse\n", "/dev/scout"},
+		{"work order beats a pulse URL ahead of a scout one", "Deliverable: https://github.com/elk-work/pulse/pull/9\n\n### Work order\n**Direction:** repo: elk-work/scout\n", "/dev/scout"},
+		{"a standalone URL-valued Repository line resolves as owner/name", "Repository: https://github.com/elk-work/signal\n", "/dev/signal"},
+		{"a URL hint with a PR path and backticks", "### Work order\nrepo: `https://github.com/elk-work/pulse/pull/12`\n", "/dev/pulse"},
+		{"a direction label before the hint", "**Direction:** repo: elk-work/scout\n", "/dev/scout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runner.ResolveRepo(cfg, q, tc.order)
+			if err != nil || got.Path != tc.want {
+				t.Fatalf("got %+v, %v; want %s", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// ark:rein#74: on a scoped queue the short key "website" satisfies
+// "elk-work/website" when its checkout's origin is that repository, and only
+// then.
+func TestScopedQueueMatchesTheCheckoutsOriginRemote(t *testing.T) {
+	mk := func(remote string) string {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", remote}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Skipf("git unavailable: %v %s", err, out)
+			}
+		}
+		return dir
+	}
+	site, other := mk("https://github.com/elk-work/website.git"), mk("git@github.com:someone/else.git")
+	q := config.Queue{Name: "mac-claude", Repos: []string{"website", "other"}}
+	cfg := config.Config{Workspace: "Scout", Repos: map[string]string{"website": site, "other": other}, Queues: []config.Queue{q}}
+	for _, text := range []string{"repo: elk-work/website", "https://github.com/elk-work/website/pull/3", "### Work order\nrepo: ELK-work/Website\n"} {
+		got, err := runner.ResolveRepo(cfg, q, text)
+		if err != nil || got.Path != site {
+			t.Errorf("%q = %+v, %v; want %s", text, got, err, site)
+		}
+	}
+	for _, text := range []string{"repo: elk-work/pulse", "repo: evil/website", "repo: elk-work/else"} {
+		if _, err := runner.ResolveRepo(cfg, q, text); err == nil || !strings.Contains(err.Error(), "not declared") {
+			t.Errorf("%q resolved: %v", text, err)
+		}
+	}
+	// A checkout the queue does not declare is never consulted.
+	q.Repos = []string{"other"}
+	cfg.Queues = []config.Queue{q}
+	if _, err := runner.ResolveRepo(cfg, q, "repo: elk-work/website"); err == nil {
+		t.Error("an undeclared checkout satisfied the hint through its origin")
 	}
 }
