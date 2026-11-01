@@ -174,7 +174,10 @@ func (a *Adapter) Prepare(ctx context.Context, spec adapter.RunSpec) (adapter.Pr
 			return adapter.Prepared{}, err
 		}
 	}
-	return adapter.Prepared{Commit: c.SHA}, nil
+	if !c.Fetch.Valid(c.Repo) {
+		c.Fetch = nil
+	}
+	return adapter.Prepared{Commit: c.SHA, Fetch: c.Fetch}, nil
 }
 
 // packetOf parses and validates the work order's check packet. A missing or
@@ -280,6 +283,11 @@ func (a *Adapter) pulseEnv(spec adapter.RunSpec) []string {
 // secrets, and any Stride or GitHub variable it inherits.
 func secretValues(spec adapter.RunSpec) map[string]string {
 	out := map[string]string{}
+	if c, err := ParsePacket(spec.Prompt); err == nil {
+		for k, v := range c.Fetch.Secrets() {
+			out[k] = v
+		}
+	}
 	for k, v := range spec.Env {
 		out[k] = v
 	}

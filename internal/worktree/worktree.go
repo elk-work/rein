@@ -34,6 +34,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/elk-work/rein/internal/fetchcred"
+	"github.com/elk-work/rein/internal/secretenv"
 )
 
 // BranchPrefix is what every Rein branch starts with, so a person looking at
@@ -81,6 +84,7 @@ type Manager struct {
 
 // Request is one worktree to create.
 type Request struct {
+	Fetch *fetchcred.Credential
 	// Repo is the repository to cut from.
 	Repo string
 
@@ -210,7 +214,7 @@ func (m *Manager) Create(ctx context.Context, req Request) (*Worktree, error) {
 	// revision cannot be had leaves nothing on disk.
 	commitNote := ""
 	if req.Commit != "" {
-		if commitNote, err = m.ensureCommit(ctx, repoAbs, req.Commit); err != nil {
+		if commitNote, err = m.ensureCommit(ctx, repoAbs, req.Commit, req.Fetch); err != nil {
 			return nil, err
 		}
 	}
@@ -280,7 +284,7 @@ var commitRE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // ensureCommit makes sure the repository holds commit, fetching it from
 // origin by name when it does not, and says which it was.
-func (m *Manager) ensureCommit(ctx context.Context, repo, commit string) (string, error) {
+func (m *Manager) ensureCommit(ctx context.Context, repo, commit string, credential *fetchcred.Credential) (string, error) {
 	if !commitRE.MatchString(commit) {
 		return "", fmt.Errorf("worktree: %q is not a full commit id (40 or 64 lower-case hex characters): %w",
 			commit, InitStop{Code: "repo_access", Line: "The check names no usable commit"})
@@ -288,12 +292,17 @@ func (m *Manager) ensureCommit(ctx context.Context, repo, commit string) (string
 	if m.hasCommit(ctx, repo, commit) {
 		return "already in the repository", nil
 	}
-	if !m.hasOrigin(ctx, repo) {
+	if !credential.Valid(credentialRepo(credential)) && !m.hasOrigin(ctx, repo) {
 		return "", fmt.Errorf("worktree: %s does not hold %s and has no origin to fetch it from: %w",
 			repo, commit, InitStop{Code: "repo_access", Line: "Commit " + commit[:12] + " is not in this machine's checkout, which has no origin"})
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
-	err := m.run(fetchCtx, repo, "fetch", "--quiet", "--no-tags", "origin", commit)
+	var err error
+	if credential.Valid(credentialRepo(credential)) {
+		err = m.fetchCredential(fetchCtx, repo, commit, credential)
+	} else {
+		err = m.run(fetchCtx, repo, "fetch", "--quiet", "--no-tags", "origin", commit)
+	}
 	cancel()
 	if err != nil || !m.hasCommit(ctx, repo, commit) {
 		if err == nil {
@@ -591,4 +600,34 @@ func trimOutput(b []byte) string {
 		return s[:2000] + "…"
 	}
 	return s
+}
+
+// credentialRepo safely handles an absent claim credential.
+func credentialRepo(c *fetchcred.Credential) string {
+	if c == nil {
+		return ""
+	}
+	return c.Repo
+}
+
+// fetchCredential never sends the credential through the logged command path.
+// Git's environment config applies only to this process, never to config files.
+func (m *Manager) fetchCredential(ctx context.Context, repo, commit string, c *fetchcred.Credential) error {
+	m.log("worktree: fetching check commit with claim credential")
+	cmd := exec.CommandContext(ctx, m.git(), "-C", repo, "-c", "credential.helper=", "-c", "http.followRedirects=false", "fetch", "--quiet", "--no-tags", c.URL, commit)
+	env := []string{}
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http."+c.URL+".extraHeader", "GIT_CONFIG_VALUE_0="+c.Header())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("credential fetch: %w: %s", err, trimOutput([]byte(secretenv.NewRedactor(c.Secrets()).String(string(out)))))
+	}
+	return nil
 }

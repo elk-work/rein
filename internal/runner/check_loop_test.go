@@ -4,6 +4,7 @@ package runner_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -386,5 +387,112 @@ func TestARunnerQueueDeclaresAgentRunnerAndItsTools(t *testing.T) {
 		if !strings.Contains(" "+declared+" ", " "+want+" ") {
 			t.Errorf("declared capabilities lack %s: %s", want, declared)
 		}
+	}
+}
+
+// The claim supplies access to a new commit while origin remains a stale,
+// credential-free mirror. Git's URL rewrite keeps this test entirely local.
+func TestCheckClaimFetchIsEphemeral(t *testing.T) {
+	const secret = "fake-claim-fetch-credential-123456"
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + secret))
+	r := newCheckRig(t, "act-pass.jsonl", 0)
+	home := t.TempDir()
+	stale := filepath.Join(home, "stale.git")
+	github := filepath.Join(home, "github.git")
+	for _, target := range []string{stale, github} {
+		out, err := exec.Command("git", "clone", "--bare", r.origin, target).CombinedOutput()
+		if err != nil {
+			t.Fatalf("bare clone: %v: %s", err, out)
+		}
+	}
+	gitIn(t, r.clone, "remote", "set-url", "origin", stale)
+	sha := r.pushToOrigin()
+	gitIn(t, r.origin, "push", github, "HEAD:refs/heads/pr-head")
+	global := filepath.Join(home, "gitconfig")
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	gitIn(t, r.clone, "config", "--file", global, "url."+github+".insteadOf", "https://github.com/elk-work/scout.git")
+	logs, err := runlog.Open(filepath.Join(home, "logs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.logs = logs
+	// Deliberately echo the fake token, testing the adapter and runner redactors.
+	a, _ := adapter.Get(check.Kind)
+	stub := a.(*check.Adapter).Act
+	b, err := os.ReadFile(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Insert before the final exit, after the --list early exit.
+	i := strings.LastIndex(string(b), "exit ")
+	b = append(append(append([]byte{}, b[:i]...), []byte("echo '"+secret+"'\necho '"+encoded+"'\ntest -z \"$GIT_CONFIG_VALUE_0\" || exit 1\n")...), b[i:]...)
+	if err := os.WriteFile(stub, b, 0700); err != nil {
+		t.Fatal(err)
+	}
+	claim := checkOrder(sha)
+	start := strings.Index(claim, "{")
+	end := strings.Index(claim[start:], "\n```") + start
+	body := claim[start:end]
+	f := map[string]any{"kind": "github-token", "repo": "elk-work/scout", "url": "https://github.com/elk-work/scout.git", "username": "x-access-token", "token": secret, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+	packet, _ := json.Marshal(map[string]any{"check": json.RawMessage(body), "fetch": f})
+	claim = claim[:start] + string(packet) + claim[end:]
+	r.run(claim)
+	if rec := r.record(); rec.SHA != sha {
+		t.Fatalf("record has wrong commit")
+	}
+	submission, _ := json.Marshal(r.submitted())
+	if strings.Contains(string(submission), secret) || strings.Contains(r.log.String(), secret) || strings.Contains(string(submission), encoded) || strings.Contains(r.log.String(), encoded) {
+		t.Fatal("credential leaked in submission or daemon log")
+	}
+	for _, root := range []string{home, r.records, filepath.Join(r.clone, ".git")} {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(b), secret) || strings.Contains(string(b), encoded) {
+				t.Errorf("credential persisted in %s", path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := gitIn(t, r.clone, "remote", "get-url", "origin"); got != stale {
+		t.Fatal("origin changed")
+	}
+}
+
+func TestCheckClaimFetchCachedAndExpired(t *testing.T) {
+	for _, cached := range []bool{true, false} {
+		t.Run(map[bool]string{true: "cached skips credential", false: "expired uses origin"}[cached], func(t *testing.T) {
+			r := newCheckRig(t, "act-pass.jsonl", 0)
+			sha := gitIn(t, r.clone, "rev-parse", "HEAD")
+			expiry := time.Now().Add(time.Hour)
+			if !cached {
+				sha = r.pushToOrigin()
+				expiry = time.Now().Add(-time.Hour)
+			}
+			// An unusable fake GitHub ensures neither case attempts credential fetch.
+			global := filepath.Join(t.TempDir(), "gitconfig")
+			t.Setenv("GIT_CONFIG_GLOBAL", global)
+			gitIn(t, r.clone, "config", "--file", global, "url."+filepath.Join(t.TempDir(), "missing.git")+".insteadOf", "https://github.com/elk-work/scout.git")
+			claim := checkOrder(sha)
+			start := strings.Index(claim, "{")
+			end := strings.Index(claim[start:], "\n```") + start
+			f := map[string]any{"kind": "github-token", "repo": "elk-work/scout", "url": "https://github.com/elk-work/scout.git", "username": "x-access-token", "token": "fake-ephemeral-skip-token", "expires_at": expiry.UTC().Format(time.RFC3339)}
+			packet, _ := json.Marshal(map[string]any{"check": json.RawMessage(claim[start:end]), "fetch": f})
+			r.run(claim[:start] + string(packet) + claim[end:])
+			if r.record().SHA != sha {
+				t.Fatal("wrong commit")
+			}
+		})
 	}
 }

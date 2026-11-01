@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	checkadapter "github.com/elk-work/rein/internal/adapter/check"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/runlog"
+	"github.com/elk-work/rein/internal/secretenv"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -31,6 +33,13 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	if qr.r.opts.Hosted {
 		qr.hostedDeadline = time.Now().Add(qr.r.opts.Config.Hosted.RunCap())
 	}
+	var fetchSecrets map[string]string
+	if qr.q.AgentKind == checkadapter.Kind {
+		if c, err := checkadapter.ParsePacket(wo.Text); err == nil {
+			fetchSecrets = c.Fetch.Secrets()
+		}
+	}
+	qr.redact.Store(secretenv.NewRedactor(fetchSecrets))
 	qr.openLog(wo)
 	defer qr.closeLog()
 	// From the claim to the end of the run: keep the machine from idling to
@@ -215,7 +224,14 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 				err.Error()+"\n\n"+qr.secretsHelp())
 		}
 		spec.Env = env
-		qr.applySecrets(env)
+		combined := map[string]string{}
+		for k, v := range env {
+			combined[k] = v
+		}
+		for k, v := range fetchSecrets {
+			combined[k] = v
+		}
+		qr.applySecrets(combined)
 	} else {
 		// Every run is scoped; a queue without a secrets map keeps, beyond
 		// the system variables, only what it names (env.go).
@@ -262,7 +278,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		}
 	} else {
 		wt, err = qr.r.opts.Worktrees.Create(ctx, worktree.Request{Repo: repo.Path, RunID: wo.RunID,
-			BaseRef: qr.baseRefFor(repo), Commit: prepared.Commit})
+			BaseRef: qr.baseRefFor(repo), Commit: prepared.Commit, Fetch: prepared.Fetch})
 	}
 
 	if err != nil {

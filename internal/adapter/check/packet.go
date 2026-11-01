@@ -7,6 +7,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/elk-work/rein/internal/fetchcred"
 )
 
 // Check is a check packet's `check` object: which job of which workflow to
@@ -17,6 +19,7 @@ import (
 // any of them, and ignores fields it does not know, so Elk can add one
 // without a Rein release.
 type Check struct {
+	Fetch *fetchcred.Credential `json:"-"`
 	// Repo is the repository under test, `owner/name`.
 	Repo string `json:"repo"`
 	// SHA is the commit the job runs at, a full object name.
@@ -207,6 +210,12 @@ func fromJSON(doc string) (Check, bool) {
 	var c Check
 	if err := json.Unmarshal(body, &c); err != nil || c.SHA == "" {
 		return Check{}, false
+	}
+	var credential fetchcred.Credential
+	if raw, ok := top["fetch"]; ok {
+		if json.Unmarshal(raw, &credential) == nil {
+			c.Fetch = &credential
+		}
 	}
 	return c, true
 }
