@@ -36,6 +36,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -43,6 +44,7 @@ import (
 
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/keyring"
 )
 
 // Kind is the agent kind this adapter registers under. Elk's `agent_kind`
@@ -82,6 +84,14 @@ type Adapter struct {
 	// TailLines is how many lines of the log the deliverable quotes. Zero
 	// means 40.
 	TailLines int
+
+	// ArkKeyring, ArkHome and ArkHTTP are where a build check finds this
+	// machine's Ark credential and how it reaches the service (ark.go). Nil
+	// and empty mean the OS keyring, the user's home directory, and a plain
+	// HTTP client. Tests set them so that nothing reads a real keyring.
+	ArkKeyring keyring.ItemReader
+	ArkHome    string
+	ArkHTTP    *http.Client
 }
 
 // New returns an adapter that finds its binaries on PATH.
@@ -232,12 +242,13 @@ var githubTokens = map[string]bool{"GITHUB_TOKEN": true, "GH_TOKEN": true}
 // env is act's environment: the run's inherited environment, the daemon's
 // Docker location, the queue's scoped secrets, and a pager that never pages.
 // Stride's variables are left out (they are pulse's; see [Adapter.pulseEnv]),
+// and so are Ark's (Rein's own, to record a build's artifacts; see ark.go),
 // and so is a GitHub token the queue's secrets did not provide.
 func (a *Adapter) env(spec adapter.RunSpec) []string {
 	set := map[string]string{}
 	var order []string
 	put := func(k, v string) {
-		if strideVariables[k] {
+		if strideVariables[k] || arkVariables[k] {
 			return
 		}
 		if _, ok := set[k]; !ok {
@@ -280,7 +291,7 @@ func (a *Adapter) pulseEnv(spec adapter.RunSpec) []string {
 }
 
 // secretValues is every value the run must never print: the queue's scoped
-// secrets, and any Stride or GitHub variable it inherits.
+// secrets, and any Stride, GitHub or Ark variable it inherits.
 func secretValues(spec adapter.RunSpec) map[string]string {
 	out := map[string]string{}
 	if c, err := ParsePacket(spec.Prompt); err == nil {
@@ -292,7 +303,7 @@ func secretValues(spec adapter.RunSpec) map[string]string {
 		out[k] = v
 	}
 	for _, kv := range spec.InheritedEnv() {
-		if k, v, ok := strings.Cut(kv, "="); ok && (strideVariables[k] || githubTokens[k]) {
+		if k, v, ok := strings.Cut(kv, "="); ok && (strideVariables[k] || githubTokens[k] || arkVariables[k]) {
 			out[k] = v
 		}
 	}

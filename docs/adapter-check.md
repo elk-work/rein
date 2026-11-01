@@ -225,6 +225,7 @@ order of `check.suites`. The fields are:
 | `failing_test_ids` | `[]` |
 | `changed_paths` | the packet's, capped as the schema caps it: over 1,024 bytes of JSON, the longest prefix that fits, ending with `...[truncated]` |
 | `retention_class` | `ci-history` |
+| `artifacts` | only on a passing build suite's record: what it built, as recorded in Ark. See [A build's artifacts](#a-builds-artifacts) |
 
 Rein applies the `changed_paths` cap itself, exactly as pulse applies it
 when it emits. So the file, the copy in the deliverable and what pulse sends
@@ -297,7 +298,8 @@ A cancelled run submits nothing, so it has no section.
 
 The run loop's redaction of deliverables still applies to the whole text, as
 the last line of defence. The record holds no secret to begin with. It is
-built from the packet and act's step counts, and never from the environment.
+built from the packet, act's step counts and, for a build, the ids and digest
+Ark answered with, and never from the environment.
 
 ````
 ### Suite record
@@ -330,6 +332,170 @@ built from the packet and act's step counts, and never from the environment.
 }
 ```
 ````
+
+## A build's artifacts
+
+**ark:rein#100 (01M6AMERCA97G5D02P6HEGCDFZ).** Elk Cloud's `deploy_app`
+ships only an artifact that a passing check recorded at the exact commit. It
+reads `artifacts` from that check's suite record (scout
+`supabase/functions/elk-mcp/deploy_app.ts`, `recordedArtifacts`). The bytes
+live in Ark, as an artifact on the check's Ark run. The record names that
+artifact, and `deploy_app` checks the bytes against the record's digest
+before it forwards them (the contract is ark:scout#4191
+(01M69YDYVSBD20WRTYD73VX1KN)). A build check is what produces both.
+
+### Declaring what a suite builds
+
+The repository declares it in `ci/artifacts.yml`, which Rein reads from the
+worktree at the commit under test. The declaration comes from that file and
+never from the packet: a deploy ships what the commit itself said it builds.
+
+```yaml
+# ci/artifacts.yml
+version: 1
+suites:
+  build:              # a suite in ci/suites.yml, as the packet names it
+    kind: worker      # worker | container
+    path: worker.js   # the file the job copied into $REIN_ARTIFACT_DIR
+  image:
+    kind: container
+    image: elk-app:ci # an image on the Docker daemon the job built it on
+```
+
+- **One artifact per suite.** `deploy_app` refuses a commit whose checks
+  recorded several of one kind.
+- **`path`** is relative to `$REIN_ARTIFACT_DIR`, never above it. A
+  `worker` gives a path. A `container` gives a path to an image archive the
+  job saved itself, or an `image`.
+- **`image`** is saved after the job passes, with `docker image save`
+  against the same Docker daemon the job used (the queue's `DOCKER_HOST` and
+  the rest).
+- The grammar is the one `ci/suites.yml` uses: a version, a `suites:` block,
+  two-space suite names, four-space `key: value` scalars, `#` comments. An
+  unknown field, a second artifact for one suite, or a path that leaves the
+  directory makes the file unreadable. That costs the check its artifacts
+  and never its result, and the deliverable names the problem.
+
+**Why a file of its own and not a field in `ci/suites.yml`:** Elk reads
+`ci/suites.yml` strictly (scout `ci_plan.mjs`, `KNOWN`). A field it does not
+know makes it refuse the whole manifest, and then no check runs for that
+repository at all.
+
+### Getting the bytes out of the job
+
+act copies the worktree before it runs a job and deletes the copy when the
+job ends. That is true of both executors, with or without `--bind` on the
+host. A file a step writes into its workspace is gone before Rein could read
+it. So when a suite of the check declares a `path`, Rein makes a directory
+outside the worktree, `<Rein home>/checks/<run id>/artifacts`, and hands it to
+the job:
+
+```
+act … --env REIN_ARTIFACT_DIR=<dir>                                       # both executors
+act … --container-options "-v <git dir>:<git dir>:ro -v <dir>:<dir>"      # container: one string, both mounts
+```
+
+The workflow copies its build into it. The `if` keeps the step harmless on
+GitHub, where the variable is unset:
+
+```yaml
+      - run: npm run build
+      - if: env.REIN_ARTIFACT_DIR != ''
+        run: cp dist/worker.js "$REIN_ARTIFACT_DIR/worker.js"
+```
+
+Rein reads a declared file only when it is a regular file inside that
+directory. A link is refused, including a link through a directory, so a job
+cannot point Rein at a credential on the machine and have it uploaded as a
+build. The bytes are copied once from the file that was checked into the
+record directory, and uploaded from there. The directory and the copies are
+deleted when the check ends, whatever happened, so builds do not pile up
+under `checks/`.
+
+### Recording them in Ark
+
+Only after a **pass**, and only for suites that declared something:
+
+1. **Where.** The Ark repository of this machine's checkout of the
+   repository: `repository_id` and `remote` in `.ark/config.toml` of the
+   checkout the worktree was cut from (a check worktree has no `.ark` of its
+   own).
+2. **As whom.** The agent `rein`, acting for a human the way `ark --agent`
+   does: `ARK_DELEGATED_BY`, else the checkout's `default_actor_id` when it is
+   a human.
+3. **With what.** The Ark credential already on the machine, found in the ark
+   CLI's order: `ARK_TOKEN` (the queue's scoped secrets first, then the
+   daemon's own), then the OS keyring under service `ark` and the remote's
+   host (`ark login`; `ARK_NO_KEYRING` skips it as it does for ark), then
+   `~/.ark/credentials.toml`. On a workstation that is the person's own
+   login. Elk never issues an Ark credential (ark RFC-0003 Decision 5), and
+   Rein mints none.
+4. **The sequence**, so nothing is left dangling:
+   - for each artifact: `POST /v1/artifacts/upload-url`, `PUT` the bytes to
+     the signed URL (with no Ark credential on it), `POST
+     /v1/artifacts/confirm`, where Ark checks the bytes hash to their key;
+   - `POST /v1/repositories/{repo}/runs` opens the check's Ark run;
+   - `POST /v1/repositories/{repo}/runs/{run}/artifacts` records each blob
+     on it;
+   - `POST /v1/repositories/{repo}/runs/{run}/finish`, `succeeded`, or
+     `failed` when any artifact could not be recorded.
+
+   The creates carry an `Idempotency-Key` built from the Elk run id
+   (`rein-check:<run id>:run`, `…:artifact:<kind>:<sha256>`), so a retried
+   claim of the same run finds what it opened rather than opening another.
+   The Ark run's metadata says `kind: check` and names the Elk run, the
+   suites, the workflow and the job.
+5. **The record.** Each declaring suite's record carries what was recorded
+   for it, after `ended`:
+
+   ```json
+   "artifacts": [
+     {
+       "kind": "worker",
+       "ref": "<the Ark artifact's record id>",
+       "digest": "<sha256 of the bytes, 64 lowercase hex>",
+       "run": "<the check's Ark run id>"
+     }
+   ]
+   ```
+
+   It is the shape pulse `docs/suite-records.md` (Artifacts) defines. A
+   record with nothing recorded has no `artifacts` field at all, so every
+   other record is byte for byte what it was. Two suites declaring the same
+   bytes upload them once and share the ref.
+
+Ark's credential is Rein's to use and never the workflow's. `ARK_TOKEN` and
+`ARK_DELEGATED_BY` are kept out of act's environment, as Stride's variables
+are, and the token is redacted from everything the check prints. The claim's
+fetch credential plays no part: nothing uploaded or recorded comes from it.
+
+### When nothing is recorded
+
+None of this can change a check's result. Each of these leaves `artifacts`
+out of the record and puts the reason in the deliverable's "Record and log"
+section. `deploy_app` then refuses the commit with `artifact_required`, which
+fails closed:
+
+- the checkout is not joined to Ark, or names no remote or no human to act
+  for;
+- the machine holds no Ark credential;
+- Ark refuses the credential (401: log in again), or it has no write grant on
+  the repository (403 at the first upload, before any run is opened);
+- the job did not write the declared file, it is not a regular file inside
+  the directory, the image will not save, or it is over 2 GiB;
+- the check did not pass;
+- `ci/artifacts.yml` will not parse, or the records could not carry the
+  artifacts inside the deliverable's 8 KiB block. Validate cannot see the
+  declarations, so the session sizes the block again once it has read them.
+
+All of it is bounded by 12 minutes, inside the run loop's fifteen silent
+minutes, and each step is a progress event.
+
+`pulse suite-record` refuses fields it does not know. A pulse older than the
+`artifacts` field (elk-work/pulse#94) refuses a record that carries one, so
+Rein's send fails, `emitted_by` stays absent, and Elk forwards the record
+instead. `deploy_app` reads the copy Elk keeps on the check, so the deploy
+does not depend on which of the two sent it.
 
 ## What a check leaves behind
 

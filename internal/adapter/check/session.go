@@ -78,7 +78,53 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		return nil, fmt.Errorf("check: %s: %w", c.Workflow, err)
 	}
 
+	root, err := a.recordRoot()
+	if err != nil {
+		return nil, fmt.Errorf("check: locating the record directory: %w", err)
+	}
+	recDir, err := recordDir(root, spec.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("check: creating the record directory: %w", err)
+	}
+
 	executor := ChooseExecutor(st, c.RunsOn)
+	// What the commit's build suites say they produce (declare.go). A
+	// problem with the declaration costs the check its artifacts, never its
+	// run: the deliverable says what, and a deploy is refused for want of
+	// one.
+	decls, declErr := readDeclarations(dir, c.Suites)
+	declNote := ""
+	if declErr != nil {
+		declNote = declErr.Error()
+		decls = nil
+	} else if len(decls) > 0 && c.worstRecordBlockWith(decls) >= maxRecordBlock {
+		declNote = "the suites' records could not carry their artifacts inside the deliverable's 8 KiB block; send the build suite as a run of its own"
+		decls = nil
+	}
+	artDir := ""
+	for _, d := range decls {
+		if d.Path != "" {
+			artDir = filepath.Join(recDir, "artifacts")
+			break
+		}
+	}
+	if artDir != "" && executor == ExecutorContainer && strings.ContainsAny(artDir, " \t\"'") {
+		declNote = fmt.Sprintf("$%s (%s) has a space or a quote in it, so it cannot be mounted into the job's container; "+
+			"set REIN_HOME to a plain path", ArtifactDirEnv, artDir)
+		decls, artDir = nil, ""
+	}
+	if artDir != "" {
+		// Writable by the job's user whoever that is: the container's root
+		// or the image's own user. The record directory around it is 0700,
+		// so nobody else on this machine can reach it.
+		if err := os.Mkdir(artDir, 0o700); err != nil && !os.IsExist(err) {
+			return nil, fmt.Errorf("check: creating %s: %w", ArtifactDirEnv, err)
+		}
+		if err := os.Chmod(artDir, 0o777); err != nil {
+			return nil, fmt.Errorf("check: opening %s to the job: %w", ArtifactDirEnv, err)
+		}
+	}
+
 	// --rm: act tears a job's environment down only when the job succeeded,
 	// unless told otherwise. Without it every failed check left its job
 	// container running on the Docker daemon, or its host-executor directory
@@ -86,7 +132,16 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	// record and act.log are the account of the run.
 	args := []string{c.Event, "-W", c.Workflow, "-j", jobID, "--json", "--rm"}
 	args = append(args, platformArgs(executor, st.Image, c.RunsOn, st.Labels)...)
+	if artDir != "" {
+		// act copies the worktree for a job and deletes the copy after it,
+		// so a declared file reaches Rein only through a directory outside
+		// it (declare.go, ArtifactDirEnv).
+		args = append(args, "--env", ArtifactDirEnv+"="+artDir)
+	}
 	if executor == ExecutorContainer {
+		// act takes one --container-options string, so every mount goes in
+		// it together.
+		var mounts []string
 		// A worktree's .git is a file pointing into the source repository,
 		// which act's copy of the worktree does not carry into the container.
 		// Mounting the repository's git directory, read-only and at the same
@@ -94,7 +149,15 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		// GitHub.
 		if common := gitOut(ctx, git, dir, "rev-parse", "--path-format=absolute", "--git-common-dir"); common != "" &&
 			!strings.ContainsAny(common, " \t\"'") {
-			args = append(args, "--container-options", "-v "+common+":"+common+":ro")
+			mounts = append(mounts, "-v "+common+":"+common+":ro")
+		}
+		// The artifact directory, at the same path, so $REIN_ARTIFACT_DIR
+		// names it inside the container too.
+		if artDir != "" {
+			mounts = append(mounts, "-v "+artDir+":"+artDir)
+		}
+		if len(mounts) > 0 {
+			args = append(args, "--container-options", strings.Join(mounts, " "))
 		}
 		if a.imagePresent(ctx, st.Image, env) {
 			args = append(args, "--pull=false")
@@ -114,14 +177,6 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	}
 	if t := spec.Timeouts.Total; t > 0 && t < timeout {
 		timeout = t
-	}
-	root, err := a.recordRoot()
-	if err != nil {
-		return nil, fmt.Errorf("check: locating the record directory: %w", err)
-	}
-	recDir, err := recordDir(root, spec.RunID)
-	if err != nil {
-		return nil, fmt.Errorf("check: creating the record directory: %w", err)
 	}
 	logFile, err := os.OpenFile(filepath.Join(recDir, "act.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -150,6 +205,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	s := &session{
 		a: a, spec: spec, check: c, jobID: jobID, jobNote: jobNote, executor: executor, image: st.Image,
 		cmd: cmd, out: pr, log: logFile, recDir: recDir, git: git, env: env, timeout: timeout,
+		decls: decls, declNote: declNote, artDir: artDir,
 		pulseEnv: a.pulseEnv(spec), redact: secretenv.NewRedactor(secretValues(spec)),
 		started: started, events: make(chan adapter.Event, 64), done: make(chan struct{}),
 		stop: make(chan struct{}),
@@ -185,6 +241,13 @@ type session struct {
 	out    *os.File
 	log    *os.File
 	recDir string
+
+	// decls is what the commit's build suites declared (declare.go), and
+	// declNote why a declaration was set aside, when one was. artDir is the
+	// directory the job was handed as $REIN_ARTIFACT_DIR, or "".
+	decls    []Declaration
+	declNote string
+	artDir   string
 
 	events chan adapter.Event
 	seq    uint64
@@ -379,10 +442,28 @@ func (s *session) run() {
 	if !interrupted {
 		pulse = s.lookPulse()
 	}
+	// A passing build records its artifacts in Ark first, so each suite's
+	// record carries its own (artifacts.go). Only a pass: a deploy ships
+	// what a passing check built, and nothing else.
+	var arts artifactOutcome
+	switch {
+	case s.declNote != "":
+		arts.lines = []string{"Artifacts: none recorded — " + s.redact.String(s.declNote) + ". Elk Cloud will not deploy this commit from this check."}
+	case len(s.decls) > 0 && result == ResultPass:
+		arts = s.recordArtifacts(ended)
+	case len(s.decls) > 0:
+		arts.lines = []string{"Artifacts: none recorded — the check did not pass, and only a passing build's artifacts are recorded."}
+	}
+	if s.artDir != "" {
+		// The bytes are in Ark or are not going there; a job's output does
+		// not pile up under checks/.
+		_ = os.RemoveAll(s.artDir)
+	}
 	// One record per suite the check satisfies, all from this one run of the
 	// job, and each sent on its own: emitted_by is per record.
 	var recs []kept
 	for i, rec := range newRecords(s.check, s.spec.Queue, branch, result, &t, s.started, ended) {
+		rec.Artifacts = arts.bySuite[rec.Suite]
 		k := kept{rec: rec, path: filepath.Join(s.recDir, recordFileName(i)), em: emission{note: "kept on this machine"}}
 		if err := rec.write(k.path); err != nil {
 			k.em = emission{note: "NOT written: " + err.Error()}
@@ -401,7 +482,7 @@ func (s *session) run() {
 	case result == ResultError:
 		status = adapter.StatusFailed
 	}
-	summary := s.deliverable(recs, result, why, &t, filepath.Join(s.recDir, "act.log"), tail)
+	summary := s.deliverable(recs, result, why, &t, filepath.Join(s.recDir, "act.log"), tail, arts.lines)
 	s.result = adapter.Result{
 		Status: status, Summary: summary, ExitCode: exitCode, Duration: ended.Sub(s.started),
 		TranscriptPath: filepath.Join(s.recDir, "act.log"),
@@ -466,7 +547,7 @@ func classify(t tally, exitErr error, timedOut, interrupted bool, limit time.Dur
 
 // deliverable is what a person reads in Elk: a plain lead, the check, the
 // records, and the end of the log.
-func (s *session) deliverable(recs []kept, result, why string, t *tally, logPath string, tail []string) string {
+func (s *session) deliverable(recs []kept, result, why string, t *tally, logPath string, tail, artifacts []string) string {
 	var b strings.Builder
 	rec := recs[0].rec
 	suites := make([]string, len(recs))
@@ -535,6 +616,9 @@ func (s *session) deliverable(recs []kept, result, why string, t *tally, logPath
 		}
 	}
 	fmt.Fprintf(&b, "- Full log: `%s`\n", logPath)
+	for _, line := range artifacts {
+		fmt.Fprintf(&b, "- %s\n", line)
+	}
 
 	fmt.Fprintf(&b, "\n### Last %d lines of the log\n\n", len(tail))
 	b.WriteString("```text\n")
