@@ -342,6 +342,10 @@ type Runner struct {
 	// and why (upgrade.go). Guarded by upgradeMu.
 	refusal *upgradeRefusal
 
+	// reapedUnmarked holds the runs whose worktree reapOwed removed but whose
+	// reap mark it could not clear yet (reapowed.go). One goroutine owns it.
+	reapedUnmarked map[string]bool
+
 	opts   Options
 	queues []config.Queue
 	gate   *slotGate

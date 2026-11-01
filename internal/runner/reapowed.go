@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -35,6 +36,12 @@ func (r *Runner) reapOwed(ctx context.Context) int {
 		if ctx.Err() != nil {
 			return n
 		}
+		if r.reapedUnmarked[m.RunID] {
+			// Reaped already; only the mark is left (below). Reaping again
+			// would be a second reap of a worktree that is gone.
+			r.clearReapMark(m)
+			continue
+		}
 		rctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		err := r.opts.Worktrees.Reap(rctx, &worktree.Worktree{
 			Dir: m.Worktree, Repo: m.Repo, Branch: m.Branch, RunID: m.RunID,
@@ -42,11 +49,9 @@ func (r *Runner) reapOwed(ctx context.Context) int {
 		cancel()
 		switch {
 		case err == nil:
-			if cerr := r.opts.Logs.ClearReapPending(m.RunID); cerr != nil && !errors.Is(cerr, os.ErrNotExist) {
-				r.logf("run %s: reaped %s but could not clear the mark: %v", m.RunID, m.Worktree, cerr)
-			}
 			r.logf("run %s: reaped the worktree left in place, %s", m.RunID, m.Worktree)
 			n++
+			r.clearReapMark(m)
 		case errors.Is(err, worktree.ErrInUse):
 			// Still busy; next time.
 		default:
@@ -54,6 +59,25 @@ func (r *Runner) reapOwed(ctx context.Context) int {
 		}
 	}
 	return n
+}
+
+// clearReapMark records that m's worktree is gone. Replacing the run's meta
+// can fail for a moment (on Windows, while a reader has it open); the run is
+// then remembered as reaped so the next pass only retries the mark and never
+// reaps the same worktree twice. Only reapOwed's goroutine calls it.
+func (r *Runner) clearReapMark(m runlog.Meta) {
+	err := r.opts.Logs.ClearReapPending(m.RunID)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		delete(r.reapedUnmarked, m.RunID)
+		return
+	}
+	if r.reapedUnmarked == nil {
+		r.reapedUnmarked = map[string]bool{}
+	}
+	if !r.reapedUnmarked[m.RunID] {
+		r.logf("run %s: reaped %s but could not clear the mark yet: %v", m.RunID, m.Worktree, err)
+	}
+	r.reapedUnmarked[m.RunID] = true
 }
 
 // retryReaps runs reapOwed once now and then on an interval until ctx ends.
