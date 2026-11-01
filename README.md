@@ -169,7 +169,8 @@ and orphan that history. Both are reported in the run's first progress note and
 in the run details posted beside the deliverable.
 
 **Elk's work order names no repository**, so Rein resolves one from four places
-in order — a `repo:` line in the work order, a github.com URL in it, the
+in order — a `repo:` line in the work order (the one under `### Work order`
+first), a github.com URL in it, the
 queue's `repo`, then `default_repo` — and submits `stuck` rather than guessing
 when none of them answers. The state machine, the exact MCP calls with their
 JSON, the stall ladder and the repository rules are in

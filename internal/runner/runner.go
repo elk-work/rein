@@ -37,6 +37,7 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -341,6 +342,11 @@ type Runner struct {
 	// refusal is the installed version this runner would not restart into,
 	// and why (upgrade.go). Guarded by upgradeMu.
 	refusal *upgradeRefusal
+	// cfgHash and cfgReport are config.toml's content and this build's reading
+	// of the config it started with, for checkConfigChange. Guarded by upgradeMu.
+	cfgHash    [sha256.Size]byte
+	cfgHashSet bool
+	cfgReport  ConfigReport
 
 	// reapedUnmarked holds the runs whose worktree reapOwed removed but whose
 	// reap mark it could not clear yet (reapowed.go). One goroutine owns it.

@@ -378,6 +378,11 @@ scout           = "/Users/you/dev/elk/scout"
 "elk-work/rein" = "/Users/you/dev/rein"
 ```
 
+Within (1), the `repo:` line Elk renders under `### Work order` wins over any
+other hint line (a `Repository:` line in the handoff above it, say), a hint may
+follow a `**Direction:**` label, and a hint whose value is a github.com URL
+resolves as `owner/name`. Failing those, the leftmost hint in the order wins.
+
 An unresolved `repo:` hint or GitHub URL ends the run `stuck`; neither falls
 through to a queue or machine default. The reason names the repository that
 could not be resolved.

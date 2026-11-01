@@ -92,3 +92,74 @@ func TestUpgradeLogOnlyModes(t *testing.T) {
 		})
 	}
 }
+
+// ark:rein#66: a changed config.toml drains the way an upgrade does; one the
+// config check would refuse, an identical rewrite and the opt-out do not.
+func TestConfigChangeDrains(t *testing.T) {
+	const base = "workspace = \"Scout\"\n\n[repos]\nscout = \"/dev/scout\"\n\n[[queues]]\nname = \"mac-claude\"\nagent_kind = \"claude\"\nrepo = \"scout\"\n"
+	off := false
+	for _, tc := range []struct {
+		name    string
+		rewrite string
+		opts    Options
+		drain   bool
+	}{
+		{"unchanged", base, Options{UnderService: true}, false},
+		{"a queue added", base + "\n[[queues]]\nname = \"mac-codex\"\nagent_kind = \"codex\"\nrepo = \"scout\"\n", Options{UnderService: true}, true},
+		{"a file that does not load", "this is [not toml", Options{UnderService: true}, false},
+		{"a queue dropped", "workspace = \"Scout\"\n", Options{UnderService: true}, false},
+		{"opt-out", base + "\n# changed\n", Options{UnderService: true, Config: config.Config{SelfRestart: &off}}, false},
+		{"interactive", base + "\n# changed\n", Options{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := t.TempDir() + "/config.toml"
+			if err := os.WriteFile(path, []byte(base), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.opts.Config.SelfRestart != nil {
+				cfg.SelfRestart = tc.opts.Config.SelfRestart
+			}
+			tc.opts.Config, tc.opts.ConfigPath, tc.opts.Version, tc.opts.Out = cfg, path, "v1", io.Discard
+			r := &Runner{opts: tc.opts, upgradeDone: make(chan struct{})}
+			r.baselineConfig()
+			if err := os.WriteFile(path, []byte(tc.rewrite), 0600); err != nil {
+				t.Fatal(err)
+			}
+			r.checkConfigChange()
+			if r.isDraining() != tc.drain {
+				t.Fatalf("draining = %v, want %v", r.isDraining(), tc.drain)
+			}
+			if !tc.drain && r.isDraining() {
+				t.Fatal("drained")
+			}
+		})
+	}
+}
+
+func TestConfigChangeWaitsForInFlightRuns(t *testing.T) {
+	path := t.TempDir() + "/config.toml"
+	os.WriteFile(path, []byte("workspace = \"Scout\"\n"), 0600)
+	r := &Runner{opts: Options{UnderService: true, ConfigPath: path, Version: "v1", Out: io.Discard}, upgradeDone: make(chan struct{})}
+	r.baselineConfig()
+	r.beginClaim()
+	os.WriteFile(path, []byte("workspace = \"Scout\"\n# edited\n"), 0600)
+	r.checkConfigChange()
+	if !r.isDraining() || r.beginClaim() {
+		t.Fatal("not draining, or admitted a claim")
+	}
+	select {
+	case <-r.upgradeDone:
+		t.Fatal("exited with a run in flight")
+	default:
+	}
+	r.endClaim()
+	select {
+	case <-r.upgradeDone:
+	case <-time.After(time.Second):
+		t.Fatal("did not finish drain")
+	}
+}

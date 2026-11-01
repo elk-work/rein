@@ -72,3 +72,25 @@ func TestWranglerCycleNeedsTheOptInAndAPMRequirement(t *testing.T) {
 		}
 	}
 }
+
+// ark:rein#68: a scoped Wrangler cycle gets the Wrangler rule and the scoped
+// secrets paragraph; a scoped run that is not a cycle gets only the paragraph.
+func TestAScopedWranglerCycleGetsTheRuleAndTheScopedParagraph(t *testing.T) {
+	q := config.Queue{Wrangler: true, AgentKind: "claude", ScopedSecrets: true, Secrets: map[string]string{"POSTHOG_API_KEY": "acme/posthog"}}
+	cycle := runSystemPrompt(q, true)
+	for _, want := range []string{"This run is a Wrangler cycle", "Follow the playbook in this run's work order", "This queue's credentials are scoped", "`POSTHOG_API_KEY`"} {
+		if !strings.Contains(cycle, want) {
+			t.Errorf("scoped Wrangler cycle is missing %q", want)
+		}
+	}
+	if strings.Contains(cycle, vaultParagraphStart) {
+		t.Error("scoped Wrangler cycle still carries the vault paragraph")
+	}
+	plain := runSystemPrompt(q, false)
+	if strings.Contains(plain, "This run is a Wrangler cycle") {
+		t.Error("a scoped run that is not a cycle got the Wrangler rule")
+	}
+	if !strings.Contains(plain, "This queue's credentials are scoped") || strings.Contains(plain, vaultParagraphStart) {
+		t.Error("a scoped run that is not a cycle lost its scoped paragraph")
+	}
+}

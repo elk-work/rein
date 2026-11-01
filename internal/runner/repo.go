@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -44,7 +46,7 @@ import (
 // The asterisk runs are for the shapes a person actually writes in a Do
 // direction, all of which mean the same thing: `repo: x`, `**repo**: x`,
 // `**Repo:** x`.
-var repoHintRE = regexp.MustCompile(`(?mi)^\s*\*{0,2}(?:repo|repository)\*{0,2}\s*[:=]\*{0,2}\s*` +
+var repoHintRE = regexp.MustCompile(`(?mi)^\s*(?:\*{0,2}direction:?\*{0,2}\s*)?\*{0,2}(?:repo|repository)\*{0,2}\s*[:=]\*{0,2}\s*` +
 	"`?" + `([^\s` + "`" + `*]+)` + "`?" + `\**\s*$`)
 
 // githubURLRE matches a GitHub repository URL and captures owner/name. The
@@ -160,12 +162,55 @@ func ResolveRepo(cfg config.Config, q config.Queue, workOrder string) (RepoResol
 	return RepoResolution{}, &UnresolvedRepoError{Name: githubRepo(workOrder), Queue: q.Name, Known: repoNames(cfg)}
 }
 
+// hintedRepo is the repository a work order's hint names. The `repo:` line
+// Elk renders under "### Work order" (packet.repo) outranks every other hint,
+// because a "Repository:" line in the handoff block above it would otherwise
+// win by position alone (ark:rein#57). A hint whose value is a github.com URL
+// is reduced to owner/name, which is what the lookups know how to resolve.
 func hintedRepo(text string) string {
-	m := repoHintRE.FindStringSubmatch(text)
+	m := repoHintRE.FindStringSubmatch(workOrderSection(text))
+	if m == nil {
+		m = repoHintRE.FindStringSubmatch(text)
+	}
 	if m == nil {
 		return ""
 	}
-	return strings.TrimSpace(m[1])
+	name := strings.TrimSpace(m[1])
+	if gh := githubRepo(name); gh != "" {
+		return gh
+	}
+	return name
+}
+
+// workOrderSection is the text under a "### Work order" heading, up to the next
+// heading of the same or a higher level, or "" when there is none.
+func workOrderSection(text string) string {
+	i := strings.Index(text, "### Work order")
+	if i < 0 {
+		return ""
+	}
+	rest := text[i+len("### Work order"):]
+	for _, marker := range []string{"\n### ", "\n## ", "\n# "} {
+		if j := strings.Index(rest, marker); j >= 0 {
+			rest = rest[:j]
+		}
+	}
+	return rest
+}
+
+// checkoutIsRepo reports whether the checkout at path has a GitHub origin
+// remote for owner/name (ark:rein#74). Any failure to ask is a no.
+func checkoutIsRepo(path, name string) bool {
+	if strings.Count(name, "/") != 1 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", expand(path), "remote", "get-url", "origin").Output()
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(githubOriginRepo(strings.TrimSpace(string(out))), name)
 }
 
 func githubRepo(text string) string {
@@ -185,6 +230,14 @@ func lookupRepoScoped(cfg config.Config, name string, scoped bool) (string, bool
 		for k, v := range cfg.Repos {
 			if strings.EqualFold(k, name) || expand(v) == expand(name) {
 				return expand(v), true
+			}
+		}
+		// A declared short key whose checkout's origin is the named
+		// owner/name satisfies it. cfg.Repos is already only this queue's
+		// declared repositories, so the scope stays strict.
+		for _, k := range repoNames(cfg) {
+			if checkoutIsRepo(cfg.Repos[k], name) {
+				return expand(cfg.Repos[k]), true
 			}
 		}
 		return "", false

@@ -477,9 +477,20 @@ it), one that does not answer within 15 seconds, or one whose report uses a
 newer schema than the running version reads is restarted into unchecked, and
 the log says so.
 
+A change to `config.toml` takes the same road (`ark:rein#66`). The same 60-second
+check hashes the file; when the content changes the daemon stops claiming, lets
+active runs finish, and exits 75 so the service manager relaunches into the new
+file, so enrolling a queue does not interrupt a live run. The refusal applies
+here too: if this build cannot load the changed file, or the change would drop a
+queue, take a repository from one, or leave one with no default where it has
+one now, the daemon keeps serving on the config it started with, logs
+`config: NOT restarting into the changed config.toml` with each queue affected,
+and checks again when the file changes again. An identical rewrite, or a file
+that cannot be read, restarts nothing.
+
 To opt out, set `self_restart = false` at the top level of `config.toml` and
 restart once to load that setting. Upgrades then require a manual
-`rein service stop && rein service start`. Automatic restart defaults to on,
+`rein service stop && rein service start`. Automatic restart, for a binary or a config change, defaults to on,
 but interactive runs, `--once`, `--dry-run`, and `dev` builds never drain.
 
 A daemon predating this feature needs one last manual restart to pick it up.

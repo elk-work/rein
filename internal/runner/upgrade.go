@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,12 @@ func (r *Runner) endClaim() {
 	}
 }
 func (r *Runner) drain(version string) {
+	r.drainFor(fmt.Sprintf("upgrade: %s → %s", r.opts.Version, version))
+}
+
+// drainFor stops claiming and lets in-flight runs finish; the run loop then
+// returns ErrRestartForUpgrade and the process exits 75. why opens the log line.
+func (r *Runner) drainFor(why string) {
 	r.upgradeMu.Lock()
 	defer r.upgradeMu.Unlock()
 	if r.draining {
@@ -52,7 +59,7 @@ func (r *Runner) drain(version string) {
 	if r.upgradeStarted != nil {
 		close(r.upgradeStarted)
 	}
-	r.logf("upgrade: %s → %s; draining %d in-flight runs", r.opts.Version, version, r.inFlight)
+	r.logf("%s; draining %d in-flight runs", why, r.inFlight)
 	if r.inFlight == 0 {
 		close(r.upgradeDone)
 	}
@@ -86,6 +93,7 @@ func (r *Runner) checkUpgrade(ctx context.Context, path string, baseline *os.Fil
 	}
 	if sameBinary(*baseline, info) {
 		r.recheckRefused(ctx, path)
+		r.checkConfigChange()
 		return
 	}
 	version, err := r.opts.UpgradeVersion(ctx, path)
@@ -104,11 +112,84 @@ func (r *Runner) checkUpgrade(ctx context.Context, path string, baseline *os.Fil
 		r.clearRefusal()
 		return
 	}
-	if !r.opts.UnderService || r.opts.Once || r.opts.DryRun || (r.opts.Config.SelfRestart != nil && !*r.opts.Config.SelfRestart) {
+	if !r.canSelfRestart() {
 		r.logf("upgrade: %s installed (running %s); automatic restart disabled", version, r.opts.Version)
 		return
 	}
 	r.tryUpgrade(ctx, path, version)
+}
+
+// canSelfRestart reports whether this process may drain and exit 75: only a
+// released service build, and not when the config opts out.
+func (r *Runner) canSelfRestart() bool {
+	return r.opts.UnderService && !r.opts.Once && !r.opts.DryRun && (r.opts.Config.SelfRestart == nil || *r.opts.Config.SelfRestart)
+}
+
+// hashFile is the SHA-256 of a file, so a touch or an identical rewrite is not
+// a change.
+func hashFile(path string) ([sha256.Size]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(b), nil
+}
+
+// baselineConfig records the config file's content and this build's reading of
+// the config it started with, for checkConfigChange.
+func (r *Runner) baselineConfig() {
+	if r.opts.ConfigPath == "" {
+		return
+	}
+	h, err := hashFile(r.opts.ConfigPath)
+	if err != nil {
+		return
+	}
+	r.upgradeMu.Lock()
+	r.cfgHash, r.cfgHashSet = h, true
+	r.cfgReport = CheckConfig(r.opts.Config, r.opts.Version)
+	r.upgradeMu.Unlock()
+}
+
+// checkConfigChange drains and exits 75 when config.toml changed, the same
+// way an installed upgrade does (ark:rein#66): no new claims, in-flight runs
+// finish, the service manager relaunches into the new file. Enrolling a queue
+// therefore no longer costs whatever is running.
+//
+// The upgrade's config-check refusal applies too. A file this build cannot
+// load, or one that would drop a queue, take a repository from a queue or
+// leave one with no default where it has one now, is not restarted into: the
+// daemon keeps serving on the config it has, logs why once, and looks again
+// when the file changes again. Unreadable or missing config.toml leaves the
+// daemon running. self_restart = false opts out, as it does for a binary.
+func (r *Runner) checkConfigChange() {
+	if r.opts.ConfigPath == "" || !r.canSelfRestart() {
+		return
+	}
+	h, err := hashFile(r.opts.ConfigPath)
+	if err != nil {
+		return
+	}
+	r.upgradeMu.Lock()
+	if !r.cfgHashSet || h == r.cfgHash {
+		r.upgradeMu.Unlock()
+		return
+	}
+	r.cfgHash = h
+	cur := r.cfgReport
+	r.upgradeMu.Unlock()
+
+	next := CheckConfigFile(r.opts.ConfigPath, r.opts.Version)
+	if next.Error != "" {
+		r.logf("config: cannot load the changed config.toml: %s", next.Error)
+	}
+	if stranded := StrandedBy(cur, next); len(stranded) > 0 {
+		r.logf("config: NOT restarting into the changed config.toml; staying on the one loaded at start. Under it: %s. "+
+			"Fix config.toml (`rein config check` shows how it is read) and this runner restarts on its next check.",
+			strings.Join(stranded, "; "))
+		return
+	}
+	r.drainFor("config: config.toml changed")
 }
 
 // tryUpgrade drains onto an installed version unless its config check says
@@ -296,6 +377,7 @@ func (r *Runner) startUpgradeWatch(ctx context.Context) {
 		r.logf("upgrade: cannot baseline executable: %v", err)
 		return
 	}
+	r.baselineConfig()
 	interval := r.opts.UpgradeInterval
 	if interval <= 0 {
 		interval = time.Minute

@@ -527,11 +527,11 @@ URL characters, and stderr is scrubbed before errors reach Rein. This protects
 Rein's event log and results when a server or tool echoes the URL. Claude's own
 vendor-managed transcript storage remains subject to Claude's behavior.
 
-Wrangler cycles use the Wrangler production rule: scout migration README rule 5
-with object verification, scout's deploy script, either of Signal's deploy
-workflows (`deploy-receiverd.yml` or `deploy-refresh-job.yml`) at any time with
-`execute` off and only between refresh passes with `execute` on, `-- HOLD:`
-headers respected, no website merges, and elk's
-`docs/wrangler.md` playbook. The rule is spliced into the prompt per run, for a
+Wrangler cycles use the Wrangler production rule: the playbook in the run's work
+order governs production work, and the run touches only the repositories and
+procedures it names. The rule is spliced into the prompt per run, for a
 Wrangler cycle only; every other run on a Wrangler queue, and every run on any
 other queue, keeps the ordinary prompt and its rule against touching production.
+On a scoped queue (`scoped_secrets` or a `secrets` map) a Wrangler cycle gets
+both the rule and the scoped secrets paragraph; a scoped run that is not a cycle
+gets only the paragraph.
