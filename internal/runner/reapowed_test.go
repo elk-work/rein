@@ -28,6 +28,7 @@ func TestWorktreesLeftInPlaceAreReapedLater(t *testing.T) {
 
 	// A run whose daemon was killed: still `running`, its pid long gone.
 	d := logs.Create(runlog.Meta{RunID: "arun-dead", PID: 99999999})
+	t.Cleanup(func() { d.Close(runlog.StatusInterrupted) }) // Windows cannot remove an open log
 	d.Update(func(m *runlog.Meta) { m.Repo, m.Worktree, m.Branch = "/src", "/work/arun-dead", "rein/run-arun-dead" })
 
 	// A finished run whose worktree was reaped normally is left alone.
