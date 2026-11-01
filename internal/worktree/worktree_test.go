@@ -99,11 +99,10 @@ func TestCreateAndReap(t *testing.T) {
 	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
 		t.Errorf("the worktree directory survived the reap: %v", err)
 	}
-	// The branch outlives the worktree: anything the agent committed has to
-	// stay reachable, and the deliverable names the branch precisely because
-	// the directory is gone by the time a person reads it.
-	if !strings.Contains(git(t, repo, "branch", "--list", wt.Branch), wt.Branch) {
-		t.Error("the branch was deleted with the worktree; commits would be unreachable")
+	// The branch goes with the worktree (ark:rein#97): a source clone must
+	// not collect one rein/run-* branch per run for ever.
+	if strings.Contains(git(t, repo, "branch", "--list", wt.Branch), wt.Branch) {
+		t.Error("the run's branch survived the reap")
 	}
 }
 
@@ -428,6 +427,11 @@ func TestReapLeavesAWorktreeInUse(t *testing.T) {
 		t.Fatalf("the worktree was damaged although the reap was refused: %v", statErr)
 	}
 
+	// A refused reap keeps the branch too: the run is not over.
+	if !strings.Contains(git(t, repo, "branch", "--list", wt.Branch), wt.Branch) {
+		t.Error("the branch was deleted although the reap was refused")
+	}
+
 	// Once the work has ended, the reap goes ahead.
 	_ = lane.Process.Kill()
 	_ = lane.Wait()
@@ -436,6 +440,9 @@ func TestReapLeavesAWorktreeInUse(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Dir); !os.IsNotExist(err) {
 		t.Errorf("the worktree survived the second reap: %v", err)
+	}
+	if strings.Contains(git(t, repo, "branch", "--list", wt.Branch), wt.Branch) {
+		t.Error("the branch survived the second reap")
 	}
 }
 

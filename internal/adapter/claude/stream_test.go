@@ -77,6 +77,7 @@ func TestDecodeHelloSession(t *testing.T) {
 		adapter.EventText,     // assistant text
 		adapter.EventUsage,    // that message's tokens
 		adapter.EventProgress, // rate_limit_event
+		adapter.EventUsage,    // the result line's top-up of output tokens (ark:rein#96)
 	}
 	if diff := kindsDiff(kinds(got.events), want); diff != "" {
 		t.Errorf("event kinds: %s", diff)

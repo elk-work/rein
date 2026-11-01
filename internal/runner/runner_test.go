@@ -163,6 +163,41 @@ func (h *harness) runLoop(opts runner.Options, window time.Duration) error {
 	return r.Run(ctx)
 }
 
+// runLoopUntil runs the loop until cond holds, then stops it. The deadline is
+// a failure bound, not a window the behaviour has to fit inside: a slow or
+// loaded machine only takes longer, it does not fail the test. It returns
+// whether cond held before the deadline.
+func (h *harness) runLoopUntil(opts runner.Options, deadline time.Duration, cond func() bool) (bool, error) {
+	h.t.Helper()
+	r, err := runner.New(h.prepare(opts))
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	met := make(chan struct{})
+	go func() {
+		defer close(met)
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if cond() {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	err = r.Run(ctx)
+	cancel()
+	<-met
+	return cond(), err
+}
+
 func (h *harness) run(opts runner.Options) error {
 	h.t.Helper()
 	opts.Once = true
@@ -588,10 +623,15 @@ func TestTheLoopSweepsForLapsedRunsOnItsOwnClock(t *testing.T) {
 	t.Run("trusted between sweeps", func(t *testing.T) {
 		h := newHarness(t)
 		emptyQueue(h)
-		_ = h.runLoop(runner.Options{
+		// Wait for the third heartbeat, not for a stretch of wall-clock
+		// time: the sweep interval is an hour, so however long the loop takes
+		// to get there, only the first poll may have claimed.
+		if ok, _ := h.runLoopUntil(runner.Options{
 			PollInterval:    time.Millisecond,
 			ReclaimInterval: time.Hour,
-		}, 80*time.Millisecond)
+		}, 30*time.Second, func() bool { return len(h.elk.CallsTo("heartbeat_executor")) >= 3 }); !ok {
+			t.Fatalf("the loop never reached a third heartbeat\nlog:\n%s", h.log)
+		}
 
 		// Exactly one: the first poll, because a runner starting up may just
 		// have crashed and its own stranded runs are the ones to sweep first.
@@ -606,13 +646,11 @@ func TestTheLoopSweepsForLapsedRunsOnItsOwnClock(t *testing.T) {
 	t.Run("swept once a lease has passed", func(t *testing.T) {
 		h := newHarness(t)
 		emptyQueue(h)
-		_ = h.runLoop(runner.Options{
+		if ok, _ := h.runLoopUntil(runner.Options{
 			PollInterval:    time.Millisecond,
 			ReclaimInterval: time.Millisecond,
-		}, 80*time.Millisecond)
-
-		if n := len(h.elk.CallsTo("claim_run")); n < 2 {
-			t.Errorf("claims = %d, want repeated sweeps once the interval has passed", n)
+		}, 30*time.Second, func() bool { return len(h.elk.CallsTo("claim_run")) >= 2 }); !ok {
+			t.Errorf("claims = %d, want repeated sweeps once the interval has passed", len(h.elk.CallsTo("claim_run")))
 		}
 	})
 }

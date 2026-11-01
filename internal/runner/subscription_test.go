@@ -320,12 +320,14 @@ func TestAReaderIsAskedAgainBeforeClaimingAfterAHold(t *testing.T) {
 
 	// First read: out, until a moment from now. Every read after: room.
 	var reads atomic.Int32
-	until := time.Now().Add(300 * time.Millisecond)
 	reader := fake.NewReader(func(context.Context) (*adapter.RateLimit, error) {
 		n := reads.Add(1)
 		rl := &adapter.RateLimit{Source: adapter.SourceCodexRateLimits, SampledAt: time.Now()}
 		if n == 1 {
-			rl.Exhausted, rl.ExhaustedUntil = true, until
+			// Measured from the first read, not from the test's start: a
+			// loaded machine can reach the first read after a fixed moment
+			// has already passed, and then there is no hold to wait out.
+			rl.Exhausted, rl.ExhaustedUntil = true, time.Now().Add(300*time.Millisecond)
 		}
 		return rl, nil
 	})
@@ -336,7 +338,12 @@ func TestAReaderIsAskedAgainBeforeClaimingAfterAHold(t *testing.T) {
 	t.Cleanup(func() { adapter.Unregister("codex") })
 	h.cfg.Queues[0].AgentKind = "codex"
 
-	err := h.runLoop(runner.Options{PollInterval: 20 * time.Millisecond, TelemetryInterval: time.Hour}, 1200*time.Millisecond)
+	// Wait for the claim that follows the second read, with a deadline that
+	// only bounds failure: the hold ends 300ms after the first read on the
+	// wall clock, and how soon the loop notices is the machine's business.
+	_, err := h.runLoopUntil(runner.Options{PollInterval: 20 * time.Millisecond, TelemetryInterval: time.Hour}, 30*time.Second, func() bool {
+		return reads.Load() >= 2 && len(h.elk.CallsTo("claim_run")) > 0
+	})
 	if err != nil {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}

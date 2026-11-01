@@ -504,11 +504,13 @@ var initStopRE = regexp.MustCompile(`(?m)^elk-init-stop: (\S+) ?(.*)$`)
 
 // Reap removes a worktree.
 //
-// The BRANCH survives. `git worktree remove --force` discards uncommitted
-// changes, so anything the agent committed stays reachable in the repository
-// while anything it did not is gone — which is the trade a v0 that reaps
-// immediately after submit is making, and the reason `rein run
-// --keep-worktrees` exists.
+// The run's BRANCH goes with it (ark:rein#97). A reaped run has submitted or
+// been discarded: its work is merged, sits on a pushed branch in a PR, or was
+// thrown away, and a source clone that keeps every `rein/run-*` branch grew
+// to 1,173 of them. `git worktree remove --force` also discards uncommitted
+// changes — the trade a v0 that reaps immediately after submit is making, and
+// the reason `rein run --keep-worktrees` exists. The tip is logged when the
+// branch is deleted, so a commit nobody pushed can still be found.
 //
 // Every `.ark` link is removed FIRST. Neither git nor os.RemoveAll follows a
 // symlink — that was checked before this design was adopted — but the target is
@@ -543,7 +545,27 @@ func (m *Manager) Reap(ctx context.Context, wt *Worktree) error {
 		}
 		_ = m.run(ctx, wt.Repo, "worktree", "prune")
 	}
+	m.deleteBranch(ctx, wt)
 	return nil
+}
+
+// deleteBranch removes the run's local branch once its worktree is gone. It
+// is never reached for a worktree left in place as in use, and a detached
+// worktree has no branch. A failure is logged and does not fail the reap: the
+// directory, which fills a disk, is already gone.
+func (m *Manager) deleteBranch(ctx context.Context, wt *Worktree) {
+	if wt.Branch == "" || wt.Detached || wt.Repo == "" {
+		return
+	}
+	tip := m.output(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
+	if tip == "" {
+		return
+	}
+	if err := m.run(ctx, wt.Repo, "branch", "-D", wt.Branch); err != nil {
+		m.log("worktree: could not delete branch %s: %v", wt.Branch, err)
+		return
+	}
+	m.log("worktree: deleted branch %s (was %s)", wt.Branch, tip)
 }
 
 // unlinkArk removes a `.ark` entry only when it is a symlink. A real directory
