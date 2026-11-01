@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elk-work/rein/internal/fetchcred"
 	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/secretenv"
 )
@@ -239,6 +240,7 @@ type RunPreparer interface {
 
 // Prepared is what [RunPreparer.Prepare] tells the run loop about the run.
 type Prepared struct {
+	Fetch *fetchcred.Credential
 	// Commit, when set, is the full commit id the worktree is cut at,
 	// detached, in place of a branch from the queue's base ref.
 	Commit string

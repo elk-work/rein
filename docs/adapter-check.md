@@ -467,3 +467,12 @@ scout's quick-checks runs every step, so a pass covers each suite it lists.
 Rein does not attribute steps to suites.
 
 [pulse/docs/suite-records.md]: https://github.com/elk-work/pulse/blob/main/docs/suite-records.md
+
+A check claim may carry a sibling `fetch` object with a short-lived GitHub
+installation credential. Rein accepts only `github-token`, the check's repository,
+its exact HTTPS GitHub clone URL, username `x-access-token`, and a future expiry.
+Invalid or absent credentials use origin as before. If the commit is already
+present, Rein skips fetching. Otherwise, the credential applies only to the
+single fetch of the requested commit; it is never supplied to workflow steps.
+The token and its Basic authorization encoding are redacted for the run's
+lifetime. Neither is saved in Git configuration, logs, or suite records.

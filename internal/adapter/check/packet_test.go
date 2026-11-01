@@ -448,3 +448,26 @@ func TestASharedRunThatCannotBeRecordedIsRefused(t *testing.T) {
 		t.Errorf("Validate = %v, want a refusal naming the count and saying to split the run", err)
 	}
 }
+
+func TestClaimFetchValidation(t *testing.T) {
+	valid := map[string]any{"kind": "github-token", "repo": "elk-work/scout", "url": "https://github.com/elk-work/scout.git", "username": "x-access-token", "token": "test-ephemeral-fetch-token", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+	for _, field := range []string{"valid", "kind", "repo", "url", "username", "token", "expires_at"} {
+		t.Run(field, func(t *testing.T) {
+			f := map[string]any{}
+			for k, v := range valid {
+				f[k] = v
+			}
+			if field != "valid" {
+				f[field] = "invalid"
+			}
+			raw, _ := json.Marshal(map[string]any{"check": json.RawMessage(fullCheck), "fetch": f})
+			c, err := ParsePacket(order("```json\n" + string(raw) + "\n```"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.Fetch.Valid(c.Repo); got != (field == "valid") {
+				t.Fatalf("valid=%v", got)
+			}
+		})
+	}
+}

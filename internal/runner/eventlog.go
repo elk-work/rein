@@ -37,6 +37,7 @@ func (qr *queueRunner) openLog(wo *elk.WorkOrder) {
 		PermissionMode: string(qr.mode),
 		Version:        qr.r.opts.Version,
 	})
+	qr.log.SetRedactor(qr.redact.Load())
 	if qr.r.opts.Hosted {
 		qr.log.SetRedactor(secretenv.NewRedactor(hosted.Values()))
 	}
