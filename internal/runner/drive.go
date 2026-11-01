@@ -669,9 +669,14 @@ func (qr *queueRunner) reap(wt *worktree.Worktree) {
 	if err := qr.r.opts.Worktrees.Reap(ctx, wt); err != nil {
 		qr.logf("reaping %s: %v", wt.Dir, err)
 		qr.log.Runner(runlog.KindReaped, "worktree %s NOT removed: %v", wt.Dir, err)
+		if errors.Is(err, worktree.ErrInUse) {
+			// Not for ever: the run's meta says a reap is owed, and the
+			// runner tries again until the processes are gone (ark:rein#99).
+			qr.log.Update(func(m *runlog.Meta) { m.ReapPending = true })
+		}
 		return
 	}
-	qr.log.Runner(runlog.KindReaped, "worktree %s removed; branch %s was not", wt.Dir, wt.Branch)
+	qr.log.Runner(runlog.KindReaped, "worktree %s removed; branch %s deleted", wt.Dir, wt.Branch)
 }
 
 // runSession drives the agent, with Loom's watchdog ladder around it: no

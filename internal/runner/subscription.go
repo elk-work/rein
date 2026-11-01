@@ -341,6 +341,15 @@ func (qr *queueRunner) holding() (time.Time, string, bool) {
 	qr.sub.mu.Lock()
 	until, reason := qr.sub.until, qr.sub.reason
 	lapsed := !until.IsZero() && !now.Before(until)
+	if lapsed && qr.awaitsHeadroomRead() && qr.sub.lastRead.Before(until) {
+		// The hold has run out, but the queue is to be asked before it
+		// claims (refreshHeadroom) and has not been yet. Clearing it here —
+		// the heartbeat calls this too, between the refresh and the claim —
+		// would let a claim through unasked, so it stays held until the read
+		// lands. A failed read still counts as asked.
+		qr.sub.mu.Unlock()
+		return until, reason, true
+	}
 	if lapsed {
 		qr.sub.until, qr.sub.reason = time.Time{}, ""
 	}
@@ -364,6 +373,13 @@ func (qr *queueRunner) headroomReader() adapter.HeadroomReader {
 	}
 	hr, _ := a.(adapter.HeadroomReader)
 	return hr
+}
+
+// awaitsHeadroomRead is whether refreshHeadroom will read this queue's window
+// when a hold ends: only a serve loop that reads at all, for an adapter that
+// can.
+func (qr *queueRunner) awaitsHeadroomRead() bool {
+	return !qr.r.opts.Hosted && !qr.r.opts.DryRun && qr.headroomReader() != nil
 }
 
 // refreshHeadroom reads the window while the queue is idle, when the adapter

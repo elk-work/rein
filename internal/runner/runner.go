@@ -278,6 +278,10 @@ type Options struct {
 	// site takes the same path either way.
 	Logs *runlog.Store
 
+	// ReapRetryInterval is how often a worktree left in place is tried again.
+	// Zero means [DefaultReapRetryInterval].
+	ReapRetryInterval time.Duration
+
 	// LogKeepRuns is how many run logs to keep. Zero means keep everything,
 	// which is the right default for a nil-store test and never what a real
 	// runner passes — `rein run` passes [config.Config.KeepRuns].
@@ -568,6 +572,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	if w := r.opts.Config.RepositoryCompatibilityWarning(); w != "" {
 		r.logf("WARNING: %s", w)
 	}
+
+	// Before any run of this process exists: a `running` meta whose runner
+	// died is settled, so it stops holding the log and check prunes
+	// (ark:rein#95).
+	if n, err := r.opts.Logs.SettleDead(); err != nil {
+		r.logf("run logs: could not settle runs left running: %v", err)
+	} else if n > 0 {
+		r.logf("run logs: %d run(s) were left running by a runner that died; marked interrupted", n)
+	}
+
+	// And the worktrees earlier runs left in place, now and on a timer
+	// (ark:rein#99). Not under wg: it ends with the loop, not before it.
+	go r.retryReaps(inner)
 
 	r.startUpgradeWatch(inner)
 	var wg sync.WaitGroup

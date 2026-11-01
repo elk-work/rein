@@ -277,6 +277,35 @@ func readFrom(r io.Reader, start int64) ([]Record, int64, error) {
 	}
 }
 
+// ReapOwed returns the finished runs whose worktree is still owed a reap
+// (ark:rein#99), newest first.
+func (s *Store) ReapOwed() ([]Meta, error) {
+	all, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []Meta
+	for _, m := range all {
+		if m.ReapPending && !m.Status.Active() && m.Worktree != "" {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// ClearReapPending records that a run's worktree has been reaped.
+func (s *Store) ClearReapPending(runID string) error {
+	m, err := s.ReadMeta(runID)
+	if err != nil {
+		return err
+	}
+	if !m.ReapPending {
+		return nil
+	}
+	m.ReapPending = false
+	return writeMetaFile(s.MetaPath(runID), m)
+}
+
 // Prune keeps the newest keep runs and removes the rest, both files each.
 //
 // It runs where the worktree reaper runs — at the end of a run — for the same
@@ -297,7 +326,7 @@ func (s *Store) Prune(keep int) (int, error) {
 	}
 	var candidates []Meta
 	for _, m := range all {
-		if !m.Status.Active() {
+		if !m.Status.Active() && !m.ReapPending {
 			candidates = append(candidates, m)
 		}
 	}

@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,9 @@ func TestAnAdapterTidiesUpWhereTheWorktreeIsReaped(t *testing.T) {
 	h.elk.Text("claim_run", order("run-1"))
 	logs := openRunLogs(t)
 	logs.Create(runlog.Meta{RunID: "done-1"}).Close(runlog.StatusSubmitted)
-	other := logs.Create(runlog.Meta{RunID: "other-queue-run"})
+	// Another `rein run` on the same home, alive: a pid that is not this
+	// process's own, which startup would settle as left over from before.
+	other := logs.Create(runlog.Meta{RunID: "other-queue-run", PID: os.Getppid()})
 	t.Cleanup(func() { other.Close(runlog.StatusSubmitted) })
 	r := withReaper(t, h, nil)
 

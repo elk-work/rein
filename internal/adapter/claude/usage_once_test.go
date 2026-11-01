@@ -21,14 +21,18 @@ func TestUsageIsRecordedOncePerMessageNotPerBlock(t *testing.T) {
 			n++
 		}
 	}
-	// Three distinct messages in the fixture, four assistant lines.
-	if n != 3 {
-		t.Fatalf("usage events = %d, want 3 (one per message, not one per line)", n)
+	// Three distinct messages in the fixture, four assistant lines, and the
+	// result line's top-up of the output count (ark:rein#96).
+	if n != 4 {
+		t.Fatalf("usage events = %d, want 4 (one per message, not one per line, plus the result's top-up)", n)
 	}
-	// The per-message counts from testdata/tools.jsonl, each message once.
+	// The per-message counts from testdata/tools.jsonl, each message once,
+	// with output taken to the result line's total of 307 (ark:rein#96): the
+	// per-message output counts (2+17+2) are what each message held as it
+	// started.
 	want := adapter.Usage{
 		InputTokens:      2 + 56 + 56,
-		OutputTokens:     2 + 17 + 2,
+		OutputTokens:     307,
 		CacheReadTokens:  10138 + 28093 + 28237,
 		CacheWriteTokens: 17955 + 144 + 259,
 	}

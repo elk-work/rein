@@ -367,6 +367,11 @@ type decoder struct {
 	// touches it.
 	usageSeen map[string]tokenUsage
 
+	// turnOutput is the output tokens recorded as EventUsage increments since
+	// the last result line, so the result can top the turn up to the vendor's
+	// total ([decoder.decodeResult], ark:rein#96).
+	turnOutput int64
+
 	// emptyTurn reports whether the last result line was a turn with no work
 	// in it: success, num_turns 0, no text, no tokens. Claude Code writes one
 	// on --resume when the session it resumes left background work behind —
@@ -577,6 +582,7 @@ func (d *decoder) decodeAssistant(sl streamLine, raw json.RawMessage) []adapter.
 	if msg.Usage != nil {
 		if inc, ok := d.usageIncrement(msg.ID, *msg.Usage); ok {
 			u := inc.toAdapter(d.model)
+			d.turnOutput += inc.OutputTokens
 			evs = append(evs, adapter.Event{
 				Kind:  adapter.EventUsage,
 				Usage: &u,
@@ -746,6 +752,24 @@ func (d *decoder) decodeResult(sl streamLine, raw json.RawMessage) ([]adapter.Ev
 		strings.TrimSpace(sl.Result) == "" &&
 		(sl.Usage == nil || sl.Usage.InputTokens == 0 && sl.Usage.OutputTokens == 0)
 
+	var evs []adapter.Event
+	if sl.Usage != nil {
+		// The assistant lines carry each message's output count as the
+		// message STARTED, so their sum is far under what the vendor counts
+		// (21 against 307 on testdata/tools.jsonl). The result line has the
+		// turn's real total: send the difference as one last increment, so
+		// the sum Elk receives equals it (ark:rein#96). Input and cache
+		// counts already agree exactly (ark:rein#62) and are left alone.
+		if short := sl.Usage.OutputTokens - d.turnOutput; short > 0 {
+			evs = append(evs, adapter.Event{
+				Kind:  adapter.EventUsage,
+				Usage: &adapter.Usage{OutputTokens: short, Model: model},
+				Raw:   raw,
+			})
+		}
+	}
+	d.turnOutput = 0
+
 	res := &adapter.Result{
 		Status:    status,
 		Summary:   sl.Result,
@@ -762,7 +786,7 @@ func (d *decoder) decodeResult(sl streamLine, raw json.RawMessage) ([]adapter.Ev
 		// vendor bills.
 		res.Usage = sl.Usage.toAdapter(model)
 	}
-	return nil, res
+	return evs, res
 }
 
 // decodeStringField reads a JSON field that is sometimes a string. It returns

@@ -228,6 +228,12 @@ type Meta struct {
 	Worktree string `json:"worktree,omitempty"`
 	Branch   string `json:"branch,omitempty"`
 
+	// ReapPending is set when the run's worktree was left in place — a
+	// process was still working in it, or the runner died before reaping — and
+	// is cleared once the reap goes through (ark:rein#99). The runner retries
+	// every run that carries it, and Prune keeps its log until then.
+	ReapPending bool `json:"reap_pending,omitempty"`
+
 	// SessionID is the vendor's own session id, which is what `rein attach`
 	// and a `--resume` both need.
 	SessionID string `json:"session_id,omitempty"`
