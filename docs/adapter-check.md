@@ -642,3 +642,12 @@ present, Rein skips fetching. Otherwise, the credential applies only to the
 single fetch of the requested commit; it is never supplied to workflow steps.
 The token and its Basic authorization encoding are redacted for the run's
 lifetime. Neither is saved in Git configuration, logs, or suite records.
+
+That fetch goes to GitHub even when the checkout's git config rewrites the
+GitHub URL with `url.<base>.insteadOf`. The Linux lab's scout checkout rewrote
+`https://github.com/elk-work/scout.git` to the local mirror it had been fed
+from by hand, so the credential fetch asked that mirror for main's tip and got
+`not our ref` (ark:rein#98). Rein now fetches the credential's URL with a
+trailing slash and adds an identity rewrite for it on that one command, which
+outranks any rule written for the URL without the slash. The log line names the
+commit, the URL, and any rewrite it ignored. It never includes the credential.
