@@ -94,3 +94,23 @@ func TestAScopedWranglerCycleGetsTheRuleAndTheScopedParagraph(t *testing.T) {
 		t.Error("a scoped run that is not a cycle lost its scoped paragraph")
 	}
 }
+
+// The production rule: a Wrangler cycle is told to ask Elk's door before any
+// production step, and an ordinary run on the same queue is not. Scoped
+// Wrangler cycles get it too.
+func TestWranglerCycleSendsProductionStepsToTheDoor(t *testing.T) {
+	q := config.Queue{Wrangler: true, Production: true}
+	for _, want := range []string{"wrangler_production_step", "Before any production step", "treat the workspace as Hold"} {
+		if !strings.Contains(runSystemPrompt(q, true), want) {
+			t.Errorf("Wrangler cycle prompt is missing %q", want)
+		}
+	}
+	if strings.Contains(runSystemPrompt(q, false), "wrangler_production_step") {
+		t.Error("an ordinary run on a Wrangler queue was told about the production door")
+	}
+	scoped := config.Queue{Wrangler: true, AgentKind: "claude", ScopedSecrets: true, Secrets: map[string]string{"POSTHOG_API_KEY": "acme/posthog"}}
+	p := runSystemPrompt(scoped, true)
+	if !strings.Contains(p, "wrangler_production_step") || !strings.Contains(p, "This queue's credentials are scoped") {
+		t.Error("a scoped Wrangler cycle must get the production rule and the scoped paragraph")
+	}
+}

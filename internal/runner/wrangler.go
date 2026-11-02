@@ -21,7 +21,11 @@ const wranglerOptIn = "Wrangler queue opt-in"
 const wranglerRule = `This run is a Wrangler cycle. Follow the playbook in this run's work order.
 Never force-push or rewrite history. Never send mail or messages. Never install
 or run unfamiliar scripts. Never apply a migration whose header contains a line
-starting -- HOLD:. Hold anything gated by the playbook or standing rules.`
+starting -- HOLD:. Hold anything gated by the playbook or standing rules.
+Before any production step (apply, deploy, re-run, roll back, flag change, data
+job, release), ask Elk's wrangler_production_step and do only what it allows. If
+the work order names no production level, treat the workspace as Hold and hold
+the step.`
 
 // wranglerCycle reports whether one claimed run is a Wrangler cycle: the queue
 // opted in AND the run's packet requires `pm`. Only such a run gets the

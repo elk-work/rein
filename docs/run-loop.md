@@ -228,6 +228,17 @@ Pace nothing about the half that actually varies between machines. Elk caps the
 list at 64 names of 64 characters and refuses the whole thing if either is
 exceeded, so Rein trims: a truncated declaration beats no declaration.
 
+**`production` is the Wrangler owner's consent, not a capability anyone lists.**
+A Wrangler queue with `production = true` in `config.toml` declares `production`
+beside `pm` and `mcp:elk` on every heartbeat; without the line it does not, and
+Elk reads the missing name as consent withdrawn, so deleting the line is the
+whole withdrawal. The name is reserved: `capabilities` lists and the host
+environment cannot declare it, and `production = true` on a queue that is not a
+Wrangler fails `Validate`. Like `pm`, it is declared for routing by the queue's
+opt-in; the per-run rule is separate: a Wrangler cycle's prompt sends every
+production step to Elk's `wrangler_production_step` and holds the step when the
+work order names no production level, and no other run is told about it.
+
 ## Elk's auto-review pass
 
 A run flagged **"Review with Elk"** is not finished when Rein submits it.

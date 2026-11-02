@@ -529,7 +529,9 @@ vendor-managed transcript storage remains subject to Claude's behavior.
 
 Wrangler cycles use the Wrangler production rule: the playbook in the run's work
 order governs production work, and the run touches only the repositories and
-procedures it names. The rule is spliced into the prompt per run, for a
+procedures it names. It also sends every production step to Elk's
+`wrangler_production_step` and holds the step when the work order names no
+production level. The rule is spliced into the prompt per run, for a
 Wrangler cycle only; every other run on a Wrangler queue, and every run on any
 other queue, keeps the ordinary prompt and its rule against touching production.
 On a scoped queue (`scoped_secrets` or a `secrets` map) a Wrangler cycle gets

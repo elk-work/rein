@@ -220,3 +220,37 @@ func TestOrdinaryQueueDoesNotDeclareWrangler(t *testing.T) {
 		t.Fatalf("Wrangler enabled without the opt-in: %v", caps)
 	}
 }
+
+// A Wrangler queue declares `production` only when its owner wrote
+// production = true, and only the config line can declare it: an environment
+// that lists the name does not.
+func TestProductionDeclaredOnlyByTheOwnersConsent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		wrangler   bool
+		production bool
+		want       bool
+	}{
+		{"consenting Wrangler", true, true, true},
+		{"Wrangler without consent", true, false, false},
+		{"ordinary queue", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Queues[0].Wrangler = tc.wrangler
+			h.cfg.Queues[0].Production = tc.production
+			h.elk.Text("claim_run", order("run-1"))
+			host := runner.NewHostCapabilities(runner.EnvCapabilities, "elk-connector", "git", "worktree", "github-cli", "production")
+			if err := h.run(runner.Options{HostCapabilities: host}); err != nil {
+				t.Fatal(err)
+			}
+			caps := declared(h)
+			if has(caps, "production") != tc.want {
+				t.Fatalf("declared %v, production wanted = %v", caps, tc.want)
+			}
+			if tc.want && !has(caps, "pm") {
+				t.Fatalf("production declared without pm: %v", caps)
+			}
+		})
+	}
+}
