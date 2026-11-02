@@ -806,3 +806,48 @@ func TestBrowserTakesReinNoneOrNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestProductionIsAWranglerOwnersConsent: production = true is accepted on a
+// Wrangler queue and refused anywhere else, and the name cannot be listed as
+// a capability, so the config line is the only way to declare it.
+func TestProductionIsAWranglerOwnersConsent(t *testing.T) {
+	q := func(mod func(*config.Queue)) config.Config {
+		queue := config.Queue{Name: "mac-claude", AgentKind: "claude"}
+		mod(&queue)
+		return config.Config{Queues: []config.Queue{queue}}
+	}
+	if err := q(func(x *config.Queue) { x.Production = true }).Validate(); err == nil || !strings.Contains(err.Error(), "production = true requires wrangler = true") {
+		t.Errorf("production on a queue that is not a Wrangler: %v", err)
+	}
+	for _, mod := range []func(*config.Queue){
+		func(x *config.Queue) { x.Wrangler, x.Production = true, true },
+		func(x *config.Queue) { x.PM, x.Production = true, true },
+	} {
+		if err := q(mod).Validate(); err != nil {
+			t.Errorf("production on a Wrangler queue: %v", err)
+		}
+	}
+	c := config.Config{Capabilities: []string{"production"}}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "production = true") {
+		t.Errorf("machine-wide production capability: %v", err)
+	}
+	bad := q(func(x *config.Queue) { x.Wrangler, x.Capabilities = true, []string{"production"} })
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "production = true") {
+		t.Errorf("production listed on a Wrangler queue: %v", err)
+	}
+}
+
+func TestProductionParsesFromTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := "[[queues]]\nname = \"mac-claude\"\nagent_kind = \"claude\"\nwrangler = true\nproduction = true\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if !cfg.Queues[0].Production {
+		t.Error("production = true did not read back")
+	}
+}

@@ -674,10 +674,17 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 	// it — and `wrangler`, which is no capability at all, is never declared.
 	delete(host.how, "pm")
 	delete(host.how, "wrangler")
+	delete(host.how, "production")
 	if q.IsWrangler() {
 		// Declared for routing; granted per run, to Wrangler cycles only
 		// (drive.go, wranglerCycle).
 		host = host.withExtra(wranglerOptIn, "pm", "mcp:elk")
+		if q.Production {
+			// The owner's consent to ship to production. It rides every
+			// heartbeat, so deleting the config line withdraws it (elk
+			// docs/milestones/wrangler-production.md).
+			host = host.withExtra(wranglerOptIn, "production")
+		}
 	}
 	if q.Scoped() {
 		// What a scoped queue's runs actually hold: no vault, no stray

@@ -342,6 +342,14 @@ type Queue struct {
 	// elk-connector-url. Empty uses <workspace>/<queue>. No secret value
 	// belongs in config. Read it through [Queue.WranglerAccount].
 	WranglerConnectorAccount string `toml:"wrangler_connector_account,omitempty"`
+	// Production is the owner's consent to let this Wrangler ship to
+	// production (elk docs/milestones/wrangler-production.md). The consent
+	// lives with the credentials: Rein declares the `production` capability
+	// while the line is present, and Elk refuses to raise a workspace's
+	// production level for a Wrangler that does not declare it. Removing the
+	// line withdraws the consent on the next heartbeat. Only a Wrangler queue
+	// may set it.
+	Production bool `toml:"production,omitempty"`
 
 	// PM and PMConnectorAccount are the old spellings of the two fields above,
 	// from before the PM driver was named the Wrangler (2026-10-05). They are
@@ -592,10 +600,14 @@ func (q Queue) wranglerAccountKey() string {
 // machine-wide `capabilities` list. `pm` is the Wrangler's routing capability
 // — still its name on the wire, where Elk's api_set_pm_executor checks for it
 // and declared_capabilities persists it — and only the per-queue opt-in may
-// declare it. `wrangler` is not a capability at all; listing it is almost
+// declare it. `production` is the Wrangler owner's consent to ship to
+// production, declared only by `production = true` on a Wrangler queue.
+// `wrangler` is not a capability at all; listing it is almost
 // certainly an attempt at the opt-in, and it is refused anywhere so that it
 // can never become one.
-func reservedCapability(name string) bool { return name == "pm" || name == "wrangler" }
+func reservedCapability(name string) bool {
+	return name == "pm" || name == "wrangler" || name == "production"
+}
 
 // SecretRefs returns the queue's secrets map parsed and sorted by variable
 // name. An entry that does not parse is left out; [Config.Validate] refuses
@@ -1045,6 +1057,9 @@ func (c Config) Validate() error {
 	}
 	for _, name := range c.Capabilities {
 		if reservedCapability(name) {
+			if name == "production" {
+				return fmt.Errorf("capabilities: production cannot be listed; consent to it with production = true on a Wrangler queue")
+			}
 			return fmt.Errorf("capabilities: %s cannot be listed; enable the Wrangler per queue with wrangler = true", name)
 		}
 		if hosted.Forbidden(name, enabled) {
@@ -1066,6 +1081,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("queues[%d]: %s requires agent_kind = claude or codex", i, q.wranglerKey())
 		case q.IsWrangler() && len(q.MCPServers) > 0:
 			return fmt.Errorf("queues[%d]: Wrangler queues get only their owner Elk connector; remove mcp_servers", i)
+		case q.Production && !q.IsWrangler():
+			return fmt.Errorf("queues[%d]: production = true requires wrangler = true; only a Wrangler queue can consent to production", i)
 		case q.WranglerConnectorAccount != "" && q.PMConnectorAccount != "" && q.WranglerConnectorAccount != q.PMConnectorAccount:
 			return fmt.Errorf("queues[%d]: wrangler_connector_account and pm_connector_account name different keychain accounts; pm_connector_account is the old spelling, so delete it and set wrangler_connector_account to the one you mean", i)
 		case !q.IsWrangler() && q.WranglerAccount() != "":
@@ -1102,6 +1119,8 @@ func (c Config) Validate() error {
 			switch {
 			case name == "wrangler":
 				return fmt.Errorf("queues[%d]: wrangler is not a capability; enable the Wrangler with wrangler = true", i)
+			case name == "production":
+				return fmt.Errorf("queues[%d]: production is not a listed capability; consent to it with production = true on a Wrangler queue", i)
 			case name == "pm" && !q.IsWrangler():
 				return fmt.Errorf("queues[%d]: capability pm requires wrangler = true", i)
 			case hosted.Forbidden(name, enabled):

@@ -432,8 +432,9 @@ func AdvisoryRequirements(required []string, h *HostCapabilities) []string {
 		if name == "" || h.Has(name) || strings.Contains(name, ":") && capabilityNamespaces[strings.SplitN(name, ":", 2)[0]] {
 			continue
 		}
-		// pm is the Wrangler's routing capability, still `pm` on the wire.
-		known := name == "supabase-vault" || name == "gcloud" || name == "pm"
+		// pm is the Wrangler's routing capability, still `pm` on the wire;
+		// production is its owner's consent to ship to production.
+		known := name == "supabase-vault" || name == "gcloud" || name == "pm" || name == "production"
 		for _, n := range builtinHostCapabilities {
 			known = known || name == n
 		}

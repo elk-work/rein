@@ -953,6 +953,25 @@ wrangler = true
 wrangler_connector_account = "my-wrangler-owner"
 ```
 
+**`production = true` is the owner's consent to let this Wrangler ship to
+production.** Put it on a Wrangler queue, beside `wrangler = true`, and only the
+person whose credentials the queue holds should:
+
+```toml
+wrangler = true
+production = true
+```
+
+Rein then declares a `production` capability (with `pm` and `mcp:elk`) on every
+heartbeat, and Elk refuses to raise a workspace's production level for a
+Wrangler that does not declare it. Deleting the line withdraws the consent on
+the next heartbeat. `production = true` on a queue that is not a Wrangler is
+refused at load, and `production` cannot be listed under `capabilities`. The
+queue's Wrangler cycles are also told to ask Elk's `wrangler_production_step`
+before any production step and to treat a workspace whose work order names no
+production level as Hold. Setting the line on a real queue is the owner's step;
+Rein does not do it.
+
 `pm = true` and `pm_connector_account` are the old spellings and are still
 accepted, with identical behaviour; a config that uses them needs no change.
 Both spellings may be set if they agree; a queue where they disagree (say
@@ -1001,17 +1020,16 @@ queues may run cycles, the packet decides which runs are cycles
 (`ark:rein#50 (01M46ZQDVPJY6VF1HEGQ4ZFHKF)`; until v0.7.1 every run on the
 queue got both).
 
-Wrangler cycle prompts authorize migrations only by scout `supabase/README.md`
-rule 5, verified by object; edge functions only via scout
-`scripts/deploy-functions.sh`; and Signal only through its deploy workflows,
-`deploy-receiverd.yml` and `deploy-refresh-job.yml`. A cycle may run either
-workflow at any time with `execute` off. With `execute` on, the deploy also
-starts a refresh pass, so it runs only between refresh passes; a deploy alone
-does not disturb a pass in flight, because a Cloud Run job execution keeps the
-template it started with. Migration headers with a line starting `-- HOLD:` are
-never applied, and `elk-work/website` is never merged. Wrangler cycles follow
-elk `docs/wrangler.md`. Other queues, and other runs on a Wrangler queue, retain
-their existing prompt and MCP allow-list behavior.
+A Wrangler cycle's prompt is workspace-neutral. The playbook in the run's work
+order governs the workspace's own procedures: how it applies migrations, deploys
+and rolls back. Rein's rule adds what holds everywhere. A cycle never
+force-pushes or rewrites history, never sends mail or messages, never runs
+unfamiliar scripts, never applies a migration whose header has a line starting
+`-- HOLD:`, and sends every production step (apply, deploy, re-run, roll back,
+flag change, data job, release) to Elk's `wrangler_production_step`, doing only
+what it allows. Wrangler cycles follow elk `docs/wrangler.md`. Other queues, and
+other runs on a Wrangler queue, retain their existing prompt and MCP allow-list
+behavior.
 
 ## License
 
