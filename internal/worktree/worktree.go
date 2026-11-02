@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,6 +302,8 @@ func (m *Manager) ensureCommit(ctx context.Context, repo, commit string, credent
 	if credential.Valid(credentialRepo(credential)) {
 		err = m.fetchCredential(fetchCtx, repo, commit, credential)
 	} else {
+		m.log("worktree: fetching check commit %s from origin (%s) with no claim credential (refspec %s)",
+			commit, redactURL(strings.TrimSpace(m.output(ctx, repo, "remote", "get-url", "origin"))), commit)
 		err = m.run(fetchCtx, repo, "fetch", "--quiet", "--no-tags", "origin", commit)
 	}
 	cancel()
@@ -632,11 +635,38 @@ func credentialRepo(c *fetchcred.Credential) string {
 	return c.Repo
 }
 
+// credentialFetchURL is the URL the claim credential's fetch names: the
+// credential's own URL with a trailing slash, which GitHub serves exactly as
+// it serves the URL without one.
+//
+// The slash is what lets the fetch go where the credential was minted for. A
+// checkout's git config can rewrite the GitHub URL with url.<base>.insteadOf,
+// and the Linux lab's did: its scout checkout rewrote
+// https://github.com/elk-work/scout.git to the bundle mirror it was fed from,
+// so the credential fetch asked that stale mirror for main's tip and the
+// mirror answered "not our ref" (ark:rein#98, run arun-4e118897, 2026-11-02).
+// Git applies the longest matching insteadOf, so fetchCredential adds an
+// identity rule for this URL, one character longer than any rule written for
+// the credential's URL itself, and those rules no longer apply. A rule written
+// for this exact URL in config git reads before the command line (system,
+// global, the repository) still wins the tie, which is how the tests point it
+// at a local fake GitHub.
+func credentialFetchURL(c *fetchcred.Credential) string {
+	return strings.TrimSuffix(c.URL, "/") + "/"
+}
+
 // fetchCredential never sends the credential through the logged command path.
 // Git's environment config applies only to this process, never to config files.
 func (m *Manager) fetchCredential(ctx context.Context, repo, commit string, c *fetchcred.Credential) error {
-	m.log("worktree: fetching check commit with claim credential")
-	cmd := exec.CommandContext(ctx, m.git(), "-C", repo, "-c", "credential.helper=", "-c", "http.followRedirects=false", "fetch", "--quiet", "--no-tags", c.URL, commit)
+	fetchURL := credentialFetchURL(c)
+	rewritten := strings.TrimSpace(m.output(ctx, repo, "ls-remote", "--get-url", c.URL))
+	note := "no url rewrite applies"
+	if rewritten != "" && rewritten != c.URL {
+		note = fmt.Sprintf("ignoring this checkout's url.insteadOf rewrite of %s to %s", c.URL, redactURL(rewritten))
+	}
+	m.log("worktree: fetching check commit %s from %s with the claim credential (refspec %s, %s)", commit, fetchURL, commit, note)
+	cmd := exec.CommandContext(ctx, m.git(), "-C", repo, "-c", "credential.helper=", "-c", "http.followRedirects=false",
+		"-c", "url."+fetchURL+".insteadOf="+fetchURL, "fetch", "--quiet", "--no-tags", fetchURL, commit)
 	env := []string{}
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
@@ -646,10 +676,22 @@ func (m *Manager) fetchCredential(ctx context.Context, repo, commit string, c *f
 		env = append(env, kv)
 	}
 	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http."+c.URL+".extraHeader", "GIT_CONFIG_VALUE_0="+c.Header())
+		"GIT_CONFIG_KEY_0=http."+fetchURL+".extraHeader", "GIT_CONFIG_VALUE_0="+c.Header())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("credential fetch: %w: %s", err, trimOutput([]byte(secretenv.NewRedactor(c.Secrets()).String(string(out)))))
+		return fmt.Errorf("credential fetch from %s (%s): %w: %s", fetchURL, note, err, trimOutput([]byte(secretenv.NewRedactor(c.Secrets()).String(string(out)))))
 	}
 	return nil
+}
+
+// redactURL drops any user or password from a URL before it is logged: a
+// rewrite target in someone's git config may carry one. A local path passes
+// through unchanged.
+func redactURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.User == nil {
+		return s
+	}
+	u.User = nil
+	return u.String()
 }

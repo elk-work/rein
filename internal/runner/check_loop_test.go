@@ -391,8 +391,23 @@ func TestARunnerQueueDeclaresAgentRunnerAndItsTools(t *testing.T) {
 }
 
 // The claim supplies access to a new commit while origin remains a stale,
-// credential-free mirror. Git's URL rewrite keeps this test entirely local.
+// credential-free mirror. Git's URL rewrite keeps this test entirely local:
+// the fake GitHub is named for the credential's URL with a trailing slash,
+// which is the URL Rein fetches, and a global rule for it wins the tie with
+// Rein's own identity rule because git reads global config first.
+//
+// "lab rewrite" is the Linux lab's checkout (ark:rein#98): its own git config
+// sent https://github.com/elk-work/scout.git to the stale mirror, and the
+// claim's fetch followed it there and got "not our ref".
 func TestCheckClaimFetchIsEphemeral(t *testing.T) {
+	for _, labRewrite := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "lab rewrite"}[labRewrite], func(t *testing.T) {
+			testCheckClaimFetchIsEphemeral(t, labRewrite)
+		})
+	}
+}
+
+func testCheckClaimFetchIsEphemeral(t *testing.T, labRewrite bool) {
 	const secret = "fake-claim-fetch-credential-123456"
 	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + secret))
 	r := newCheckRig(t, "act-pass.jsonl", 0)
@@ -410,7 +425,10 @@ func TestCheckClaimFetchIsEphemeral(t *testing.T) {
 	gitIn(t, r.origin, "push", github, "HEAD:refs/heads/pr-head")
 	global := filepath.Join(home, "gitconfig")
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
-	gitIn(t, r.clone, "config", "--file", global, "url."+github+".insteadOf", "https://github.com/elk-work/scout.git")
+	gitIn(t, r.clone, "config", "--file", global, "url."+github+".insteadOf", "https://github.com/elk-work/scout.git/")
+	if labRewrite {
+		gitIn(t, r.clone, "config", "url."+stale+".insteadOf", "https://github.com/elk-work/scout.git")
+	}
 	logs, err := runlog.Open(filepath.Join(home, "logs"))
 	if err != nil {
 		t.Fatal(err)
