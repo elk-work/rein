@@ -208,7 +208,7 @@ func (a *Adapter) resolveBinary() (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("%w: %s is not on PATH and is not at ~/.grok/bin/grok; install Grok Build (curl -fsSL https://grok.com/install.sh | bash)",
+	return "", fmt.Errorf("%w: %s is not on PATH and is not at ~/.grok/bin/grok; install Grok Build (curl -fsSL https://x.ai/cli/install.sh | bash)",
 		adapter.ErrPreflight, a.binary)
 }
 
