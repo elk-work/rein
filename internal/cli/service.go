@@ -168,6 +168,13 @@ func runServiceInstall(cmd *cobra.Command) error {
 	if password == "" {
 		password = os.Getenv(EnvServicePassword)
 	}
+	if runtime.GOOS == "windows" && password == "" {
+		// No password: register a task that starts at this person's sign-in
+		// with their own token instead of a service that would need one
+		// (ark:scout#4306). Same restart-on-upgrade behaviour, via
+		// `rein run --at-login`.
+		return installLogonTask(cmd, cfg, exe)
+	}
 	if runtime.GOOS == "windows" {
 		// Credential Manager is per-user. A service logging on as LocalSystem
 		// starts, heartbeats, claims a run and then cannot read the token
@@ -242,6 +249,9 @@ func queueNames(cfg config.Config) []string {
 }
 
 func runServiceSimple(cmd *cobra.Command, action string) error {
+	if installed, _ := service.LogonTaskInstalled(); installed {
+		return logonTaskSimple(cmd, action)
+	}
 	m, err := serviceManager(cmd, service.Config{})
 	if err != nil {
 		return err
@@ -271,6 +281,14 @@ func runServiceSimple(cmd *cobra.Command, action string) error {
 
 func runServiceStatus(cmd *cobra.Command) error {
 	out := cmd.OutOrStdout()
+	if installed, running := service.LogonTaskInstalled(); installed {
+		state := "installed, not running"
+		if running {
+			state = "running"
+		}
+		fmt.Fprintf(out, "%s: %s (starts at sign-in, task %s)\n", service.Name, state, service.LogonTaskName)
+		return nil
+	}
 	m, err := serviceManager(cmd, service.Config{})
 	if err != nil {
 		return err
@@ -330,4 +348,52 @@ func logWriter(path string) (io.WriteCloser, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return f, nil
+}
+
+// installLogonTask registers Windows' sign-in task for this person.
+func installLogonTask(cmd *cobra.Command, cfg config.Config, exe string) error {
+	out := cmd.OutOrStdout()
+	m, err := serviceManager(cmd, service.Config{Executable: exe})
+	if err != nil {
+		return err
+	}
+	u, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("cannot determine who to start Rein for: %w", err)
+	}
+	if err := os.MkdirAll(m.LogDir(), 0o700); err != nil {
+		return err
+	}
+	configPath, _ := cmd.Flags().GetString("config")
+	if err := service.InstallLogonTask(m.Executable(), service.LogonTaskArgs(configPath, m.LogDir()), u.Username); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "installed %s as a task that starts when %s signs in (no password needed)\n", service.LogonTaskName, u.Username)
+	fmt.Fprintf(out, "  queues\t%s\n  logs\t%s\n", strings.Join(queueNames(cfg), ", "), m.LogDir())
+	fmt.Fprintln(out, "\nstart it now with `rein service start`.")
+	return nil
+}
+
+func logonTaskSimple(cmd *cobra.Command, action string) error {
+	out := cmd.OutOrStdout()
+	switch action {
+	case "uninstall":
+		if err := service.UninstallLogonTask(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "removed the sign-in task %s\n", service.LogonTaskName)
+	case "start":
+		if err := service.StartLogonTask(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "started %s\n", service.LogonTaskName)
+	case "stop":
+		if err := service.StopLogonTask(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "stopped %s; it starts again at the next sign-in\n", service.LogonTaskName)
+	default:
+		return fmt.Errorf("service: unknown action %q", action)
+	}
+	return nil
 }

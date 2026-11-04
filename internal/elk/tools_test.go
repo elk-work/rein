@@ -403,6 +403,29 @@ func TestHeartbeatCarriesTheQueueDepth(t *testing.T) {
 	}
 }
 
+func TestHeartbeatCarriesTheElkAppsSettings(t *testing.T) {
+	s := elktest.New(t, testToken)
+	s.Reply("heartbeat_executor", elktest.Reply{
+		Text:       `Heartbeat recorded for queue "mac-claude". You are online for the next 15 minutes. Nothing is waiting for you.`,
+		Structured: map[string]any{"settings": map[string]any{"land": "pr", "secrets": []string{"POSTHOG_API_KEY"}}},
+	})
+	c := newClient(t, s)
+	hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Workspace: "Elk Scout", Queue: "mac-claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hb.Settings == nil || hb.Settings.Land == nil || *hb.Settings.Land != "pr" ||
+		len(hb.Settings.Secrets) != 1 || hb.Settings.Secrets[0] != "POSTHOG_API_KEY" {
+		t.Fatalf("settings = %+v", hb.Settings)
+	}
+
+	s.Text("heartbeat_executor", `Heartbeat recorded for queue "mac-claude".`)
+	hb, err = c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Workspace: "Elk Scout", Queue: "mac-claude"})
+	if err != nil || hb.Settings != nil {
+		t.Fatalf("an Elk that sends no settings must leave them nil: %+v, %v", hb.Settings, err)
+	}
+}
+
 // TestHeartbeatCarriesTheFleetReading checks the two halves reach the call as
 // OBJECTS, which is the first of Elk's three rules — an array or a scalar is
 // refused with a message.

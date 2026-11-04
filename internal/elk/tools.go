@@ -2,6 +2,7 @@ package elk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -864,6 +865,18 @@ type Heartbeat struct {
 	// the queue depth, which makes it a complete poll on its own.
 	Waiting int
 	Text    string
+	// Settings is what the worker's person chose in the Elk app (scout 0597,
+	// ark:scout#4308), from the reply's structured content. Nil from an Elk
+	// that sends none, which leaves the config exactly as it is.
+	Settings *WorkerSettings
+}
+
+// WorkerSettings is a worker's landing policy and secret names as chosen in
+// the app. Land nil means "leave this computer's own setting". Secrets are
+// variable NAMES only: a value never passes through Elk.
+type WorkerSettings struct {
+	Land    *string  `json:"land"`
+	Secrets []string `json:"secrets"`
 }
 
 var (
@@ -911,6 +924,15 @@ func (c *Client) HeartbeatExecutor(ctx context.Context, req HeartbeatRequest) (*
 	}
 	if m := heartbeatWaitRE.FindStringSubmatch(res.Text); m != nil {
 		hb.Waiting, _ = strconv.Atoi(m[1])
+	}
+	if len(res.Structured) > 0 {
+		var body struct {
+			Settings *WorkerSettings `json:"settings"`
+		}
+		// A reply Rein cannot read is no settings, never a failed beat.
+		if json.Unmarshal(res.Structured, &body) == nil {
+			hb.Settings = body.Settings
+		}
 	}
 	return hb, nil
 }

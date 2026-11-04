@@ -40,8 +40,8 @@ token, link or invite.
 
 Then Rein enrols this computer as your private worker, the same as
 ` + "`rein enrol --claim-code`" + `, and installs and starts its service so it keeps
-working after you close this window (macOS and Linux; on Windows the service
-needs your account password, so setup says what to run).
+working after you close this window (macOS and Linux; on Windows a task
+that starts when you sign in, which needs no password).
 
 The code lives ten minutes and works once. Only a computer holding the secret
 Rein made for it can collect the answer, and nothing exists to collect until
@@ -231,12 +231,18 @@ func runSetup(cmd *cobra.Command) error {
 // startServiceAfterSetup installs (or refreshes) the service and starts it, so
 // the worker survives this window closing. Windows asks for the account's
 // password to run a service as you, which setup must not collect, so there it
-// says what to run instead.
+// registers a task that starts at the person's sign-in instead.
 func startServiceAfterSetup(cmd *cobra.Command, out io.Writer) error {
 	if runtime.GOOS == "windows" {
-		fmt.Fprintln(out, "\nTo keep it working after you close this window, run:")
-		fmt.Fprintln(out, "  rein service install   (Windows asks for your password)")
-		fmt.Fprintln(out, "  rein service start")
+		// A task that starts at this person's sign-in, with no password
+		// (ark:scout#4306), instead of a Windows service that needs one.
+		if err := runServiceInstall(cmd); err != nil {
+			return fmt.Errorf("joined Elk, but Rein could not be set to start at sign-in: %w\n       run `rein service install`", err)
+		}
+		if err := service.StartLogonTask(); err != nil {
+			return fmt.Errorf("joined Elk, but Rein did not start: %w\n       run `rein service start`", err)
+		}
+		fmt.Fprintln(out, "\nDone. This computer now does tasks for you, and starts again when you sign in.")
 		return nil
 	}
 	m, err := serviceManager(cmd, service.Config{})

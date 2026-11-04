@@ -57,6 +57,9 @@ in docs/run-loop.md.`,
 	f.Int("max-concurrent", 0, "ceiling on runs driven at once across every queue (default: 4, and lower whenever the machine cannot afford it)")
 	f.String("log-file", "", "append the loop's log to this file instead of stdout")
 	f.Bool("service", false, "run under this platform's service manager (what `rein service install` sets up)")
+	f.Bool("at-login", false, "keep one runner going, restarting it after an upgrade (what Windows' sign-in task runs)")
+	f.Bool("supervised", false, "run under `rein run --at-login`, which restarts this process")
+	_ = f.MarkHidden("supervised")
 	f.Bool("dry-run", false, "claim nothing; report what is waiting")
 	f.Bool("keep-worktrees", false, "leave each run's worktree in place instead of reaping it after the submit")
 	f.Duration("stall-after", 0, "how long a session may produce no events before the watchdog acts (default: 15m)")
@@ -66,6 +69,9 @@ in docs/run-loop.md.`,
 }
 
 func runRun(cmd *cobra.Command) error {
+	if atLogin, _ := cmd.Flags().GetBool("at-login"); atLogin {
+		return superviseAtLogin(cmdContext(cmd), cmd.ErrOrStderr(), atLoginChildArgs(os.Args[1:]), startChild)
+	}
 	path, err := resolveConfigPath(cmd)
 	if err != nil {
 		return err
@@ -111,6 +117,7 @@ func runRun(cmd *cobra.Command) error {
 	maxReviewRounds, _ := f.GetInt("max-review-rounds")
 
 	asService, _ := f.GetBool("service")
+	supervised, _ := f.GetBool("supervised")
 	logFile, _ := f.GetString("log-file")
 
 	out := cmd.OutOrStdout()
@@ -180,7 +187,7 @@ func runRun(cmd *cobra.Command) error {
 		Config:          cfg,
 		Hosted:          flag,
 		ConfigPath:      absPath(path),
-		UnderService:    asService && !service.Interactive(),
+		UnderService:    (asService && !service.Interactive()) || supervised,
 		Store:           store,
 		Secrets:         items,
 		Queues:          queues,
