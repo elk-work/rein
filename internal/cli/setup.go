@@ -15,8 +15,10 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/service"
 	"github.com/spf13/cobra"
@@ -175,8 +177,14 @@ func runSetup(cmd *cobra.Command) error {
 	if name == "" {
 		name = machineName()
 	}
+	// Elk lists the worker under a name of at most 12 characters and refuses a
+	// longer one at connect, which comes after Allow. So the default is the
+	// computer's name cut to fit, and a longer --display-name is refused here,
+	// before any code is shown. The Allow screen still gets the full name.
 	if v, _ := f.GetString("display-name"); v == "" {
-		_ = f.Set("display-name", name)
+		_ = f.Set("display-name", workerDisplayName(name))
+	} else if n := utf8.RuneCountInString(v); n > elk.QueueNameMaxRunes {
+		return fmt.Errorf("--display-name %q is %d characters; Elk's cap is %d. Pass a shorter one", v, n, elk.QueueNameMaxRunes)
 	}
 
 	mcpURL, _ := f.GetString("mcp-url")
@@ -358,6 +366,21 @@ func machineName() string {
 		h = h[:40]
 	}
 	return h
+}
+
+// workerDisplayName is the name Elk lists this worker under: the computer's
+// name cut to Elk's cap (elk.QueueNameMaxRunes). Typical names are longer —
+// "DESKTOP-4F7K2LQ", "Caseys-MacBook-Pro" — and Elk refuses, rather than
+// shortens, an over-long one.
+func workerDisplayName(machine string) string {
+	r := []rune(strings.TrimSpace(machine))
+	if len(r) > elk.QueueNameMaxRunes {
+		r = r[:elk.QueueNameMaxRunes]
+	}
+	if s := strings.TrimRight(string(r), " -_."); s != "" {
+		return s
+	}
+	return "Computer"
 }
 
 func newPairSecret() (string, error) {
