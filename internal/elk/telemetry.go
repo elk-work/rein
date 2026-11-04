@@ -120,6 +120,10 @@ type SessionReading struct {
 	RunID string `json:"run_id,omitempty"`
 	Model string `json:"model,omitempty"`
 
+	// Effort is the resolved effort passed to the run. Absent when the CLI
+	// chooses its own default, which Rein does not know.
+	Effort string `json:"effort,omitempty"`
+
 	// Land is this queue's landing policy — "merge", "pr" or "branch"
 	// (ark:rein#47) — so the executor row can say, before anything is
 	// dispatched to it, whether a run here merges its own work. It is

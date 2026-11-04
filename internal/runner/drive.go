@@ -113,7 +113,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 
 	// What Elk last set for the queue wins over config.toml, which wins over
 	// the CLI's own default (modelchoice.go, ark:rein#106).
-	choice := qr.modelChoice()
+	choice := qr.runModelChoice()
 	if choice.ModelFrom == FromElk || choice.EffortFrom == FromElk {
 		qr.log.Runner(runlog.KindNote, "%s", choice.String())
 	}
