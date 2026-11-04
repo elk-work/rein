@@ -34,7 +34,8 @@ the superrepo that is the submodule, e.g. `scout/ci/suites.yml`.
 - **Found** (scout): follow steps 2–8. Each suite has
   `paths`, a `tier` (`floor` starts by itself on every matching PR;
   `declared` is yours to start), `local` (the command `ci-local.sh` runs, or
-  `no`), `skippable`, `quarantined` (step 3) and, for declared legs, a `label`.
+  `no`), `skippable`, `quarantined` (step 3), `whole_suite_on` (below) and,
+  for declared legs, a `label`.
 - **Not found**: this repo has no manifest, and today's rules in elk
   `docs/ci-runners.md` apply
   (<https://github.com/elk-work/elk/blob/main/docs/ci-runners.md> from a bare
@@ -64,6 +65,26 @@ Each implicated suite comes back with the ways it can be satisfied. For each:
 A red check on the head is never satisfied by local evidence or a skip line.
 Fix it.
 
+**A row that says `unchanged since <sha>` is a pass you did not have to
+start.** It means an earlier commit with the same inputs passed every one of
+the suite's checks: an earlier head of this PR (`(this PR)`), or a commit on
+the base branch, no older than the manifest's top-level
+`unchanged_max_age_days`. "The same inputs" is the same inputs hash: the blob
+ids and paths of every file the suite's `paths` and `whole_suite_on` match.
+The toolchain is not in it, so a `local: no` suite never shows this row. Do
+not label the leg to run it again; a rebase, or a push that touched nothing
+the leg reads, is exactly the case it covers.
+
+**`whole_suite_on` runs a suite in full.** It lists the files whose change
+means "run all of it": the suite's own workflow, its dependency lockfiles
+(`ElkKit/Package.resolved`), its toolchain pins. A diff touching one implicates
+the suite even outside its `paths`, and the plan row reads `yes, in full —
+<file>`. Then no skip line counts for it, and neither `unchanged since` nor
+anything else that narrows it applies, so run it whole: its label, or a local
+run where `local` allows. The plan says which file did it; do not argue the
+file out of the list in the PR body. If an entry is wrong, change the
+manifest in a PR of its own.
+
 Where it runs, in order: your machine, then the lab (the label routes there,
 per the suite's `run:` list), hosted only when neither can. The money is
 macOS, so start a declared leg once, when the branch is ready, not on every
@@ -74,13 +95,18 @@ push.
 For each implicated suite, before you write the plan or chase a red:
 
 ```text
-suite_history(workspace: "elk-scout", repo: "elk-work/<repo>", suite: "<suite>", question: "all", window: "P30D")
+suite_history(workspace: "<workspace>", repo: "<owner>/<repo>", suite: "<suite>", question: "all", window: "P30D")
 ```
 
-Without Elk's MCP, `pulse history` reads the same rows (pulse `docs/history.md`):
+`<workspace>` is the Elk workspace this repository is bound to
+(`list_workspaces` names them), and `<owner>/<repo>` is the repository itself,
+for example `workspace: "acme"`, `repo: "acme/web"`, `suite: "unit"`.
+
+Without Elk's MCP, `pulse history` reads the same rows (pulse `docs/history.md`),
+with the workspace's Signal read URL in `SIGNAL_READ_URL`:
 
 ```sh
-node elk/scripts/vault-run.mjs --only SIGNAL_READ_URL -- pulse history last-green --workspace elk-scout --repo elk-work/<repo>   # or flake-rate, failures-by-path --window 720h
+pulse history last-green --workspace <workspace> --repo <owner>/<repo>   # or flake-rate, failures-by-path --window 720h
 ```
 
 1. **Last green on `main`.** If its `sha` is older than your base (`git
@@ -93,9 +119,15 @@ node elk/scripts/vault-run.mjs --only SIGNAL_READ_URL -- pulse history last-gree
    skip it: propose `quarantined: true` for the suite in `ci/suites.yml`, in
    a separate small PR that quotes the reading. Once that lands the suite is
    recorded but never blocks.
-3. **Failures by changed path.** A path your diff changes that failed the
-   suite in the window promotes it from skip to run. It is history, not
-   cause, and the list is capped (`paths_omitted`): absent is not cleared.
+3. **Failures by changed path.** Promote a suite from skip to run only on
+   a path your diff changes that reads `promotes: true`. That field means the
+   path failed the suite on at least two PRs and its failure rate is above
+   the suite's own base rate even at the low end of its 95% interval
+   (`lift_lower > 1`). Only first-attempt PR runs on a green base count, so
+   a stretch when `main` was already red does not. If the reading has no
+   `promotes` field, it is a raw count with no denominator: treat it as a
+   hunch that promotes nothing. Either way it is history, not cause, and the
+   list is capped (`paths_omitted`): absent is not cleared.
 
 **No data yet is not a pass.** `no data yet`, `no_evidence`, `unknown` or
 `tested_shas: 0` mean nobody knows: the red is yours, and nothing is
@@ -139,8 +171,10 @@ PR body, outside any code fence:
 skip apple-ui: copy-only change to the Settings footer; no thread, list or scroll code touched
 ```
 
-The reason says why *this diff* cannot break what the suite tests. "No time",
-"flaky" and "CI is expensive" are not reasons; a suite that really flakes is
+A skip line does not count when the plan shows the suite `in full` (step
+2): a `whole_suite_on` file changed. The reason says why *this diff* cannot
+break what the suite tests. "No time", "flaky" and "CI is expensive" are not
+reasons; a suite that really flakes is
 quarantined (step 3). Once enforce mode is on, the nightly backstop
 (`ci-backstop.yml`) runs every declared leg on `main`. If it turns red on
 something you skipped, the skip was wrong: say so on the task.
