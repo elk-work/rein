@@ -149,8 +149,8 @@ func subscriptionState(home, queue string) string {
 // printModels says which model and effort each queue's next run uses, and
 // where each came from: what Elk set for the queue wins over config.toml,
 // which wins over the CLI's own default (ark:rein#106). What Elk set is read
-// from the state the running service keeps under the Rein home, so it is
-// what the service last heard; with no service running, the config's.
+// from the state the service keeps under the Rein home, so it is what the
+// service last heard, and the last column says since when.
 func printModels(out io.Writer, stateDir string, cfg config.Config) error {
 	fmt.Fprintln(out, "\nMODEL AND EFFORT — set in Elk, else config.toml, else the CLI's default")
 	mw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
