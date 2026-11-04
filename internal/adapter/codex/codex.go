@@ -144,7 +144,10 @@ func (a *Adapter) Manifest() adapter.Manifest {
 			"AllowedTools/DeniedTools are refused rather than ignored: the app " +
 			"server has no per-tool allow list this adapter has verified, and " +
 			"silently dropping one would be exactly the downgrade the contract " +
-			"forbids.",
+			"forbids. Interactive tool questions raise EventQuestion in order; Send " +
+			"answers each question and replies once the request is complete (verified " +
+			"with codex-cli 0.159.0). MCP elicitation remains declined because it can " +
+			"require structured form data.",
 	}
 }
 
