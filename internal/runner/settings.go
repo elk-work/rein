@@ -18,7 +18,7 @@ import (
 const ManagedSecretService = "elk-secret"
 
 // ApplyElkSettings folds what the worker's person chose in the Elk app into
-// one queue's config (scout 0597, ark:scout#4308). It reports whether anything
+// one queue's config (scout 0599, ark:scout#4308). It reports whether anything
 // changed, and refuses — changing nothing — a result the config would reject,
 // so a bad choice in the app can never leave a file this computer cannot load.
 //

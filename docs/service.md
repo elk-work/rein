@@ -530,7 +530,7 @@ Pass a password to get the Windows service instead.
 ## Settings chosen in the Elk app
 
 A worker's landing policy and the secrets its tasks may use can be set in the
-Elk app (scout migration 0597). Elk hands them over on the heartbeat; Rein
+Elk app (scout migration 0599). Elk hands them over on the heartbeat; Rein
 writes them into `config.toml` (`land`, and `[queues.secrets]` entries of the
 form `NAME = "elk-secret/NAME"`) and restarts between tasks, as for any config
 change. Entries a person wrote under any other keychain service are left

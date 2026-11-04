@@ -865,7 +865,7 @@ type Heartbeat struct {
 	// the queue depth, which makes it a complete poll on its own.
 	Waiting int
 	Text    string
-	// Settings is what the worker's person chose in the Elk app (scout 0597,
+	// Settings is what the worker's person chose in the Elk app (scout 0599,
 	// ark:scout#4308), from the reply's structured content. Nil from an Elk
 	// that sends none, which leaves the config exactly as it is.
 	Settings *WorkerSettings

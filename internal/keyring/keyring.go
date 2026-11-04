@@ -415,7 +415,7 @@ func (f *FileItems) ReadItem(service, account string) (string, error) {
 }
 
 // ItemWriter stores and removes one secret's value for `rein secret` (the Elk
-// app's "Secrets it may use", scout 0597). Rein writes the item itself so the
+// app's "Secrets it may use", scout 0599). Rein writes the item itself so the
 // keychain records Rein as its owner and the service can read it without a
 // prompt. Reserved services are refused exactly as for reading.
 type ItemWriter interface {
