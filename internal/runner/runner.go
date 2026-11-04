@@ -334,7 +334,10 @@ type WorktreeManager interface {
 
 // Runner serves one or more queues.
 type Runner struct {
-	upgradeMu      sync.Mutex
+	upgradeMu sync.Mutex
+	// settingsMu serialises queues writing the Elk app's settings into
+	// config.toml (settings.go), so two beats cannot interleave a rewrite.
+	settingsMu     sync.Mutex
 	draining       bool
 	inFlight       int
 	upgradeDone    chan struct{}
@@ -731,6 +734,10 @@ type queueRunner struct {
 	// can reach it, and nil between runs.
 	live *liveSession
 
+	// settingsSeen is the last Elk-app settings this queue acted on, so one
+	// that cannot be applied is logged once, not on every beat.
+	settingsSeen string
+
 	// human is what a person did to the current run through `rein attach`,
 	// accumulated across attachments and across a stall restart's two
 	// sessions. Guarded because the control plane's goroutine writes it.
@@ -1030,6 +1037,7 @@ func (qr *queueRunner) heartbeat(ctx context.Context) (depth int, known bool) {
 	case err == nil:
 		qr.noteBeat()
 		qr.noteHeartbeatReply(hb.Text)
+		qr.applySettings(hb.Settings)
 		return hb.Waiting, true
 	case ctx.Err() != nil:
 	case errors.As(err, new(*elk.UnknownToolError)):

@@ -32,6 +32,10 @@ type Reply struct {
 	// as meaningful should not pass here.
 	IsError bool
 
+	// Structured, when set, rides out as the result's structuredContent, as
+	// the real server sends it beside the text.
+	Structured map[string]any
+
 	// RPCError, when set, makes the call answer with a JSON-RPC error instead
 	// of a result. Use [UnknownTool] for the shape Elk uses for a tool it does
 	// not have.
@@ -249,6 +253,9 @@ func (s *Server) callTool(w http.ResponseWriter, id json.RawMessage, name string
 	if rep.IsError {
 		// Matches the real server: the key is present only when true.
 		out["isError"] = true
+	}
+	if rep.Structured != nil {
+		out["structuredContent"] = rep.Structured
 	}
 	s.result(w, id, out)
 }

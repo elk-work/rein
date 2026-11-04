@@ -510,3 +510,30 @@ produces: that service would break the moment the file was cleaned up.
 | every run goes `stuck` at preflight | PATH: `rein service status` prints the captured one |
 | nothing in any log, ever | the binary path in `status` — has it moved? |
 | the loop is up but claims nothing | `concurrency:` in `rein.log`, and `rein status --online` |
+
+## Windows without a password: the sign-in task
+
+`rein service install` on Windows with no password (no `--password`, no
+`REIN_SERVICE_PASSWORD`) no longer refuses. It registers a Scheduled Task,
+`\Elk\Rein`, that starts `rein run --at-login` when you sign in, with your own
+sign-in token, so nothing asks for or stores your password (ark:scout#4306).
+`rein setup` does this by itself. `rein service start | stop | status |
+uninstall` act on the task when it is there.
+
+`--at-login` keeps one supervised runner going and starts it again after an
+upgrade or a settings change (exit 75), or a crash, the job launchd and
+systemd do elsewhere. It runs through `conhost.exe --headless`, so no console
+window opens. The trade: it runs only while you are signed in, which is also
+the only time Credential Manager, where Rein's Elk token lives, can be read.
+Pass a password to get the Windows service instead.
+
+## Settings chosen in the Elk app
+
+A worker's landing policy and the secrets its tasks may use can be set in the
+Elk app (scout migration 0597). Elk hands them over on the heartbeat; Rein
+writes them into `config.toml` (`land`, and `[queues.secrets]` entries of the
+form `NAME = "elk-secret/NAME"`) and restarts between tasks, as for any config
+change. Entries a person wrote under any other keychain service are left
+alone. Values never pass through Elk: the Elk app on the worker's own computer
+stores them with `rein secret set NAME` (value on stdin) under keychain
+service `elk-secret`.

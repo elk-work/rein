@@ -413,3 +413,87 @@ func (f *FileItems) ReadItem(service, account string) (string, error) {
 	}
 	return v, nil
 }
+
+// ItemWriter stores and removes one secret's value for `rein secret` (the Elk
+// app's "Secrets it may use", scout 0597). Rein writes the item itself so the
+// keychain records Rein as its owner and the service can read it without a
+// prompt. Reserved services are refused exactly as for reading.
+type ItemWriter interface {
+	WriteItem(service, account, value string) error
+	DeleteItem(service, account string) error
+	Name() string
+}
+
+// OpenItemWriter returns the [ItemWriter] REIN_KEYRING asks for.
+func OpenItemWriter(dir string) (ItemWriter, error) {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(EnvBackend))); v {
+	case "", "os", "keychain":
+		return OSItems{}, nil
+	case "file":
+		return NewFileItems(filepath.Join(dir, SecretsFileName)), nil
+	default:
+		return nil, fmt.Errorf("keyring: %s=%q: want \"os\" or \"file\"", EnvBackend, v)
+	}
+}
+
+// WriteItem implements [ItemWriter].
+func (OSItems) WriteItem(service, account, value string) error {
+	if err := checkItem(service, account); err != nil {
+		return err
+	}
+	if err := keyring.Set(service, account, value); err != nil {
+		return fmt.Errorf("keyring: storing service %q, account %q failed (the keychain refused or is locked)", service, account)
+	}
+	return nil
+}
+
+// DeleteItem implements [ItemWriter]. A missing item is not an error.
+func (OSItems) DeleteItem(service, account string) error {
+	if err := checkItem(service, account); err != nil {
+		return err
+	}
+	if err := keyring.Delete(service, account); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		return fmt.Errorf("keyring: removing service %q, account %q failed", service, account)
+	}
+	return nil
+}
+
+func (f *FileItems) edit(fn func(map[string]string)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m := map[string]string{}
+	data, err := os.ReadFile(f.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("keyring: read %s: %w", f.path, err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &m); err != nil {
+			return fmt.Errorf("keyring: parse %s: not a JSON object of strings", f.path)
+		}
+	}
+	fn(m)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(f.path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(f.path, out, 0o600)
+}
+
+// WriteItem implements [ItemWriter].
+func (f *FileItems) WriteItem(service, account, value string) error {
+	if err := checkItem(service, account); err != nil {
+		return err
+	}
+	return f.edit(func(m map[string]string) { m[service+"/"+account] = value })
+}
+
+// DeleteItem implements [ItemWriter].
+func (f *FileItems) DeleteItem(service, account string) error {
+	if err := checkItem(service, account); err != nil {
+		return err
+	}
+	return f.edit(func(m map[string]string) { delete(m, service+"/"+account) })
+}
