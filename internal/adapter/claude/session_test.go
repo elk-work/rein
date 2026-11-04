@@ -434,9 +434,47 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"silent-session","
 esac
 `
 			}
-			script += "cat <<'EVENT'\n" + tc.event + "\nEVENT\nsleep 60"
-			sess := startStub(t, stubBinary(t, script), adapter.RunSpec{Timeouts: adapter.Timeouts{Idle: 300 * time.Millisecond}})
-			evs := drain(t, sess)
+			// The final event acknowledges both the calls record and all request
+			// events. Keep time frozen until it arrives so a busy machine cannot
+			// spend the idle budget before the child has even been scheduled.
+			script += "cat <<'EVENT'\n" + tc.event + `
+{"type":"system","subtype":"test-ready"}
+EVENT
+sleep 60`
+			if tc.name == "second silence stops" {
+				// Simulate delayed scheduling on both invocations, beyond the
+				// old wall-clock idle budget, to regress the missing calls file.
+				script = "sleep 1\n" + script
+			}
+			clock := &sleepClock{wall: time.Now(), awake: time.Hour}
+			a := &Adapter{Binary: stubBinary(t, script), DisableWatchdog: true, clock: clock}
+			const idle = 300 * time.Millisecond
+			sess, startErr := a.Start(context.Background(), adapter.RunSpec{
+				WorktreeDir: dir, Prompt: "do the thing", PermissionMode: adapter.PermissionFull,
+				Timeouts: adapter.Timeouts{Idle: idle},
+			})
+			if startErr != nil {
+				t.Fatalf("Start: %v", startErr)
+			}
+			t.Cleanup(func() { _ = sess.Interrupt(context.Background()) })
+			var evs []adapter.Event
+			deadline := time.NewTimer(30 * time.Second)
+			defer deadline.Stop()
+		drainEvents:
+			for {
+				select {
+				case ev, ok := <-sess.Events():
+					if !ok {
+						break drainEvents
+					}
+					evs = append(evs, ev)
+					if ev.Text == "claude system/test-ready" {
+						clock.run(idle + time.Millisecond)
+					}
+				case <-deadline.C:
+					t.Fatal("the fake CLI did not finish the idle-recovery sequence")
+				}
+			}
 			res, err := sess.Wait()
 			if tc.finish {
 				if err != nil || res.Status != adapter.StatusSucceeded || res.Summary != "recovered" {
