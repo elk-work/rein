@@ -253,15 +253,17 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		// the system variables, only what it names (env.go).
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
 	}
-	// The run connector's bearer token reaches the agent process by name, the
-	// way every MCP server's key does: Claude Code expands it into the header
-	// itself, so no file or argument holds it. Hosted mode's environment
-	// already carries it under the same name.
-	if qr.mcp.connector && !cycle && !qr.r.opts.Hosted && qr.elkToken != "" {
-		if spec.Env == nil {
-			spec.Env = map[string]string{}
+	// The run connector: a loopback proxy that holds the queue's token for
+	// this run and refuses Rein's own tools (elkproxy.go, ark:rein#112). The
+	// session gets only its address.
+	if qr.mcp.connector && !cycle {
+		proxy, err := qr.startRunConnector(&spec)
+		if err != nil {
+			qr.log.Runner(runlog.KindNote, "the Elk connector for this run could not start; nothing started")
+			return qr.stuck(ctx, wo, "Rein could not start this run's Elk connector", err.Error()+
+				"\n\nNo work was started and no worktree was created.")
 		}
-		spec.Env[adapter.RunConnectorTokenEnv] = qr.elkToken
+		defer proxy.Close()
 	}
 	// The capture gate first, then Chrome, so `chrome` stays at the front of
 	// PATH and the gate stays ahead of /usr/sbin/screencapture.

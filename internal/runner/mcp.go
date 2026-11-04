@@ -45,6 +45,9 @@ type mcpAllowList struct {
 	// denied is RunSpec.DeniedTools for a run that gets the run connector:
 	// Rein's own Elk tools, in the adapter's naming.
 	denied []string
+
+	// conf builds the run connector's server for each run's proxy address.
+	conf adapter.MCPConfigurer
 }
 
 // runConnectorUnavailable says why an adapter cannot be handed the Elk run
@@ -67,15 +70,16 @@ func runConnectorUnavailable(a adapter.Adapter) string {
 }
 
 // addRunConnector gives every run on the queue the Elk run connector
-// (ark:rein#112): the MCP server elk at the configured Elk endpoint, whose
-// bearer token is the queue's own run-scoped token. The run loop puts the
-// token in the session's environment under adapter.RunConnectorTokenEnv, so
-// no file and no argument ever holds it.
+// (ark:rein#112): an MCP server named elk that reaches Elk as this queue. The
+// session is given a loopback address of a proxy the run loop starts for each
+// run (elkproxy.go), never the queue's token: the proxy holds the token and
+// refuses Rein's own tools whatever the session does. What is resolved here,
+// once per queue, is that the adapter can take such a server; the server's
+// address is filled in per run ([queueRunner.startRunConnector]).
 //
 // It is the queue's credential, never a person's: bound to one workspace and
 // one executor, tier run-scoped, which is what ark:rein#21 requires of
-// anything a run holds. And it is the credential Rein itself claims and
-// reports with, which is why Rein's own tools on it are denied to the session.
+// anything a run reaches Elk with.
 func (l *mcpAllowList) addRunConnector(endpoint string, a adapter.Adapter) {
 	if endpoint == "" {
 		return
@@ -84,10 +88,10 @@ func (l *mcpAllowList) addRunConnector(endpoint string, a adapter.Adapter) {
 		l.skipped = append(l.skipped, adapter.RunConnectorName+" (Rein's Elk connector on this queue's token): "+why)
 		return
 	}
-	spec := adapter.MCPServerSpec{
-		Name: adapter.RunConnectorName, URL: endpoint, BearerTokenEnvVar: adapter.RunConnectorTokenEnv,
-	}
-	v, err := a.(adapter.MCPConfigurer).MCPServerConfig(spec)
+	conf := a.(adapter.MCPConfigurer)
+	// A placeholder address proves the adapter takes a plain URL server; each
+	// run replaces it with its own proxy's.
+	v, err := conf.MCPServerConfig(adapter.MCPServerSpec{Name: adapter.RunConnectorName, URL: "http://127.0.0.1:1/run-connector"})
 	if err != nil {
 		l.skipped = append(l.skipped, adapter.RunConnectorName+" (Rein's Elk connector on this queue's token): "+err.Error())
 		return
@@ -102,10 +106,30 @@ func (l *mcpAllowList) addRunConnector(endpoint string, a adapter.Adapter) {
 		l.servers = map[string]any{}
 	}
 	l.servers[adapter.RunConnectorName] = v
-	l.declared = append(l.declared, spec.Capability())
+	l.declared = append(l.declared, "mcp:"+adapter.RunConnectorName)
 	sort.Strings(l.declared)
 	l.connector = true
+	l.conf = conf
 	l.denied = denied
+}
+
+// startRunConnector starts this run's Elk proxy and points spec's elk server
+// at it. The caller closes the proxy when the run ends.
+func (qr *queueRunner) startRunConnector(spec *adapter.RunSpec) (*elkProxy, error) {
+	p, err := startElkProxy(qr.r.opts.Config.Elk.MCPURL, qr.elkToken, adapter.RunConnectorDeniedTools)
+	if err != nil {
+		return nil, err
+	}
+	v, err := qr.mcp.conf.MCPServerConfig(adapter.MCPServerSpec{Name: adapter.RunConnectorName, URL: p.URL()})
+	if err != nil {
+		p.Close()
+		return nil, err
+	}
+	if spec.MCPServers == nil {
+		spec.MCPServers = map[string]any{}
+	}
+	spec.MCPServers[adapter.RunConnectorName] = v
+	return p, nil
 }
 
 // resolveMCP builds a queue's allow-list. A server is left out, and said so,
@@ -216,9 +240,8 @@ func (qr *queueRunner) withOwnToken(values map[string]string) map[string]string 
 	for k, v := range values {
 		out[k] = v
 	}
-	if _, taken := out[adapter.RunConnectorTokenEnv]; !taken {
-		out[adapter.RunConnectorTokenEnv] = qr.elkToken
-	}
+	// Its own key, so a caller's map can never displace it.
+	out["rein queue token"] = qr.elkToken
 	return out
 }
 

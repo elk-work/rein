@@ -33,14 +33,18 @@ func assertRunConnector(t *testing.T, h *harness, s adapter.RunSpec) {
 	if !ok {
 		t.Fatalf("the run has no %q MCP server: %#v", adapter.RunConnectorName, s.MCPServers)
 	}
-	if srv["url"] != h.elk.URL {
-		t.Errorf("the run connector points at %v, want the configured Elk endpoint %s", srv["url"], h.elk.URL)
+	// The session gets a loopback proxy's address, never the token: the
+	// proxy holds it (elkproxy.go).
+	if u, _ := srv["url"].(string); !strings.HasPrefix(u, "http://127.0.0.1:") || strings.Contains(u, token) {
+		t.Errorf("the run connector's address = %q, want this run's loopback proxy", u)
 	}
 	if s.WranglerConnectorAccount != "" {
 		t.Errorf("an ordinary run was handed the owner's connector %q", s.WranglerConnectorAccount)
 	}
-	if got := s.Env[adapter.RunConnectorTokenEnv]; got != token {
-		t.Errorf("%s = %q, want the queue's own token", adapter.RunConnectorTokenEnv, got)
+	for k, v := range s.Env {
+		if v == token {
+			t.Errorf("the queue's token reached the session's environment as %s", k)
+		}
 	}
 	for _, tool := range adapter.RunConnectorDeniedTools {
 		if !has(s.DeniedTools, "mcp__elk__"+tool) {
@@ -86,7 +90,7 @@ func TestAnAdapterThatCannotDenyToolsGetsNoElkConnector(t *testing.T) {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}
 	s := h.agent.Specs()[0]
-	if s.MCPServers != nil || s.Env[adapter.RunConnectorTokenEnv] != "" || len(s.DeniedTools) != 0 {
+	if s.MCPServers != nil || len(s.DeniedTools) != 0 {
 		t.Errorf("a run on an adapter that cannot deny tools got the connector: servers %#v, denied %v",
 			s.MCPServers, s.DeniedTools)
 	}
@@ -130,9 +134,6 @@ func TestOnAWranglerQueueABuildRunGetsTheRunConnectorAndACycleTheOwners(t *testi
 			}
 			if len(cycle.DeniedTools) != 0 {
 				t.Errorf("the cycle's tools were narrowed: %v", cycle.DeniedTools)
-			}
-			if _, ok := cycle.Env[adapter.RunConnectorTokenEnv]; ok {
-				t.Error("the cycle was handed the queue's token besides the owner's connector")
 			}
 			if strings.Contains(cycle.SystemPrompt, "the MCP server `elk`, acting as this queue's agent") {
 				t.Error("the cycle was told its connector is the queue's")

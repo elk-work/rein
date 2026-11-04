@@ -123,17 +123,16 @@ connector whose URL happened to be invalid. The dangerous half was never the
 error — it was the run that worked.
 
 Since `ark:rein#112` an ordinary run does reach Elk, but as its **queue**, not as
-a person: the run loop adds `elk` to `RunSpec.MCPServers` as
-`{"type":"http","url":<mcp_url>,"headers":{"Authorization":"Bearer ${REIN_ELK_TOKEN}"}}`
-and the queue's run-scoped token to `RunSpec.Env`, so the token is in the child's
-environment and nowhere on disk or in argv. It also passes
-`--disallowedTools mcp__elk__claim_run mcp__elk__submit_deliverable …` for Rein's
-own tools. Verified on 2.1.318 against a local MCP server
-(`TestIntegrationRunConnectorOffersElkWithoutReinsOwnTools`): the server
-connects with the token, `list_actions` and `create_action` are offered, and
-`submit_deliverable`, `claim_run` and `rotate_own_token` are not in the
-session's tool list. Without the deny list they are, which is the half of the
-incident above that the credential's identity does not close.
+a person, and without ever holding the queue's token: the run loop adds `elk` to
+`RunSpec.MCPServers` as `{"type":"http","url":"http://127.0.0.1:<port>/<run secret>"}`,
+the address of a per-run proxy that holds the token and refuses Rein's own tools
+(`internal/runner/elkproxy.go`). It also passes
+`--disallowedTools mcp__elk__claim_run mcp__elk__submit_deliverable …` so the
+session is never offered them. Verified on 2.1.318 by
+`TestIntegrationRunConnectorThroughTheProxy` (`internal/runner`, integration
+tag): the server connects, Elk sees the queue's token on every call,
+`list_actions` and `create_action` are offered, and `submit_deliverable`,
+`claim_run` and `rotate_own_token` are not.
 
 `--setting-sources` covers what `--strict-mcp-config` does not. The default
 keeps **`project`**, the settings checked into the repository being worked on,

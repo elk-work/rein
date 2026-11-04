@@ -327,12 +327,15 @@ runs get.
 
 ### The Elk run connector
 
-Every run whose adapter can take it also gets `elk` (`ark:rein#112`): the
-configured Elk endpoint with bearer token `${REIN_ELK_TOKEN}`, which the run
-loop sets in `RunSpec.Env` to the queue's own run-scoped token. Because that is
-the token Rein claims and reports with, the run loop also puts Rein's own Elk
-tools (`RunConnectorDeniedTools` in `internal/adapter/mcp.go`) in
-`RunSpec.DeniedTools`, in the adapter's naming:
+Every run whose adapter can take it also gets `elk` (`ark:rein#112`): a plain
+URL server at a loopback proxy the run loop starts for the run
+(`internal/runner/elkproxy.go`). The proxy holds the queue's run-scoped token,
+adds it on the way to Elk, refuses a `tools/call` naming one of
+`RunConnectorDeniedTools` (`internal/adapter/mcp.go`) and drops those tools from
+`tools/list`, so the session never holds the token Rein claims and reports with
+and cannot use it for Rein's own tools by any route. The run loop also puts those
+tools in `RunSpec.DeniedTools`, in the adapter's naming, so the agent is never
+offered a call that will be refused:
 
 ```go
 type MCPToolDenier interface {
@@ -340,13 +343,10 @@ type MCPToolDenier interface {
 }
 ```
 
-An adapter that does not implement it — or answers `ok = false` — gets no `elk`
-server and does not declare `mcp:elk`, because handing a session
-`submit_deliverable` and `rotate_own_token` on Rein's own token is the other half
-of `ark:rein#21`. Claude implements it (`mcp__elk__<tool>`, the form
-`--disallowedTools` takes). Codex's app-server has no verified per-tool deny
-list and Grok's ACP headers are literal, so neither gets the connector yet. A
-Wrangler cycle is unaffected: it gets its owner's connector and no deny list.
+Only an adapter that implements it gets the connector today, which is Claude
+(`mcp__elk__<tool>`, the form `--disallowedTools` takes); the proxy has not yet
+been verified against Codex's or Grok's MCP clients. A Wrangler cycle is
+unaffected: it gets its owner's connector, no proxy and no deny list.
 
 ## Errors
 

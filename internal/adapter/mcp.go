@@ -135,11 +135,12 @@ func (s MCPServerSpec) Capability() string { return "mcp:" + s.Name }
 // the run loop then does not hand the session the server at all.
 //
 // The run loop needs it for one server: the Elk connector every run gets on
-// its queue's own token ([RunConnectorName], ark:rein#112). That token is the
-// one Rein claims and reports with, so the session must not be able to submit
-// its own deliverable, claim another run or rotate the token out from under
-// Rein — the half of ark:rein#21 that the credential's identity does not
-// answer. An adapter that cannot deny a tool by name gets no Elk connector.
+// its queue's own token ([RunConnectorName], ark:rein#112). The session never
+// holds that token — a loopback proxy in the run loop does, and refuses Rein's
+// own tools — and an adapter that can also deny them by name keeps them out of
+// the session's tool list, so the agent is never offered a call that will be
+// refused. Only such an adapter gets the connector today: the proxy has been
+// verified against Claude Code alone.
 type MCPToolDenier interface {
 	MCPToolName(server, tool string) (name string, ok bool)
 }
@@ -150,19 +151,18 @@ type MCPToolDenier interface {
 // other, never both.
 const RunConnectorName = "elk"
 
-// RunConnectorTokenEnv names the environment variable the run connector's
-// bearer token reaches the agent process in: the queue's own run-scoped token.
-// Hosted mode already supplies the same token under this name (internal/hosted).
-const RunConnectorTokenEnv = "REIN_ELK_TOKEN"
-
 // RunConnectorDeniedTools are the Elk tools a session must never call through
-// the run connector. They are Rein's own: claiming, reporting, submitting and
-// heartbeating are what Rein does for the run, and a second reporter is the
-// ark:rein#21 incident (grok posted its own deliverable before Rein did).
-// rotate_own_token and connect_executor would replace the very token Rein is
-// using. The wrangler_* tools answer only to the Wrangler executor, which a
-// Wrangler queue's token is, so an ordinary run on that queue must not reach
-// them; a Wrangler cycle uses the owner's connector and is not affected.
+// the run connector. The run loop's proxy refuses them whatever the session
+// does, and an adapter that can also hides them from the session. Most are
+// Rein's own: claiming, reporting, submitting and heartbeating are what Rein
+// does for the run, and a second reporter is the ark:rein#21 incident (grok
+// posted its own deliverable before Rein did). rotate_own_token and
+// connect_executor would replace the very token Rein is using. The wrangler_*
+// tools answer only to the Wrangler executor, which a Wrangler queue's token
+// is, so an ordinary run on that queue must not reach them; a Wrangler cycle
+// uses the owner's connector and is not affected. deploy_app ships to
+// production and set_tap_sharing reaches other workspaces, which an ordinary
+// run is told never to do.
 var RunConnectorDeniedTools = []string{
 	"claim_run",
 	"submit_deliverable",
@@ -177,4 +177,6 @@ var RunConnectorDeniedTools = []string{
 	"wrangler_write_ledger",
 	"wrangler_list_owed",
 	"wrangler_register_migration_header",
+	"deploy_app",
+	"set_tap_sharing",
 }
