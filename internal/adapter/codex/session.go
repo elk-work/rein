@@ -57,6 +57,7 @@ type session struct {
 	finalText      string
 	lastText       string
 	pending        map[string]pendingApproval
+	questions      []*pendingQuestions
 	interrupted    bool
 	result         adapter.Result
 	err            error
@@ -602,11 +603,11 @@ func (s *session) onRequest(id json.RawMessage, method string, params json.RawMe
 		s.declineRequest(id, method, codeMethodNotFound,
 			"rein: this adapter answers the v2 approval methods; see docs/adapter-codex.md")
 
-	case reqToolUserInput, reqMCPElicitation:
-		// A question about the *work*, not about authority. Rein has a place
-		// for that — EventQuestion, answered with Send — but wiring an answer
-		// back needs a per-question response shape this adapter has not
-		// verified, so v0 declines and says so rather than pretending.
+	case reqToolUserInput:
+		s.questionsRequested(id, params)
+
+	case reqMCPElicitation:
+		// MCP can require structured form fields, which Send's string cannot represent.
 		s.emit(adapter.Event{Kind: adapter.EventProgress,
 			Text: "codex asked for interactive input; rein declined it (" + method + ")", Raw: params})
 		s.declineRequest(id, method, codeRequestFailed,
@@ -698,7 +699,8 @@ func (s *session) ID() string {
 // Events implements [adapter.Session].
 func (s *session) Events() <-chan adapter.Event { return s.events }
 
-// Send implements [adapter.Session]. Mid-turn text is a steer, which is
+// Send implements [adapter.Session]. It answers pending questions in order.
+// Otherwise mid-turn text is a steer, which is
 // Codex's own word for it: the running turn takes the input into account
 // rather than a second turn being queued behind it.
 func (s *session) Send(ctx context.Context, input string) (retErr error) {
@@ -708,7 +710,26 @@ func (s *session) Send(ctx context.Context, input string) (retErr error) {
 		return adapter.ErrSessionClosed
 	default:
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
+	if len(s.questions) > 0 {
+		defer s.mu.Unlock()
+		p := s.questions[0]
+		p.answers[p.questions[p.next].ID] = userInputAnswer{Answers: []string{input}}
+		if p.next+1 == len(p.questions) {
+			if err := s.conn.reply(p.id, struct {
+				Answers map[string]userInputAnswer `json:"answers"`
+			}{p.answers}); err != nil {
+				return err
+			}
+			s.questions = s.questions[1:]
+		} else {
+			p.next++
+		}
+		return nil
+	}
 	threadID, turnID := s.threadID, s.turnID
 	s.mu.Unlock()
 	if turnID == "" {

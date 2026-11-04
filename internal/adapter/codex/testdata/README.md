@@ -52,3 +52,24 @@ scrub as above. The two things to keep true:
 A re-recording is due after a `codex` upgrade. `go test -tags integration
 ./internal/adapter/codex/` is what tells you one is due: it drives the real
 binary and fails where the recording has stopped being true.
+
+## Tool user input (2026-11-04)
+
+`user-input.jsonl` contains the unmodified request and client reply from a real
+codex-cli 0.159.0 stdio app-server session. Only this exchange is retained;
+handshake, account notifications and unrelated turn frames are omitted.
+The server completed the turn after receiving the recorded reply.
+
+To reproduce: initialize with `capabilities.experimentalApi: true`, start an
+ ephemeral, read-only thread with approval policy `never`, then start a turn
+with `collaborationMode.mode: "plan"` and settings using the model returned by
+thread/start, reasoning effort `low`, and developer instructions
+"Ask the user the two questions using request_user_input."
+
+Prompt: "Use request_user_input to ask me two questions in one call: which
+color (Blue or Green) and which size (Small or Large) for a fictional button.
+Do not decide yourself; invoke the question tool now."
+
+The client answered with the first option label for each question. The fixture
+proves both the numeric request ID and the per-question `answers` object;
+`TestRecordedUserInputAnswers` checks the events and exact reply shape.

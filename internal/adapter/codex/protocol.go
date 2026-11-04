@@ -59,7 +59,7 @@ const (
 	notifyRateLimits       = "account/rateLimits/updated"
 
 	// Server → client requests. The first three are approvals the run loop
-	// can answer; the rest this adapter declines, for the reasons in
+	// can answer; tool user input is answered with Send. The rest are declined; see
 	// docs/adapter-codex.md.
 	reqCommandApproval     = "item/commandExecution/requestApproval"
 	reqFileChangeApproval  = "item/fileChange/requestApproval"

@@ -219,6 +219,7 @@ real session starts, and fails on anything else.
 | `item/started` `dynamicToolCall` / `webSearch` | `tool_use` | |
 | `item/started` `reasoning` | `progress` | |
 | `item/completed` (others) | `progress` | exit code for a command |
+| `item/tool/requestUserInput` | `question` | one event per question, including option labels and descriptions; answered in order with `Send` |
 | `item/*/requestApproval` | `permission_request` | in `ask` / `accept_edits`; decided by the mode otherwise |
 | `thread/tokenUsage/updated` | `usage` | **an increment**, see below |
 | `thread/status/changed` `idle` | `idle` | a real signal, not a scraped spinner |
@@ -268,6 +269,10 @@ threads outlive turns, so the thread id is what `Result.SessionID` reports and
 what a later `ResumeID` takes — but the session this adapter hands back ends
 when its turn does. A follow-up is a new session against the same thread.
 
+`Send` answers the oldest pending tool question first. Each string is preserved
+as one answer, keyed by the question ID; the JSON-RPC reply is sent only after
+all questions in that request have answers. Questions and options are carried
+in event text, with the original parameters in `Raw`. With no question pending,
 `Send` during the turn is `turn/steer`, Codex's own word for it: the running
 turn takes the input into account rather than a second turn queueing behind it.
 After the turn ends, `Send` returns `ErrSessionClosed`.
@@ -280,7 +285,7 @@ request wedges the turn.
 | Request | Answer | Why |
 |---|---|---|
 | `account/chatgptAuthTokens/refresh` | error | **Rein never handles a vendor credential.** It shells out to the binary on the developer's own login and does not read, mint, refresh or replay a token (elk `docs/rein.md` §3). This request asks the client to do exactly that. |
-| `item/tool/requestUserInput`, `mcpServer/elicitation/request` | error, plus a `progress` event | These are questions about the *work*, and Rein has a place for one — `EventQuestion`, answered with `Send`, routed to Elk's `ask_elk`. Wiring the answer back needs a per-question response shape this adapter has not verified, so v0 declines and says so rather than pretending. **Open: `ark:rein#13 (01M17YXMR467FX7537AE7NM0CD)`.** |
+| `mcpServer/elicitation/request` | error, plus a `progress` event | MCP elicitation can require typed, structured form content and an accept/decline/cancel action (or a URL interaction). A single `Send` string cannot reliably fill that response; this adapter does not guess field names, types, or consent. |
 | `execCommandApproval`, `applyPatchApproval` | error | the v1 spellings, with a different decision vocabulary. 0.150.1 sends the v2 methods; answering in an unverified shape would be worse than declining. |
 | anything else | error `-32601` | |
 
