@@ -244,6 +244,10 @@ type queueTelemetry struct {
 	// what an idle queue says it runs on when its config names none (the
 	// CLI's default), so Elk's agent card can name a model between runs.
 	model string
+
+	// effort is the resolved effort passed to the most recent run, retained
+	// between runs. Empty means the CLI chose its own unknown default.
+	effort string
 }
 
 // tokens is a cumulative spend. Four plain counters: this is a running total
@@ -272,6 +276,7 @@ func (qr *queueRunner) startRun(runID string) {
 	qr.tel.runID = runID
 	qr.tel.started = time.Now()
 	qr.tel.tokens = tokens{}
+	qr.tel.effort = ""
 	qr.tel.asked = false
 	qr.tel.faulted = false
 }
@@ -365,7 +370,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		if tel.faulted {
 			state = StateFaulted
 		}
-		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault()}
+		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Effort: tel.effort}
 		putWaiting(s, tel)
 		qr.r.putRefusal(s)
 		// No session, but the subscription is still there: the last reading,
@@ -378,6 +383,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	s := &elk.SessionReading{
 		State:     string(StateRunning),
 		RunID:     tel.runID,
+		Effort:    tel.effort,
 		StartedAt: elk.RFC3339(tel.started),
 		Land:      qr.q.LandOrDefault(),
 	}

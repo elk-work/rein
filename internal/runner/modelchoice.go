@@ -107,6 +107,16 @@ func (qr *queueRunner) modelChoice() ModelChoice {
 	return ResolveModel(qr.q, qr.elkModel.model, qr.elkModel.effort)
 }
 
+// runModelChoice captures the same effort that drive passes to the adapter.
+// Later heartbeat choices apply to the next run, not this session's telemetry.
+func (qr *queueRunner) runModelChoice() ModelChoice {
+	qr.telMu.Lock()
+	defer qr.telMu.Unlock()
+	c := ResolveModel(qr.q, qr.elkModel.model, qr.elkModel.effort)
+	qr.tel.effort = c.Effort
+	return c
+}
+
 // logModelChoice writes the effective choice to the log — always at start-up,
 // and afterwards only when it changed. It keeps its own record of what it
 // last said rather than leaning on the heartbeat reply's dedupe: Elk's text

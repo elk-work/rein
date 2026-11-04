@@ -525,3 +525,59 @@ func TestSessionReadingNamesTheModelBetweenRuns(t *testing.T) {
 		t.Errorf("model = %q, want the configured one", got)
 	}
 }
+
+// Effort comes from the choice handed to the adapter, not a later heartbeat.
+func TestSessionEffortUsesRunChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name, elkEffort, configEffort, want string
+	}{
+		{"Elk overrides config", "high", "medium", "high"},
+		{"config fallback", "", "medium", "medium"},
+		{"CLI default", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qr := testQueueRunner(testRunner(fullMachine()))
+			qr.q.Effort = tc.configEffort
+			qr.elkModel.effort = tc.elkEffort
+			qr.startRun("arun-effort")
+			choice := qr.runModelChoice()
+			if choice.Effort != tc.want {
+				t.Fatalf("adapter effort = %q, want %q", choice.Effort, tc.want)
+			}
+			// A new heartbeat must not rewrite the running session's effort.
+			qr.elkModel.effort = "low"
+			check := func() {
+				t.Helper()
+				s := qr.sessionReading()
+				if s.Effort != tc.want {
+					t.Fatalf("session effort = %q, want %q", s.Effort, tc.want)
+				}
+				b, err := json.Marshal(s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var wire map[string]any
+				if err := json.Unmarshal(b, &wire); err != nil {
+					t.Fatal(err)
+				}
+				if tc.want == "" {
+					if _, present := wire["effort"]; present {
+						t.Fatal("unknown CLI default must be omitted")
+					}
+				} else if wire["effort"] != tc.want {
+					t.Fatalf("wire effort = %v, want %q", wire["effort"], tc.want)
+				}
+			}
+			check()
+			qr.endRun(runlog.StatusSubmitted)
+			check()
+			// A subsequent run using the CLI default clears the old effort.
+			qr.q.Effort, qr.elkModel.effort = "", ""
+			qr.startRun("arun-default")
+			qr.runModelChoice()
+			if got := qr.sessionReading().Effort; got != "" {
+				t.Fatalf("next run retained effort %q", got)
+			}
+		})
+	}
+}
