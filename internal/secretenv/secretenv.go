@@ -100,6 +100,14 @@ var metered = []string{
 	"OPENAI_API_KEY",
 	"CODEX_API_KEY",
 	"XAI_API_KEY",
+	// Google's Gemini API keys, which Google's own tools read: Gemini CLI and
+	// the google-genai SDK take either, Antigravity CLI takes the first. The
+	// gemini adapter runs on the person's own key by Casey's ruling of
+	// 2026-11-04, and is the one place one is ever handed to a process: it
+	// reads it from the keychain itself and sets it on its own child
+	// ([adapter.RunSpec.ProviderKey]), never through Env or inheritance.
+	"GEMINI_API_KEY",
+	"GOOGLE_API_KEY",
 	"CLAUDE_CODE_USE_BEDROCK",
 	"CLAUDE_CODE_USE_VERTEX",
 	"CLAUDE_CODE_USE_FOUNDRY",

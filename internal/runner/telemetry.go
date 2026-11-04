@@ -641,7 +641,8 @@ func agentSetupFailure(err error) string {
 		return setupMissing
 	}
 	text := strings.ToLower(err.Error())
-	if strings.Contains(text, "login") || strings.Contains(text, "auth") || errors.Is(err, adapter.ErrNotPlanAuth) {
+	if strings.Contains(text, "login") || strings.Contains(text, "auth") || errors.Is(err, adapter.ErrNotPlanAuth) ||
+		errors.Is(err, adapter.ErrNoProviderKey) {
 		return setupLogin
 	}
 	return setupNotReady

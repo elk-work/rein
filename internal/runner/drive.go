@@ -14,6 +14,7 @@ import (
 
 	"github.com/elk-work/rein/internal/adapter"
 	checkadapter "github.com/elk-work/rein/internal/adapter/check"
+	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/hosted"
@@ -219,6 +220,27 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 
 	qr.setPreflightState("ready")
 
+	// The person's own Google key, for a gemini queue and no other (Casey's
+	// ruling, 2026-11-04; gemini.go). Read fresh for each run, before the
+	// worktree, and put in every redactor below before the agent can say
+	// anything. It travels in ProviderKey, never Env, so no other adapter and
+	// no task process can be handed it.
+	var providerKey map[string]string
+	if qr.q.AgentKind == geminiadapter.Kind && !qr.r.opts.Hosted {
+		key, err := qr.resolveGeminiKey()
+		if err != nil {
+			qr.setPreflightState(agentSetupFailure(err))
+			code := "other"
+			if errors.Is(err, adapter.ErrNoProviderKey) {
+				code = "agent_login"
+			}
+			return qr.stuckCode(ctx, wo, truncate(firstLine(err.Error()), 200), err.Error()+
+				"\n\nNothing was started and no worktree was created.", code)
+		}
+		spec.ProviderKey = key
+		providerKey = map[string]string{geminiadapter.KeyName: key}
+	}
+
 	// A scoped queue's secrets, read fresh for this run so a rotated item
 	// takes effect without a restart, and before the worktree so a missing
 	// one leaves nothing behind (secrets.go, ark:rein#48).
@@ -250,11 +272,26 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		for k, v := range fetchSecrets {
 			combined[k] = v
 		}
+		for k, v := range providerKey {
+			combined[k] = v
+		}
 		qr.applySecrets(qr.withOwnToken(combined))
 	} else {
 		// Every run is scoped; a queue without a secrets map keeps, beyond
 		// the system variables, only what it names (env.go).
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
+		if len(providerKey) > 0 {
+			values := map[string]string{}
+			for k, v := range fetchSecrets {
+				values[k] = v
+			}
+			for k, v := range providerKey {
+				values[k] = v
+			}
+			red := secretenv.NewRedactor(qr.withOwnToken(values))
+			qr.redact.Store(red)
+			qr.log.SetRedactor(red)
+		}
 	}
 	// The run connector: a loopback proxy that holds the queue's token for
 	// this run and refuses Rein's own tools (elkproxy.go, ark:rein#112). The
@@ -1449,6 +1486,8 @@ func (qr *queueRunner) provider(model string) string {
 		return "openai"
 	case strings.Contains(m, "grok"):
 		return "xai"
+	case strings.Contains(m, "gemini"):
+		return "google"
 	}
 	switch qr.q.AgentKind {
 	case "claude":
@@ -1457,6 +1496,8 @@ func (qr *queueRunner) provider(model string) string {
 		return "openai"
 	case "grok":
 		return "xai"
+	case geminiadapter.Kind:
+		return "google"
 	}
 	return "other"
 }

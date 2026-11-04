@@ -162,7 +162,7 @@ func AnyArch(goos string) Platform { return Platform{OS: goos} }
 // **fail-closed** matching — only "yes" satisfies, so "partial" and "no" and
 // "not declared at all" are all equally a refusal.
 type Manifest struct {
-	// Kind is the agent kind this adapter drives — "claude", "codex", "grok".
+	// Kind is the agent kind this adapter drives — "claude", "codex", "grok", "gemini".
 	// It is the registry key and the value of `agent_kind` in config.toml.
 	Kind string `json:"kind"`
 

@@ -365,7 +365,7 @@ type Queue struct {
 	Name string `toml:"name"`
 
 	// AgentKind is the coding agent driven for this queue: the key an adapter
-	// registers under, e.g. "claude", "codex", "grok".
+	// registers under, e.g. "claude", "codex", "grok", "gemini".
 	AgentKind string `toml:"agent_kind"`
 
 	// Workspace overrides Config.Workspace for this queue. Empty means inherit.
