@@ -174,8 +174,8 @@ func TestSetupFitsALongComputerNameToElksCap(t *testing.T) {
 	if p.started["machine_name"] != "DESKTOP-4F7K2LQ" {
 		t.Errorf("the Allow screen should get the full name; start sent %v", p.started["machine_name"])
 	}
-	if got := s.CallsTo("connect_executor")[0].Args["display_name"]; got != "DESKTOP-4F7K" {
-		t.Errorf("display_name = %v, want the computer's name cut to 12 characters", got)
+	if got := s.CallsTo("connect_executor")[0].Args["display_name"]; got != "DESKTO…7K2LQ" {
+		t.Errorf("display_name = %v, want both ends of the computer's name within 12 runes", got)
 	}
 }
 

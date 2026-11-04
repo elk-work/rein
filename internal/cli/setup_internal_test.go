@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"strings"
+	"unicode/utf8"
 
 	"errors"
 	"github.com/spf13/cobra"
@@ -80,16 +81,31 @@ func TestConfirmJoinAsksAPersonAndCancelsOnNo(t *testing.T) {
 }
 
 func TestWorkerDisplayNameFitsElksCap(t *testing.T) {
-	for in, want := range map[string]string{
-		"MacBook Air":         "MacBook Air",
-		"DESKTOP-4F7K2LQ":     "DESKTOP-4F7K",
-		"Caseys-MacBook-Pro":  "Caseys-MacBo",
-		"abcdefghijk-xyz":     "abcdefghijk",
-		"  ":                  "Computer",
-		"Café-Ordinateur-Été": "Café-Ordinat",
+	for _, tt := range []struct{ in, want string }{
+		{"MacBook Air", "MacBook Air"},
+		{"DESKTOP-4F7K2LQ", "DESKTO…7K2LQ"},
+		{"DESKTOP-4F7K9AB", "DESKTO…7K9AB"},
+		{"Caseys-MacBook-Pro", "Caseys…k-Pro"},
+		{"Caseys-MacBook-Air", "Caseys…k-Air"},
+		{"abcdefghijkl", "abcdefghijkl"},
+		{"abcdefghijk-", "abcdefghijk-"},
+		{"abcdefghijk-xyz", "abcdef…k-xyz"},
+		{"", "Computer"},
+		{"  ", "Computer"},
+		{"Café-Ordinateur-Été", "Café-O…r-Été"},
+		{"日本語のパソコン", "日本語のパソコン"},
+		{"一二三四五六七八九十甲乙", "一二三四五六七八九十甲乙"},
+		{"一二三四五六七八九十甲乙丙", "一二三四五六…九十甲乙丙"},
+		{"😀😁😂😃😄😅😆😉😊😋😎😍😘", "😀😁😂😃😄😅…😊😋😎😍😘"},
 	} {
-		if got := workerDisplayName(in); got != want {
-			t.Errorf("workerDisplayName(%q) = %q, want %q", in, got, want)
-		}
+		t.Run(tt.in, func(t *testing.T) {
+			got := workerDisplayName(tt.in)
+			if got != tt.want {
+				t.Errorf("workerDisplayName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if !utf8.ValidString(got) || utf8.RuneCountInString(got) > 12 {
+				t.Errorf("invalid or over-cap worker name: %q", got)
+			}
+		})
 	}
 }

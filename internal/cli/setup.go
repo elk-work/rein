@@ -368,19 +368,20 @@ func machineName() string {
 	return h
 }
 
-// workerDisplayName is the name Elk lists this worker under: the computer's
-// name cut to Elk's cap (elk.QueueNameMaxRunes). Typical names are longer —
-// "DESKTOP-4F7K2LQ", "Caseys-MacBook-Pro" — and Elk refuses, rather than
-// shortens, an over-long one.
+// workerDisplayName keeps both ends of long computer names so their distinctive
+// suffixes remain visible within Elk's rune cap. Blank names use a fallback.
 func workerDisplayName(machine string) string {
-	r := []rune(strings.TrimSpace(machine))
-	if len(r) > elk.QueueNameMaxRunes {
-		r = r[:elk.QueueNameMaxRunes]
+	if strings.TrimSpace(machine) == "" {
+		return "Computer"
 	}
-	if s := strings.TrimRight(string(r), " -_."); s != "" {
-		return s
+	r := []rune(machine)
+	if len(r) <= elk.QueueNameMaxRunes {
+		return machine
 	}
-	return "Computer"
+	// Reserve one rune for the ellipsis, favouring the prefix for an odd split.
+	tail := (elk.QueueNameMaxRunes - 1) / 2
+	head := elk.QueueNameMaxRunes - 1 - tail
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
 }
 
 func newPairSecret() (string, error) {
