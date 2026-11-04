@@ -176,8 +176,9 @@ Three consequences worth expecting:
 
 - **The model default changes.** Without the developer's `config.toml`, an
   empty `RunSpec.Model` gets Codex's own built-in default rather than his pin.
-  That is the intent — the queue's `model` and `effort` in Rein's config.toml
-  decide, passed as the thread's and turn's `model` and the turn's `effort` —
+  That is the intent — the queue's `model` and `effort` decide (one set for
+  the queue in Elk, else Rein's config.toml; README, "Model and effort, per
+  queue"), passed as the thread's and turn's `model` and the turn's `effort` —
   but it is a visible difference for a queue that sets neither.
 - **Plan login only.** Right after `initialized`, before any thread, the
   adapter calls `account/read` and stops the session unless `account.type` is

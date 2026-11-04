@@ -418,15 +418,16 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	return s
 }
 
-// putModel names the model when no live session did: the queue's configured
-// one, else the last a session reported. Left out only when Rein has never
-// known it (a CLI default, before the first run).
+// putModel names the model when no live session did: the one the next run
+// will use (Elk's, else config.toml's — modelchoice.go), else the last a
+// session reported. Left out only when Rein has never known it (a CLI
+// default, before the first run).
 func (qr *queueRunner) putModel(s *elk.SessionReading, tel queueTelemetry) {
 	if s.Model != "" {
 		return
 	}
-	if qr.q.Model != "" {
-		s.Model = qr.q.Model
+	if m := qr.modelChoice().Model; m != "" {
+		s.Model = m
 		return
 	}
 	s.Model = tel.model

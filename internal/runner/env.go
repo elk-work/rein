@@ -56,11 +56,3 @@ func (qr *queueRunner) passEnv(withMCP bool) []string {
 	sort.Strings(out)
 	return out
 }
-
-// orCLIDefault names an unset model or effort for the startup log.
-func orCLIDefault(v string) string {
-	if v == "" {
-		return "(CLI default)"
-	}
-	return v
-}

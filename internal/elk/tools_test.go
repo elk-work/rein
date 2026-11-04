@@ -426,6 +426,95 @@ func TestHeartbeatCarriesTheElkAppsSettings(t *testing.T) {
 	}
 }
 
+// TestHeartbeatCarriesTheModelAndEffortSetInElk covers the structured reply
+// Elk sends once a person can set a queue's model and effort (ark:rein#106):
+// present, null, absent, malformed, and an Elk that sends no structured
+// content at all.
+func TestHeartbeatCarriesTheModelAndEffortSetInElk(t *testing.T) {
+	const text = `Heartbeat recorded for queue "mac-claude". You are online for the next 15 minutes. 2 runs waiting.`
+	str := func(p *string) string {
+		if p == nil {
+			return "<nil>"
+		}
+		return *p
+	}
+	for _, tc := range []struct {
+		name          string
+		structured    map[string]any
+		model, effort string
+		queue         string
+		waiting       int
+		unreadable    string
+		settingsLand  string
+	}{
+		{
+			name:       "present",
+			structured: map[string]any{"queue": "mac-claude", "waiting": 2, "model": "claude-opus-5-5", "effort": "high"},
+			model:      "claude-opus-5-5", effort: "high", queue: "mac-claude", waiting: 2,
+		},
+		{
+			name:       "null means Elk sets nothing",
+			structured: map[string]any{"queue": "mac-claude", "waiting": 2, "model": nil, "effort": nil},
+			model:      "<nil>", effort: "<nil>", queue: "mac-claude", waiting: 2,
+		},
+		{
+			name:       "absent means Elk sets nothing",
+			structured: map[string]any{"queue": "mac-claude", "waiting": 2},
+			model:      "<nil>", effort: "<nil>", queue: "mac-claude", waiting: 2,
+		},
+		{
+			name:       "an empty string is nothing, and space is trimmed",
+			structured: map[string]any{"model": "", "effort": "  max "},
+			model:      "<nil>", effort: "max", queue: "mac-claude", waiting: 2,
+		},
+		{
+			name: "one malformed field costs only itself",
+			structured: map[string]any{"queue": "mac-claude", "waiting": 2, "model": 5, "effort": "low",
+				"settings": map[string]any{"land": "pr"}},
+			model: "<nil>", effort: "low", queue: "mac-claude", waiting: 2,
+			unreadable: "model: 5", settingsLand: "pr",
+		},
+		{
+			name:       "structured queue and waiting win over the text",
+			structured: map[string]any{"queue": "mac-other", "waiting": 0},
+			model:      "<nil>", effort: "<nil>", queue: "mac-other", waiting: 0,
+		},
+		{
+			name:  "an Elk that sends no structured content",
+			model: "<nil>", effort: "<nil>", queue: "mac-claude", waiting: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := elktest.New(t, testToken)
+			s.Reply("heartbeat_executor", elktest.Reply{Text: text, Structured: tc.structured})
+			c := newClient(t, s)
+			hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Workspace: "Elk Scout", Queue: "mac-claude"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := str(hb.Model); got != tc.model {
+				t.Errorf("model = %s, want %s", got, tc.model)
+			}
+			if got := str(hb.Effort); got != tc.effort {
+				t.Errorf("effort = %s, want %s", got, tc.effort)
+			}
+			if hb.Queue != tc.queue || hb.Waiting != tc.waiting {
+				t.Errorf("queue=%q waiting=%d, want %q %d", hb.Queue, hb.Waiting, tc.queue, tc.waiting)
+			}
+			if got := strings.Join(hb.Unreadable, "; "); got != tc.unreadable {
+				t.Errorf("unreadable = %q, want %q", got, tc.unreadable)
+			}
+			land := ""
+			if hb.Settings != nil && hb.Settings.Land != nil {
+				land = *hb.Settings.Land
+			}
+			if land != tc.settingsLand {
+				t.Errorf("settings land = %q, want %q", land, tc.settingsLand)
+			}
+		})
+	}
+}
+
 // TestHeartbeatCarriesTheFleetReading checks the two halves reach the call as
 // OBJECTS, which is the first of Elk's three rules — an array or a scalar is
 // refused with a message.

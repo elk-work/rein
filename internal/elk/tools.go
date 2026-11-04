@@ -869,6 +869,21 @@ type Heartbeat struct {
 	// ark:scout#4308), from the reply's structured content. Nil from an Elk
 	// that sends none, which leaves the config exactly as it is.
 	Settings *WorkerSettings
+
+	// Model and Effort are what the queue's person set for it in Elk, from
+	// the reply's structured content (ark:rein#106). Nil means Elk set
+	// nothing — an Elk that sends no structured content, a null, a missing
+	// key or an empty string all read the same — and the queue's config.toml
+	// value applies. A value is passed on as sent, apart from surrounding
+	// space: its shape is checked by the runner, which knows the queue to
+	// name when it refuses one.
+	Model  *string
+	Effort *string
+
+	// Unreadable names each structured field Rein recognised but could not
+	// read — `model` sent as a number, say — as `name: raw JSON`. A field in
+	// it is treated as absent; it is here so the runner can say so once.
+	Unreadable []string
 }
 
 // WorkerSettings is a worker's landing policy and secret names as chosen in
@@ -925,16 +940,71 @@ func (c *Client) HeartbeatExecutor(ctx context.Context, req HeartbeatRequest) (*
 	if m := heartbeatWaitRE.FindStringSubmatch(res.Text); m != nil {
 		hb.Waiting, _ = strconv.Atoi(m[1])
 	}
-	if len(res.Structured) > 0 {
-		var body struct {
-			Settings *WorkerSettings `json:"settings"`
-		}
-		// A reply Rein cannot read is no settings, never a failed beat.
-		if json.Unmarshal(res.Structured, &body) == nil {
-			hb.Settings = body.Settings
+	hb.readStructured(res.Structured)
+	return hb, nil
+}
+
+// readStructured folds the reply's structured content into hb:
+//
+//	{"queue": "<name>", "waiting": <int>, "model": "<id>" | null,
+//	 "effort": "<level>" | null, "settings": {...}}
+//
+// Each field is read on its own, so one Rein cannot read costs only itself:
+// a model sent as a number must not lose the queue depth or the settings
+// beside it. Queue and waiting, when present, replace what the text said —
+// the text is the fallback for an Elk that sends no structured content. A
+// reply Rein cannot read at all is no structured content, never a failed
+// beat.
+func (hb *Heartbeat) readStructured(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return
+	}
+	if v, ok := fields["queue"]; ok {
+		var q string
+		if json.Unmarshal(v, &q) == nil && strings.TrimSpace(q) != "" {
+			hb.Queue = strings.TrimSpace(q)
 		}
 	}
-	return hb, nil
+	if v, ok := fields["waiting"]; ok && !isNull(v) {
+		var n int
+		if json.Unmarshal(v, &n) == nil && n >= 0 {
+			hb.Waiting = n
+		} else {
+			hb.Unreadable = append(hb.Unreadable, "waiting: "+string(v))
+		}
+	}
+	for _, f := range []struct {
+		name string
+		dst  **string
+	}{{"model", &hb.Model}, {"effort", &hb.Effort}} {
+		v, ok := fields[f.name]
+		if !ok || isNull(v) {
+			continue
+		}
+		var s string
+		if json.Unmarshal(v, &s) != nil {
+			hb.Unreadable = append(hb.Unreadable, f.name+": "+string(v))
+			continue
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			*f.dst = &s
+		}
+	}
+	if v, ok := fields["settings"]; ok && !isNull(v) {
+		var settings WorkerSettings
+		if json.Unmarshal(v, &settings) == nil {
+			hb.Settings = &settings
+		}
+	}
+}
+
+// isNull reports whether a JSON value is the literal null.
+func isNull(v json.RawMessage) bool {
+	return strings.TrimSpace(string(v)) == "null"
 }
 
 // ListExecutors returns Elk's own view of the queues this token can see —

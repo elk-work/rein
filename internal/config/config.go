@@ -470,6 +470,12 @@ type Queue struct {
 	// the CLI verbatim: `--model` for Claude Code and Grok, the thread's and
 	// turn's `model` for Codex. Empty keeps the CLI's own default.
 	//
+	// It is the FALLBACK. A model the queue's person sets in Elk, which
+	// arrives on every heartbeat, wins over this one for the next run; when
+	// Elk sets none (or is a version that sends none) this value is used, and
+	// when this is empty too the CLI chooses. Elk's value is never written
+	// back here.
+	//
 	//	model = "claude-opus-5-5"
 	Model string `toml:"model,omitempty"`
 
@@ -490,6 +496,9 @@ type Queue struct {
 	// only its shape, because each vendor adds levels on its own schedule;
 	// the CLI refuses a level it does not know, and the run reports why.
 	// Empty keeps the CLI's own default.
+	//
+	// Like [Queue.Model] it is the fallback: an effort set for the queue in
+	// Elk wins over it, and this value applies whenever Elk sets none.
 	Effort string `toml:"effort,omitempty"`
 }
 
@@ -499,6 +508,14 @@ var modelRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,127}$`)
 
 // effortRE is the shape of an effort level: one lower-case word.
 var effortRE = regexp.MustCompile(`^[a-z][a-z_-]{0,31}$`)
+
+// ValidModel reports whether s has the shape of a vendor model id — the same
+// check a queue's `model` in config.toml passes, applied to one set in Elk.
+func ValidModel(s string) bool { return modelRE.MatchString(s) }
+
+// ValidEffort reports whether s has the shape of an effort level — the same
+// check a queue's `effort` in config.toml passes, applied to one set in Elk.
+func ValidEffort(s string) bool { return effortRE.MatchString(s) }
 
 // meteredWhy is the reason given whenever config names a metered variable.
 const meteredWhy = "would move the agent off the developer's plan login onto metered API billing; Rein refuses it on every queue"
