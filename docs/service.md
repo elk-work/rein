@@ -520,6 +520,14 @@ sign-in token, so nothing asks for or stores your password (ark:scout#4306).
 `rein setup` does this by itself. `rein service start | stop | status |
 uninstall` act on the task when it is there.
 
+The task captures absolute paths at installation: `--config` if supplied,
+otherwise `$REIN_HOME/config.toml`, otherwise `~/.rein/config.toml`. It also
+captures the Rein home (`REIN_HOME`, otherwise `~/.rein`) and restores it for
+the runner and its restarts, so the keyring, state and work directories use
+the same home as the installing command. Reinstall the task to change these
+paths. `REIN_KEYRING` selects the keyring backend, not its home; there is no
+CLI flag for it, so the task does not capture a shell-only backend override.
+
 `--at-login` keeps one supervised runner going and starts it again after an
 upgrade or a settings change (exit 75), or a crash, the job launchd and
 systemd do elsewhere. It runs through `conhost.exe --headless`, so no console
