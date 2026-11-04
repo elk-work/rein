@@ -264,10 +264,21 @@ func TestConnectExecutorOrdinaryPath(t *testing.T) {
 }
 
 func TestConnectExecutorClaimExchangeKeepsTheTokenOutOfTheText(t *testing.T) {
+	for _, tc := range []struct{ name, url string }{
+		{"bare", "https://api.elk.work/functions/v1/elk-mcp/durable-secret-9"},
+		// The form Elk writes since scout#2774 (2026-11-04). Unmatched, it
+		// failed every `rein setup` and printed the token.
+		{"backticked", "`https://api.elk.work/functions/v1/elk-mcp/durable-secret-9`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { claimExchangeKeepsTheTokenOutOfTheText(t, tc.url) })
+	}
+}
+
+func claimExchangeKeepsTheTokenOutOfTheText(t *testing.T, url string) {
 	s := elktest.New(t, testToken)
 	s.Text("connect_executor", "Connected invited agent queue \"mac-codex\" (executor `exec-2222`). "+
 		"Replace the one-time claim URL programmatically with this durable connector URL: "+
-		"https://api.elk.work/functions/v1/elk-mcp/durable-secret-9. Do not print, log, or repeat it. "+
+		url+". Do not print, log, or repeat it. "+
 		"Do not call `connect_executor` again. Resume by calling `claim_run(queue: \"mac-codex\")`.")
 	c := newClient(t, s)
 
