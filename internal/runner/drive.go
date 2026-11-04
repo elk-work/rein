@@ -805,12 +805,15 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 		// Registered for the life of the session, so `rein attach` has
 		// something to take over. Unregistered before the outcome is decided:
 		// a session that has ended cannot be driven by anybody.
+		asks := &sessionAsk{client: qr.elk, runID: wo.RunID}
 		qr.live = &liveSession{
 			runID: wo.RunID, queue: qr.r.opts.Config.QueueLabel(qr.q), agentKind: a.Name(),
 			direction: firstLine(wo.Direction), started: time.Now(),
 			sess: sess, manifest: a.Manifest(), log: qr.log,
 			logf:      qr.logf,
 			onRelease: qr.noteHuman,
+			asks:      asks,
+			onAttach:  func() error { return asks.retract(ctx, true) },
 		}
 		qr.r.sessions.add(qr.live)
 		out := qr.watch(ctx, sess, wo, pending)
@@ -1257,6 +1260,15 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			// still waiting on the answer to a question: anything else
 			// happening means it is not.
 			qr.noteEvent(ev.Kind)
+			if live != nil && resumesQuestion(ev) {
+				if err := live.asks.retract(ctx, false); err != nil {
+					if errors.Is(err, elk.ErrCancelled) {
+						out.cancelled = true
+						return out
+					}
+					qr.logf("run %s: retracting ask: %v", wo.RunID, err)
+				}
+			}
 
 			switch ev.Kind {
 			case adapter.EventText:
@@ -1313,7 +1325,17 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			case adapter.EventQuestion:
 				// A question is about the work and goes to a person. Never
 				// throttled: it is the whole reason the run is waiting.
-				if !report(elk.ProgressQuestion, ev.Text) {
+				// Serialize publication with attach so an in-flight question
+				// cannot appear after the attachment's retraction.
+				if live != nil && live.asks != nil {
+					live.asks.mu.Lock()
+					live.asks.pending = true
+				}
+				ok := report(elk.ProgressQuestion, ev.Text)
+				if live != nil && live.asks != nil {
+					live.asks.mu.Unlock()
+				}
+				if !ok {
 					out.text = text.String()
 					return out
 				}

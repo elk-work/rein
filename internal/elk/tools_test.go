@@ -644,3 +644,35 @@ func TestSubmitDeliverableSendsStopCode(t *testing.T) {
 		}
 	}
 }
+
+func TestRetractAsk(t *testing.T) {
+	for _, tc := range []struct {
+		name, run, text             string
+		isError, wantErr, cancelled bool
+	}{
+		{name: "withdrawn", run: "run-1", text: "Retracted."},
+		{name: "already answered", run: "run-1", text: "No outstanding question."},
+		{name: "cancelled", run: "run-1", text: "Not recorded: The user cancelled this run — STOP work on it now.", wantErr: true, cancelled: true},
+		{name: "failure", run: "run-1", text: "unavailable", isError: true, wantErr: true},
+		{name: "missing run", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := elktest.New(t, testToken)
+			s.Reply("ask_elk", elktest.Reply{Text: tc.text, IsError: tc.isError})
+			err := newClient(t, s).RetractAsk(context.Background(), tc.run, "Answered in session")
+			if (err != nil) != tc.wantErr || errors.Is(err, elk.ErrCancelled) != tc.cancelled {
+				t.Fatalf("error=%v", err)
+			}
+			calls := s.CallsTo("ask_elk")
+			if tc.run == "" {
+				if len(calls) != 0 {
+					t.Fatal("sent invalid call")
+				}
+				return
+			}
+			if len(calls) != 1 || calls[0].Arg("retract") != "Answered in session" || len(calls[0].Args) != 2 {
+				t.Fatalf("calls=%+v", calls)
+			}
+		})
+	}
+}
