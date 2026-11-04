@@ -109,6 +109,9 @@ func TestPromptPutsTheSystemPromptFirst(t *testing.T) {
 }
 
 func TestStartRefuses(t *testing.T) {
+	if !New().Manifest().SupportsHost() {
+		t.Skip("the gemini adapter does not run on this platform, so Start refuses before any of these checks")
+	}
 	a := &Adapter{binary: "gemini-does-not-exist", Root: t.TempDir()}
 	cases := []struct {
 		name string
