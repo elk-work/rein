@@ -21,6 +21,10 @@ func stopCode(err error) (code, line string) {
 		return "", ""
 	case errors.Is(err, exec.ErrNotFound):
 		return "other", ""
+	case errors.Is(err, adapter.ErrNoProviderKey):
+		// The gemini adapter's missing Google key: the person's own
+		// credential, so a sign-in in all but name.
+		return "agent_login", ""
 	}
 	// agentSetupFailure's sniff, plus a bare "not logged in".
 	text := strings.ToLower(err.Error())

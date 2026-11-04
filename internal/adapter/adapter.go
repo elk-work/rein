@@ -46,7 +46,7 @@ import (
 // concurrent use: the run loop may hold a single adapter and start several
 // sessions from it.
 type Adapter interface {
-	// Name is the agent kind — "claude", "codex", "grok". It is the registry
+	// Name is the agent kind — "claude", "codex", "grok", "gemini". It is the registry
 	// key and must equal Manifest().Kind.
 	Name() string
 
@@ -210,6 +210,18 @@ type RunSpec struct {
 	// only source of credentials. A metered-billing variable is never passed
 	// whatever this says ([secretenv.Metered]).
 	PassEnv []string
+
+	// ProviderKey is the person's own model-provider key, for the one adapter
+	// that runs on one: gemini, Google's Gemini CLI on the person's own Gemini
+	// API key (Casey's ruling, 2026-11-04 — Google bills the person and
+	// Elk never sees the key; Google's terms forbid driving its agent on a
+	// personal Google sign-in, so the key is the only way). The run loop reads
+	// it from this machine's keychain for a gemini queue alone, arms the run's
+	// redactors with it, and leaves it empty for every other kind. It is never
+	// in Env, so [RunSpec.CheckPlanEnv] keeps refusing GEMINI_API_KEY there for
+	// every adapter, and the gemini adapter sets it on its own child only —
+	// never on a command line, in a log line or in a file.
+	ProviderKey string
 
 	// Timeouts bound the session. Zero values mean the adapter's default.
 	Timeouts Timeouts
@@ -513,6 +525,11 @@ var (
 	// developer's plan login. Match with [errors.Is]; the value is a
 	// [*PlanAuthError].
 	ErrNotPlanAuth = errors.New("adapter: not on the plan login")
+
+	// ErrNoProviderKey — the adapter runs on the person's own provider key
+	// and none is stored on this machine. Its message is the plain line the
+	// person reads; the run loop treats it as a missing sign-in.
+	ErrNoProviderKey = errors.New("adapter: no provider key")
 
 	// ErrSessionClosed — an operation was attempted on a session that has
 	// already ended.

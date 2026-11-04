@@ -81,6 +81,7 @@ var hostProbes = []hostProbe{
 	{name: "codex", binary: "codex"},
 	{name: "claude", binary: "claude"},
 	{name: "grok", binary: "grok"},
+	{name: "gemini", binary: "gemini"}, // Gemini CLI, the gemini adapter's program
 	// A check's container executor needs a daemon that answers, not a CLI
 	// that is installed; Docker Desktop installed and not running is the
 	// common case on a Mac. `act` is what runs a check at all

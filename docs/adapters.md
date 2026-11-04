@@ -206,11 +206,11 @@ worktree exists rather than in the middle of a run.
 Known mapping targets, from the research in elk `docs/rein.md` §3 — Lane B
 owns getting these right:
 
-| | Claude Code | Codex | Grok Build | Check (`runner`) |
-|---|---|---|---|---|
-| headless entry | `claude -p --output-format stream-json --verbose` | `codex app-server` (JSON-RPC) | `grok agent … stdio` (ACP) | `act <event> -W <workflow> -j <job> --json` |
-| permissions | `--permission-mode` + `--allowedTools` | `-s {read-only,workspace-write,danger-full-access}` — **not** `--full-auto`, which the binary rejects | ACP; `streaming-json` is read-only | none: it runs the workflow's own steps and asks nothing |
-| resume | `--resume <id>` | `codex exec resume` | `--resume` | no — a check is run again, not resumed |
+| | Claude Code | Codex | Grok Build | Gemini CLI | Check (`runner`) |
+|---|---|---|---|---|---|
+| headless entry | `claude -p --output-format stream-json --verbose` | `codex app-server` (JSON-RPC) | `grok agent … stdio` (ACP) | `gemini --prompt "" --output-format stream-json`, prompt on stdin | `act <event> -W <workflow> -j <job> --json` |
+| permissions | `--permission-mode` + `--allowedTools` | `-s {read-only,workspace-write,danger-full-access}` — **not** `--full-auto`, which the binary rejects | ACP; `streaming-json` is read-only | `--approval-mode plan` (read_only) or `yolo` (full) | none: it runs the workflow's own steps and asks nothing |
+| resume | `--resume <id>` | `codex exec resume` | `--resume` | no — each run has its own private home | no — a check is run again, not resumed |
 
 ## Events
 
@@ -324,6 +324,7 @@ runs get.
 | claude | `{"type":"http"}` | header `Bearer ${VAR}`, which Claude Code expands | `{"type":"stdio"}`, `env: {VAR: "${VAR}"}` |
 | codex | `{url}` | `bearer_token_env_var` | `{command, args, env_vars}` |
 | grok | ACP `{"type":"http"}` | refused — ACP headers are literal | refused — no stdio in `grok agent` |
+| gemini | `{"httpUrl"}` in the run's private settings | header `Bearer ${VAR}`, which Gemini CLI expands | `{command, args, env: {VAR: "${VAR}"}}` |
 
 ### The Elk run connector
 

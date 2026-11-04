@@ -9,8 +9,9 @@ binary installed as a user service (launchd, Windows service,
 `systemd --user`). It enrols the machine into an Elk workspace as one named
 queue per agent kind, claims the runs Elk dispatches to those queues, and
 drives a coding-agent session against each one in an isolated git worktree —
-Claude Code, Codex or Grok Build, shelled out as the vendor's own binary on the
-developer's own login. It watches each session through structured events,
+Claude Code, Codex, Grok Build or Gemini CLI, shelled out as the vendor's own
+binary on the developer's own login — or, for Gemini CLI alone, on the
+person's own Google key (see *Gemini on your own Google key* below). It watches each session through structured events,
 reports progress and the deliverable back to Elk, and recycles the worktree.
 
 The agents run on your machine, under your logins, against your checkouts.
@@ -300,8 +301,8 @@ proxy refuses Rein's own tools — `claim_run`, `submit_deliverable`,
 whatever the session sends, so a run cannot report for itself, claim another
 run, rotate the token out from under Rein or ship to production; Claude is also
 told not to offer them (`--disallowedTools`). The queue declares `mcp:elk`.
-Codex and Grok queues get no `elk` server until the proxy is verified against
-them; `rein run` says so at start-up. A config server named `elk` gives way to
+Codex, Grok and Gemini queues get no `elk` server until the proxy is verified
+against them; `rein run` says so at start-up. A config server named `elk` gives way to
 it on a Claude queue.
 
 **MCP servers are allow-listed per queue.** Beyond `elk`, a run sees no MCP
@@ -327,7 +328,8 @@ mcp_servers = ["posthog", "docs"]          # every run on this queue gets these,
 
 Each adapter translates a definition into its own vendor's shape — a
 `--mcp-config` entry with `${VAR}` for Claude, a `mcp_servers` table with
-`bearer_token_env_var`/`env_vars` for Codex, an ACP entry for Grok — and the
+`bearer_token_env_var`/`env_vars` for Codex, an ACP entry for Grok, a
+`mcpServers` entry with `${VAR}` in the run's private settings for Gemini — and the
 queue declares each server it can serve as **`mcp:<name>`**, so a packet
 requiring `mcp:posthog` is routed to, and passes preflight on, a queue that has
 it. A server is left out, and the startup log says why, when the adapter cannot
@@ -784,8 +786,9 @@ onto metered API billing:
   than `PATH` and `HOME`, but a `rein run` started from a shell handed every
   run that shell, API keys included.
 - **Metered keys are refused on non-hosted queues**: `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `XAI_API_KEY`, and
-  the `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY` switches. No run
+  `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `XAI_API_KEY`,
+  `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and the `CLAUDE_CODE_USE_BEDROCK` /
+  `_VERTEX` / `_FOUNDRY` switches. No run
   inherits one; config naming one in `inherit_env`, `capabilities`, a secrets
   map or an MCP server is refused at load; and every adapter refuses a spec
   carrying one. The Claude adapter also refuses a repository whose loaded
@@ -796,6 +799,24 @@ onto metered API billing:
   sign-in. Anything else — including a line that does not say — stops the
   session before its first tool call, and the run is reported `stuck` as
   *"The agent was not on the plan login, so Rein stopped it"* with the reason.
+
+**Gemini on your own Google key.** The one exception to the plan-login rule,
+by Casey's ruling of 2026-11-04: a `gemini` queue drives Google's Gemini CLI
+on the person's own Gemini API key. The key stays on the computer, Google
+bills the person, and Elk never sees it. Store it once —
+`rein secret set GEMINI_API_KEY` (the value is read from stdin), or from the
+Elk app — and every gemini run reads it from the keychain, hands it to Gemini
+CLI alone as `GEMINI_API_KEY`, and redacts it from everything Rein writes. No
+other agent, task process or queue environment can carry it: both Google key
+names stay on the refused list above. Rein never uses a Google sign-in for
+Gemini — Google's terms do not allow another program to drive its agent on
+one — and is built so it cannot: each run gets a private Gemini CLI home whose
+settings enforce the key, a repository whose own `.gemini/settings.json`
+chooses another sign-in is refused, and a session that starts a Google sign-in
+anyway is stopped. With no key stored the run is stuck with *"Add your Google
+key in Elk to use Gemini."* Install Gemini CLI with `brew install gemini-cli`
+(or `npm install -g @google/gemini-cli`). docs/adapter-gemini.md has the
+detail.
 
 **Hosted mode.**
 
@@ -848,7 +869,8 @@ works on macOS and Windows for local testing.
 verbatim: Claude Code `--model` / `--effort` (low, medium, high, xhigh, max),
 Codex the thread's and turn's `model` and the turn's `effort` (minimal, low,
 medium, high, xhigh), Grok `--model` / `--reasoning-effort` (low, medium,
-high, xhigh). Rein checks only their shape — vendors add levels on their own
+high, xhigh), Gemini CLI `--model` (it has no effort setting; a queue's effort
+is noted in the run and not applied). Rein checks only their shape — vendors add levels on their own
 schedule — so a level the CLI does not know fails the run with the CLI's own
 message. A queue that sets neither keeps the CLI's defaults; the startup log
 prints what each queue uses.
