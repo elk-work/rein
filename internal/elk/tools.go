@@ -326,7 +326,13 @@ var (
 	connectWorkspaceRE = regexp.MustCompile(`workspace "([^"]+)"`)
 	connectQueueRE     = regexp.MustCompile(`queue "([^"]+)"`)
 	connectExecutorRE  = regexp.MustCompile("executor `([^`]+)`")
-	connectorURLRE     = regexp.MustCompile(`durable connector URL: (https://\S+)`)
+	// Elk has written the URL both bare and in backticks (scout#2774, the
+	// backticks, 2026-11-04); either has to bind, or the token is lost and
+	// the reply is printed with it inside.
+	connectorURLRE = regexp.MustCompile("durable connector URL: `?(https://[^\\s`]+)")
+	// anyConnectorURLRE is the backstop: any connector URL with a token in it,
+	// wherever the reply put it, is redacted before the text can be printed.
+	anyConnectorURLRE = regexp.MustCompile("https://[^\\s`]*/elk-mcp/[^\\s`]+")
 )
 
 // ConnectExecutor binds a queue, and on the claim-code path exchanges the
@@ -399,9 +405,10 @@ func (c *Client) ConnectExecutor(ctx context.Context, req ConnectRequest) (*Conn
 		if i := strings.LastIndex(url, "/elk-mcp/"); i >= 0 {
 			out.Token = url[i+len("/elk-mcp/"):]
 		}
-		// Never hand a credential back to something that might print it.
-		out.Text = strings.Replace(out.Text, m[1], "<durable connector URL — stored in the keychain>", 1)
 	}
+	// Never hand a credential back to something that might print it, even
+	// one this parser did not recognise as the durable URL.
+	out.Text = anyConnectorURLRE.ReplaceAllString(out.Text, "<durable connector URL — stored in the keychain>")
 	if out.Queue == "" {
 		return out, fmt.Errorf("elk: connect_executor did not name a queue: %s", firstLine(res.Text))
 	}
