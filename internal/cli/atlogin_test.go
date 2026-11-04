@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/runner"
+	"github.com/elk-work/rein/internal/service"
 )
 
 func TestAtLoginRestartsAfterAnUpgradeAndStopsOnACleanExit(t *testing.T) {
@@ -42,5 +46,29 @@ func TestAtLoginStopsWhenTold(t *testing.T) {
 	}
 	if err := superviseAtLogin(ctx, &bytes.Buffer{}, nil, start); err != nil || n != 1 {
 		t.Fatalf("err=%v starts=%d", err, n)
+	}
+}
+
+// Parse the registered task's arguments through the real command tree after
+// losing the installer's environment, as happens at the next Windows sign-in.
+func TestAtLoginChildRestoresInstallingHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	args, err := service.LogonTaskArgs("", filepath.Join(home, "log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvHome, t.TempDir())
+	root := NewRootCommand("test")
+	root.SetArgs(atLoginChildArgs(args))
+	// No config was written: reaching the captured path proves argument parsing
+	// and home restoration without starting queues or opening the OS keyring.
+	err = root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "no config at "+filepath.Join(home, config.FileName)) {
+		t.Fatalf("expected missing captured config, got %v", err)
+	}
+	got, err := config.Dir() // The same home runRun passes to keyring.Open.
+	if err != nil || got != home {
+		t.Fatalf("keyring home = %q, %v; want %q", got, err, home)
 	}
 }

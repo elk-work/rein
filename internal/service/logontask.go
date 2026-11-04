@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/elk-work/rein/internal/config"
 )
 
 // LogonTaskName is the Scheduled Task Rein registers on Windows when it is
@@ -66,13 +68,31 @@ func LogonTaskXML(exe string, args []string, user string) string {
 
 // LogonTaskArgs is what the task runs: `rein run --at-login`, which keeps one
 // supervised runner alive and restarts it after an upgrade or a settings
-// change (cli/run.go), the job the service manager does elsewhere.
-func LogonTaskArgs(configPath, logDir string) []string {
-	args := []string{"run", "--at-login"}
-	if p := strings.TrimSpace(configPath); p != "" {
-		args = append(args, "--config", p)
+// change (cli/run.go), the job the service manager does elsewhere. Capture
+// absolute paths now: Task Scheduler does not inherit the installing shell
+// environment or working directory, and --config alone cannot set keyring home.
+func LogonTaskArgs(configPath, logDir string) ([]string, error) {
+	home, err := config.Dir()
+	if err != nil {
+		return nil, err
 	}
-	return append(args, "--log-file", filepath.Join(logDir, LoopLogName))
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return nil, err
+	}
+	if configPath == "" {
+		configPath = filepath.Join(home, config.FileName)
+	}
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		return nil, err
+	}
+	logDir, err = filepath.Abs(logDir)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"run", "--at-login", "--config", configPath,
+		"--at-login-home", home, "--log-file", filepath.Join(logDir, LoopLogName)}, nil
 }
 
 // InstallLogonTask registers (or replaces) the task for user.

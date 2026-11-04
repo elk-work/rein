@@ -58,6 +58,8 @@ in docs/run-loop.md.`,
 	f.String("log-file", "", "append the loop's log to this file instead of stdout")
 	f.Bool("service", false, "run under this platform's service manager (what `rein service install` sets up)")
 	f.Bool("at-login", false, "keep one runner going, restarting it after an upgrade (what Windows' sign-in task runs)")
+	f.String("at-login-home", "", "Rein home captured when the sign-in task was installed")
+	_ = f.MarkHidden("at-login-home")
 	f.Bool("supervised", false, "run under `rein run --at-login`, which restarts this process")
 	_ = f.MarkHidden("supervised")
 	f.Bool("dry-run", false, "claim nothing; report what is waiting")
@@ -69,6 +71,14 @@ in docs/run-loop.md.`,
 }
 
 func runRun(cmd *cobra.Command) error {
+	// Restore the installing command's home before resolving config, keyring,
+	// or state paths. The supervisor and every restarted child use this home.
+	if home, _ := cmd.Flags().GetString("at-login-home"); home != "" {
+		if err := os.Setenv(config.EnvHome, home); err != nil {
+			return err
+		}
+	}
+
 	if atLogin, _ := cmd.Flags().GetBool("at-login"); atLogin {
 		return superviseAtLogin(cmdContext(cmd), cmd.ErrOrStderr(), atLoginChildArgs(os.Args[1:]), startChild)
 	}

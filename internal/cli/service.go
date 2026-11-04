@@ -365,7 +365,11 @@ func installLogonTask(cmd *cobra.Command, cfg config.Config, exe string) error {
 		return err
 	}
 	configPath, _ := cmd.Flags().GetString("config")
-	if err := service.InstallLogonTask(m.Executable(), service.LogonTaskArgs(configPath, m.LogDir()), u.Username); err != nil {
+	args, err := service.LogonTaskArgs(configPath, m.LogDir())
+	if err != nil {
+		return err
+	}
+	if err := service.InstallLogonTask(m.Executable(), args, u.Username); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "installed %s as a task that starts when %s signs in (no password needed)\n", service.LogonTaskName, u.Username)
