@@ -20,6 +20,7 @@ import (
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/service"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // EnvPairURL overrides where `rein setup` asks for a pairing code. Tests point
@@ -43,6 +44,9 @@ Then Rein enrols this computer as your private worker, the same as
 working after you close this window (macOS and Linux; on Windows a task
 that starts when you sign in, which needs no password).
 
+Before joining, Rein says which workspace and which person allowed it, and
+asks you to confirm when you are at the keyboard (--yes skips the question).
+
 The code lives ten minutes and works once. Only a computer holding the secret
 Rein made for it can collect the answer, and nothing exists to collect until
 someone signed in to Elk presses Allow.`,
@@ -59,6 +63,7 @@ someone signed in to Elk presses Allow.`,
 	f.String("pair-url", "", "Elk's pairing endpoint (default: next to the MCP endpoint, or "+EnvPairURL+")")
 	f.Bool("no-service", false, "enrol only; do not install or start the service")
 	f.Duration("poll", 0, "how often to check for Allow (default: what Elk says, 3s)")
+	f.Bool("yes", false, "join without asking once someone allows the code")
 	return cmd
 }
 
@@ -71,11 +76,52 @@ type pairStart struct {
 }
 
 type pairPoll struct {
-	Status    string `json:"status"`
+	Status     string `json:"status"`
+	Workspace  string `json:"workspace"`
+	ApprovedBy string `json:"approved_by"`
+	QueueName  string `json:"queue_name"`
+	Error      string `json:"error"`
+}
+
+type pairCollect struct {
 	ClaimCode string `json:"claim_code"`
 	Workspace string `json:"workspace"`
 	QueueName string `json:"queue_name"`
-	Error     string `json:"error"`
+}
+
+// setupInteractive reports whether a person can answer on stdin. A variable
+// so tests can say yes or no.
+var setupInteractive = func(cmd *cobra.Command) bool {
+	f, ok := cmd.InOrStdin().(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// confirmJoin shows the person at this computer who it is about to work for,
+// and asks when they can answer (security review, ark:scout#4320): a code
+// seen over a shoulder or guessed must not quietly put this computer to work
+// for someone else. --yes, or no one to ask, continues.
+func confirmJoin(cmd *cobra.Command, got pairPoll) bool {
+	out := cmd.OutOrStdout()
+	who := got.ApprovedBy
+	if who == "" {
+		who = "someone"
+	}
+	ws := got.Workspace
+	if ws == "" {
+		ws = "an Elk workspace"
+	}
+	fmt.Fprintf(out, "%s, in %s, allowed this computer to do their tasks.\n", who, ws)
+	if yes, _ := cmd.Flags().GetBool("yes"); yes || !setupInteractive(cmd) {
+		return true
+	}
+	fmt.Fprint(out, "Is that you? Join now? [y/N] ")
+	var answer string
+	_, _ = fmt.Fscanln(cmd.InOrStdin(), &answer)
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 func runSetup(cmd *cobra.Command) error {
@@ -203,19 +249,27 @@ func runSetup(cmd *cobra.Command) error {
 		}
 		break
 	}
-	if got.ClaimCode == "" {
+	if !confirmJoin(cmd, got) {
+		_ = postPair(ctx, client, pairURL+"/cancel", map[string]any{"secret": secret}, &struct{}{})
+		return errors.New("not joined. Nothing was set up on this computer")
+	}
+	var claim pairCollect
+	if err := postPair(ctx, client, pairURL+"/collect", map[string]any{"secret": secret}, &claim); err != nil {
+		return fmt.Errorf("could not finish joining: %w. Run rein setup again", err)
+	}
+	if claim.ClaimCode == "" {
 		return errors.New("Elk said Allow but sent nothing to collect. Run rein setup again")
 	}
 
-	fmt.Fprintln(out, "Allowed. Joining Elk…")
+	fmt.Fprintln(out, "Joining Elk…")
 	// The claim travels in-process only, never through argv or the
 	// environment, and enrol never prints it.
-	_ = f.Set("claim-code", got.ClaimCode)
-	if got.Workspace != "" {
-		_ = f.Set("workspace", got.Workspace)
+	_ = f.Set("claim-code", claim.ClaimCode)
+	if ws := firstNonEmpty(claim.Workspace, got.Workspace); ws != "" {
+		_ = f.Set("workspace", ws)
 	}
-	if got.QueueName != "" {
-		_ = f.Set("queue", got.QueueName)
+	if q := firstNonEmpty(claim.QueueName, got.QueueName); q != "" {
+		_ = f.Set("queue", q)
 	}
 	_ = f.Set("mcp-url", mcpURL)
 	if err := runEnrolConnect(cmd, path, cfg, store); err != nil {

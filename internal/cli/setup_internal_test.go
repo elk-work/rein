@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"strings"
+
 	"errors"
+	"github.com/spf13/cobra"
 	"testing"
 )
 
@@ -47,5 +51,30 @@ func TestPairSecretIsLongAndURLSafe(t *testing.T) {
 	}
 	if got := pairPlatform("darwin"); got != "macos" {
 		t.Errorf("darwin → %q", got)
+	}
+}
+
+func TestConfirmJoinAsksAPersonAndCancelsOnNo(t *testing.T) {
+	old := setupInteractive
+	defer func() { setupInteractive = old }()
+	setupInteractive = func(*cobra.Command) bool { return true }
+	for in, want := range map[string]bool{"y\n": true, "yes\n": true, "n\n": false, "\n": false} {
+		cmd := newSetupCommand()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetIn(strings.NewReader(in))
+		if got := confirmJoin(cmd, pairPoll{Workspace: "Acme", ApprovedBy: "Ana"}); got != want {
+			t.Errorf("answer %q: joined = %v, want %v", in, got, want)
+		}
+		if !strings.Contains(out.String(), "Ana, in Acme, allowed this computer") || !strings.Contains(out.String(), "Join now?") {
+			t.Errorf("prompt: %q", out.String())
+		}
+	}
+	cmd := newSetupCommand()
+	_ = cmd.Flags().Set("yes", "true")
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetIn(strings.NewReader("n\n"))
+	if !confirmJoin(cmd, pairPoll{}) {
+		t.Error("--yes still asked")
 	}
 }
