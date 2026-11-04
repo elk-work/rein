@@ -145,3 +145,54 @@ func TestSetupSaysWhenTheCodeExpires(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, errb)
 	}
 }
+
+// A computer's own name is usually longer than the 12 characters Elk allows a
+// worker's name ("DESKTOP-4F7K2LQ"), and Elk refuses it at connect, after
+// Allow. The Windows lab test on v0.9.11 failed exactly there.
+func TestSetupFitsALongComputerNameToElksCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	registerAs(t, "claude")
+
+	const claim = "claim-long-name"
+	s := elktest.New(t, claim)
+	s.Handle("connect_executor", func(args map[string]any) elktest.Reply {
+		return elktest.Reply{Text: "Connected invited agent queue \"desk-claude\" (executor `exec-9`). " +
+			"Replace the one-time claim URL programmatically with this durable connector URL: " +
+			"https://api.elk.work/functions/v1/elk-mcp/durable-long. Do not print, log, or repeat it."}
+	})
+	s.Text("heartbeat_executor", `Heartbeat recorded for queue "desk-claude".`)
+	p := newPairServer(t,
+		map[string]any{"status": "approved", "workspace": "Elk Scout", "approved_by": "Casey Clark", "queue_name": "desk-claude"})
+	p.collect = map[string]any{"claim_code": claim, "workspace": "Elk Scout", "queue_name": "desk-claude"}
+
+	out, errb, code := run(t, "setup", "--agent-kind", "claude", "--host-id", "desk", "--name", "DESKTOP-4F7K2LQ",
+		"--mcp-url", s.URL, "--pair-url", p.URL, "--poll", "10ms", "--no-service")
+	if code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	if p.started["machine_name"] != "DESKTOP-4F7K2LQ" {
+		t.Errorf("the Allow screen should get the full name; start sent %v", p.started["machine_name"])
+	}
+	if got := s.CallsTo("connect_executor")[0].Args["display_name"]; got != "DESKTOP-4F7K" {
+		t.Errorf("display_name = %v, want the computer's name cut to 12 characters", got)
+	}
+}
+
+func TestSetupRefusesALongDisplayNameBeforeShowingACode(t *testing.T) {
+	t.Setenv(config.EnvHome, t.TempDir())
+	registerAs(t, "claude")
+	p := newPairServer(t, map[string]any{"status": "pending"})
+
+	out, errb, code := run(t, "setup", "--agent-kind", "claude", "--display-name", "win01-pairing-test",
+		"--pair-url", p.URL, "--poll", "10ms", "--no-service")
+	if code == 0 {
+		t.Fatalf("setup accepted an 18-character display name\nstdout: %s", out)
+	}
+	if !strings.Contains(errb, "cap is 12") {
+		t.Errorf("stderr does not name the cap: %s", errb)
+	}
+	if p.started != nil || strings.Contains(out, "Your code") {
+		t.Errorf("a code was asked for before the name was checked:\n%s", out)
+	}
+}

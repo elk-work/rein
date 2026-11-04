@@ -78,3 +78,18 @@ func TestConfirmJoinAsksAPersonAndCancelsOnNo(t *testing.T) {
 		t.Error("--yes still asked")
 	}
 }
+
+func TestWorkerDisplayNameFitsElksCap(t *testing.T) {
+	for in, want := range map[string]string{
+		"MacBook Air":         "MacBook Air",
+		"DESKTOP-4F7K2LQ":     "DESKTOP-4F7K",
+		"Caseys-MacBook-Pro":  "Caseys-MacBo",
+		"abcdefghijk-xyz":     "abcdefghijk",
+		"  ":                  "Computer",
+		"Café-Ordinateur-Été": "Café-Ordinat",
+	} {
+		if got := workerDisplayName(in); got != want {
+			t.Errorf("workerDisplayName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
