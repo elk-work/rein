@@ -63,8 +63,9 @@ killed (not interrupted: a graceful stop would let the turn keep spending)
 before its first tool call, and fails with `adapter.ErrNotPlanAuth`
 (`planauth.go`). An init line without the field is refused too.
 
-`RunSpec.Model` and `RunSpec.Effort` — a queue's `model` and `effort` in
-config.toml — become `--model` and `--effort`; empty passes neither.
+`RunSpec.Model` and `RunSpec.Effort` — a queue's `model` and `effort`, as set
+for it in Elk or else in config.toml (README, "Model and effort, per queue") —
+become `--model` and `--effort`; empty passes neither.
 
 ### Permission modes
 

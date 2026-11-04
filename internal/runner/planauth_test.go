@@ -23,7 +23,7 @@ func TestTheQueuesModelAndEffortReachTheSession(t *testing.T) {
 	if spec.Model != "claude-opus-5-5" || spec.Effort != "xhigh" {
 		t.Errorf("spec model %q effort %q; want the queue's", spec.Model, spec.Effort)
 	}
-	if !strings.Contains(h.log.String(), "model claude-opus-5-5, effort xhigh") {
+	if !strings.Contains(h.log.String(), "model claude-opus-5-5 (config.toml), effort xhigh (config.toml)") {
 		t.Errorf("the startup log does not name the queue's model and effort:\n%s", h.log)
 	}
 }

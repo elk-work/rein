@@ -761,6 +761,9 @@ type queueRunner struct {
 	// setupCheckedAt is when this queue last ran its own setup check
 	// ([queueRunner.checkAgentSetup]), guarded by telMu like the state.
 	setupCheckedAt time.Time
+	// elkModel is the model and effort Elk last set for this queue, which
+	// win over config.toml's (modelchoice.go), guarded by telMu.
+	elkModel elkModelState
 
 	// sub is this queue's subscription headroom: the last reading, carried
 	// forward, and whether the queue is holding off claiming because the
@@ -809,7 +812,7 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	}
 	qr.logf("serving %s in %q, permission mode %s, landing policy %s",
 		qr.q.AgentKind, qr.workspace, qr.mode, qr.q.LandOrDefault())
-	qr.logf("model %s, effort %s", orCLIDefault(qr.q.Model), orCLIDefault(qr.q.Effort))
+	qr.logModelChoice(true)
 	qr.logf("host capabilities: %s", strings.Join(qr.host.Describe(), ", "))
 	if !qr.q.Scoped() && !qr.r.opts.Hosted {
 		if names := qr.passEnv(len(qr.mcp.servers) > 0); len(names) > 0 {
@@ -1037,6 +1040,7 @@ func (qr *queueRunner) heartbeat(ctx context.Context) (depth int, known bool) {
 	case err == nil:
 		qr.noteBeat()
 		qr.noteHeartbeatReply(hb.Text)
+		qr.absorbElkModel(hb)
 		qr.applySettings(hb.Settings)
 		return hb.Waiting, true
 	case ctx.Err() != nil:

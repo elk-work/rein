@@ -107,17 +107,22 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		qr.logf("run %s: unknown environment capability %q is advisory; proceeding", wo.RunID, name)
 	}
 
+	// What Elk last set for the queue wins over config.toml, which wins over
+	// the CLI's own default (modelchoice.go, ark:rein#106).
+	choice := qr.modelChoice()
+	if choice.ModelFrom == FromElk || choice.EffortFrom == FromElk {
+		qr.log.Runner(runlog.KindNote, "%s", choice.String())
+	}
+
 	spec := adapter.RunSpec{
-		RunID:          wo.RunID,
-		Hosted:         qr.r.opts.Hosted,
-		AgentKind:      qr.q.AgentKind,
-		Prompt:         wo.Text,
-		SystemPrompt:   runSystemPrompt(qr.q, cycle),
-		PermissionMode: qr.mode,
-		// The queue's own model and effort, or the CLI's defaults when the
-		// queue names neither (config.toml `model`, `effort`).
-		Model:                qr.q.Model,
-		Effort:               qr.q.Effort,
+		RunID:                wo.RunID,
+		Hosted:               qr.r.opts.Hosted,
+		AgentKind:            qr.q.AgentKind,
+		Prompt:               wo.Text,
+		SystemPrompt:         runSystemPrompt(qr.q, cycle),
+		PermissionMode:       qr.mode,
+		Model:                choice.Model,
+		Effort:               choice.Effort,
 		RequiredCapabilities: runtimeNames,
 		Timeouts:             adapter.Timeouts{Idle: qr.r.opts.StallAfter},
 		Queue:                qr.q.Name,

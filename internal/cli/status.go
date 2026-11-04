@@ -113,6 +113,9 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 	if err := qw.Flush(); err != nil {
 		return err
 	}
+	if err := printModels(out, filepath.Join(dir, "state"), cfg); err != nil {
+		return err
+	}
 	// The same reading `rein config check` gives, so a queue that will strand
 	// its runs says so here too rather than only showing as online in Elk.
 	rep := runner.CheckConfig(cfg, cmd.Root().Version)
@@ -141,6 +144,27 @@ func subscriptionState(home, queue string) string {
 		return "—"
 	}
 	return s.Summary(time.Now())
+}
+
+// printModels says which model and effort each queue's next run uses, and
+// where each came from: what Elk set for the queue wins over config.toml,
+// which wins over the CLI's own default (ark:rein#106). What Elk set is read
+// from the state the service keeps under the Rein home, so it is what the
+// service last heard, and the last column says since when.
+func printModels(out io.Writer, stateDir string, cfg config.Config) error {
+	fmt.Fprintln(out, "\nMODEL AND EFFORT — set in Elk, else config.toml, else the CLI's default")
+	mw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	now := time.Now()
+	for _, q := range cfg.Queues {
+		label := cfg.QueueLabel(q)
+		s, ok := runner.ReadElkModelState(stateDir, label)
+		heard := "Elk not heard from yet"
+		if ok {
+			heard = s.Since(now)
+		}
+		fmt.Fprintf(mw, "%s\t%s\t%s\n", label, runner.ResolveModel(q, s.Model, s.Effort), heard)
+	}
+	return mw.Flush()
 }
 
 // printAdapters says which agent kinds this binary can drive at all, before

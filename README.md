@@ -696,7 +696,10 @@ Everything local, and nothing over the network unless you ask:
 - which Chrome runs get, and why (`browser`, below);
 - each queue's subscription as the running service last knew it — `exhausted
   until …`, or the windows and how long ago they were read, or a dash when no
-  run has reported one yet.
+  run has reported one yet;
+- each queue's model and effort for its next run and where each came from —
+  `Elk`, `config.toml` or the CLI default — using what the running service
+  last heard Elk set for the queue (see **Model and effort, per queue**).
 
 `--online` also asks Elk (`list_executors`) which queues it can see, whether
 they are online, and how much work is waiting.
@@ -734,8 +737,8 @@ inherit_env = ["SENTRY_ORG"]  # optional; daemon variables every run keeps
 [[queues]]
 name       = "mac-claude"   # at most 12 bytes; over the cap is a rejection
 agent_kind = "claude"       # the adapter this queue drives
-model      = "claude-opus-5-5"  # optional; the CLI's default when unset
-effort     = "high"         # optional; the CLI's default when unset
+model      = "claude-opus-5-5"  # optional; one set for the queue in Elk wins; the CLI's default when neither
+effort     = "high"         # optional; one set for the queue in Elk wins; the CLI's default when neither
 
 [[queues]]
 name       = "mac-codex"
@@ -830,6 +833,21 @@ high, xhigh). Rein checks only their shape — vendors add levels on their own
 schedule — so a level the CLI does not know fails the run with the CLI's own
 message. A queue that sets neither keeps the CLI's defaults; the startup log
 prints what each queue uses.
+
+A person can also set a queue's model and effort in Elk, and **Elk's choice
+wins**: config.toml is the fallback, and the CLI's default the last resort.
+Each is resolved on its own, so Elk can set the effort and leave the model to
+the config. Elk sends its choice on every reply to `heartbeat_executor`, as
+structured content (`{"queue", "waiting", "model", "effort"}`, where null or a
+missing key means Elk sets nothing), and the next run uses it; it is held in
+memory and never written into config.toml. Every answered beat replaces the
+last, so clearing the choice in Elk brings the config's back on the next beat,
+while a beat that fails changes nothing. A value Elk sends is shape-checked
+exactly as config.toml's is, and one that fails is logged and ignored. An Elk
+that sends no structured content sets nothing, and the queue runs exactly as
+config.toml says. The log says once whenever the effective model or effort
+changes, naming the source of each (`model claude-opus-5-5 (Elk), effort high
+(config.toml)`), and `rein status` prints the same per queue.
 
 Queue names are `<host_id>-<agent_kind>` by convention and capped at **12
 characters**. A name over the cap is rejected, never truncated — ruling 3 in
