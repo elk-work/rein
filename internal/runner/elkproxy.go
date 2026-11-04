@@ -85,14 +85,42 @@ func (p *elkProxy) URL() string {
 func (p *elkProxy) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = p.srv.Shutdown(ctx)
+	if p.srv.Shutdown(ctx) != nil {
+		// A call still in flight does not outlive the run.
+		_ = p.srv.Close()
+	}
 }
 
+// rpcMessage is what the proxy reads of a JSON-RPC message. It is decoded
+// from exact keys (rpcFrom), never through a struct: Go matches struct fields
+// case-insensitively, so {"name":"submit_deliverable","Name":"list_actions"}
+// would read as list_actions here while Elk, which reads `name` exactly, runs
+// submit_deliverable. For a key that appears twice both sides take the last.
 type rpcMessage struct {
-	JSONRPC string          `json:"jsonrpc,omitempty"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
+	ID     json.RawMessage
+	Method string
+	Tool   string
+}
+
+func rpcFrom(raw json.RawMessage) (rpcMessage, bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return rpcMessage{}, false
+	}
+	m := rpcMessage{ID: obj["id"]}
+	if v, ok := obj["method"]; ok && json.Unmarshal(v, &m.Method) != nil {
+		return rpcMessage{}, false
+	}
+	if v, ok := obj["params"]; ok && m.Method == "tools/call" {
+		var params map[string]json.RawMessage
+		if json.Unmarshal(v, &params) != nil {
+			return rpcMessage{}, false
+		}
+		if n, ok := params["name"]; ok && json.Unmarshal(n, &m.Tool) != nil {
+			return rpcMessage{}, false
+		}
+	}
+	return m, true
 }
 
 func (p *elkProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -113,32 +141,24 @@ func (p *elkProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msgs, batch := parseRPC(body)
+	msgs, ok := parseRPC(body)
+	if !ok {
+		// Not JSON-RPC Rein can read, so it cannot be shown to be harmless.
+		http.Error(w, `{"error":"unreadable JSON-RPC request"}`, http.StatusBadRequest)
+		return
+	}
 	listsTools := false
 	for _, m := range msgs {
 		if m.Method == "tools/list" {
 			listsTools = true
 		}
-		if m.Method != "tools/call" {
-			continue
-		}
-		var params struct {
-			Name string `json:"name"`
-		}
-		_ = json.Unmarshal(m.Params, &params)
-		if p.denied[params.Name] {
+		if m.Method == "tools/call" && p.denied[m.Tool] {
 			// One refused call refuses the whole request: nothing in it is
 			// forwarded, so a batch cannot smuggle a denied call past.
-			writeRPCError(w, m.ID, params.Name)
+			writeRPCError(w, m.ID, m.Tool)
 			return
 		}
 	}
-	if msgs == nil && len(bytes.TrimSpace(body)) > 0 {
-		// Not JSON-RPC Rein can read, so it cannot be shown to be harmless.
-		http.Error(w, `{"error":"unreadable JSON-RPC request"}`, http.StatusBadRequest)
-		return
-	}
-	_ = batch
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.upstream, bytes.NewReader(body))
 	if err != nil {
@@ -186,24 +206,30 @@ func (p *elkProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
-// parseRPC reads one JSON-RPC message or a batch. nil when it is neither.
+// parseRPC reads one JSON-RPC message or a batch. ok is false when the body
+// is neither, or any message in it cannot be read.
 func parseRPC(body []byte) ([]rpcMessage, bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return nil, false
 	}
+	var raws []json.RawMessage
 	if trimmed[0] == '[' {
-		var batch []rpcMessage
-		if json.Unmarshal(trimmed, &batch) != nil {
-			return nil, true
+		if json.Unmarshal(trimmed, &raws) != nil {
+			return nil, false
 		}
-		return batch, true
+	} else {
+		raws = []json.RawMessage{trimmed}
 	}
-	var m rpcMessage
-	if json.Unmarshal(trimmed, &m) != nil {
-		return nil, false
+	out := make([]rpcMessage, 0, len(raws))
+	for _, raw := range raws {
+		m, ok := rpcFrom(raw)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, m)
 	}
-	return []rpcMessage{m}, false
+	return out, true
 }
 
 func writeRPCError(w http.ResponseWriter, id json.RawMessage, tool string) {

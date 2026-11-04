@@ -232,6 +232,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			spec.Env[k] = v
 		}
 		spec.Env["GH_TOKEN"] = spec.Env["REIN_GITHUB_TOKEN"]
+		// The queue's token is Rein's alone, read once at start-up: a session
+		// holding it could skip the run connector's proxy (ark:rein#112).
+		delete(spec.Env, "REIN_ELK_TOKEN")
 	} else if qr.q.Scoped() {
 		env, err := qr.resolveSecrets()
 		if err != nil {

@@ -171,3 +171,22 @@ func TestARefusedQueueTokenIsNotASignInPrompt(t *testing.T) {
 		t.Errorf("got %d %s", code, body)
 	}
 }
+
+func TestTheProxyReadsKeysExactlyAsElkDoes(t *testing.T) {
+	// Go struct decoding ignores case; Elk's handler does not. A request
+	// that reads as an allowed tool to one and a denied tool to the other
+	// must be refused.
+	up := &fakeElk{}
+	p := proxyFor(t, up)
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"submit_deliverable","Name":"list_actions"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"Name":"list_actions","name":"submit_deliverable"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_actions","name":"submit_deliverable"}}`,
+		`{"jsonrpc":"2.0","id":1,"Method":"tools/list","method":"tools/call","params":{"name":"claim_run"}}`,
+	} {
+		post(t, p.URL(), body)
+	}
+	if len(up.methods) != 0 {
+		t.Errorf("a disguised call to Rein's own tool reached Elk: %v %v", up.methods, up.tools)
+	}
+}
