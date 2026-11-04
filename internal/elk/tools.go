@@ -694,6 +694,23 @@ func (c *Client) AskElk(ctx context.Context, runID, question string) (*AskResult
 	return &AskResult{Text: res.Text, Revisions: parseRevisions(res.Text)}, nil
 }
 
+// RetractAsk withdraws only an outstanding ask. Elk leaves an earlier answer
+// available to its consumer and records a later answer as new direction. This
+// is deliberately not a poll: retracting must never consume an unread reply.
+func (c *Client) RetractAsk(ctx context.Context, runID, reason string) error {
+	if runID == "" {
+		return errors.New("elk: retract needs a run id")
+	}
+	res, err := c.call(ctx, ToolAskElk, map[string]any{"run_id": runID, "retract": reason})
+	if err != nil {
+		return err
+	}
+	if nr := asNotRunning(runID, res, "Not recorded: "); nr != nil {
+		return nr
+	}
+	return res.Err()
+}
+
 // parseRevisions pulls Elk's verdict out of a revision request, or returns ""
 // when the reply is anything else.
 func parseRevisions(text string) string {

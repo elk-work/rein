@@ -43,6 +43,8 @@ type liveSession struct {
 	// deliverable can say a person took part without the run loop having to
 	// watch the socket.
 	onRelease func(sends int, held time.Duration)
+	onAttach  func() error
+	asks      *sessionAsk
 
 	mu         sync.Mutex
 	attached   bool
@@ -92,6 +94,16 @@ func (l *liveSession) attach() (control.Attached, func(), error) {
 	}
 	l.attached, l.attachedAt, l.sends = true, time.Now(), 0
 	l.mu.Unlock()
+
+	// Complete the retraction before the control socket accepts any input.
+	if l.onAttach != nil {
+		if err := l.onAttach(); err != nil {
+			l.mu.Lock()
+			l.attached = false
+			l.mu.Unlock()
+			return control.Attached{}, nil, err
+		}
+	}
 
 	info := l.info()
 	note := "The daemon has stepped back: its watchdog is paused for as long as you are here, " +
