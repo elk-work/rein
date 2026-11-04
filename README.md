@@ -34,9 +34,20 @@ tar -xzf "rein_${v}_${p}.tar.gz"
 install "rein_${v}_${p}/rein" ~/.local/bin/rein
 ```
 
-(Linux: `sha256sum -c` in place of `shasum -a 256 -c`.) Then connect a queue
-with a claim code from Elk → **Connected agents** → **Connect another agent**,
-and run it as a service:
+(Linux: `sha256sum -c` in place of `shasum -a 256 -c`.) Then pair it:
+
+```sh
+rein setup
+```
+
+Rein shows an eight-letter code. Type it into Elk on any device (Connect ›
+Have an AI do tasks, or Connect › Advanced › A computer showing a code) and
+press Allow. Rein enrols this computer as your private worker and starts its
+service. No token, link or invite is copied. It needs the server side of
+Elk #1401 lane 7 (scout migration 0596 and the `worker-pair` function).
+
+Or connect a queue by hand with a claim code from Elk → **Connected agents** →
+**Connect another agent**, and run it as a service:
 
 ```sh
 rein enrol --workspace "<your workspace>" --agent-kind claude --claim-code <code>

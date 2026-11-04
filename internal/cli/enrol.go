@@ -15,6 +15,7 @@ import (
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/runner"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // DefaultMCPURL is Elk's connector endpoint. It is a default rather than a
@@ -84,6 +85,14 @@ that in Settings → Connected agents.`,
 		},
 	}
 	f := cmd.Flags()
+	addEnrolConnectFlags(f)
+	f.Bool("revoke", false, "forget a queue: delete its keychain entry, then drop it from the config")
+	return cmd
+}
+
+// addEnrolConnectFlags declares every flag runEnrolConnect reads, so `rein
+// setup` can run the same enrolment with the claim its pairing collected.
+func addEnrolConnectFlags(f *pflag.FlagSet) {
 	f.String("claim-code", "", "single-use claim code from Elk (or "+EnvClaimCode+")")
 	f.String("token", "", "an existing Elk connector token (or "+EnvToken+")")
 	f.String("workspace", "", "Elk workspace to enrol into")
@@ -93,11 +102,9 @@ that in Settings → Connected agents.`,
 	f.String("host-id", "", "short machine label used in the queue name (default: suggested from the hostname)")
 	f.String("mcp-url", "", "Elk MCP endpoint (default: "+DefaultMCPURL+")")
 	f.Bool("shared", false, "let any workspace member send work to this queue (default: private to you; ignored with --claim-code)")
-	f.Bool("revoke", false, "forget a queue: delete its keychain entry, then drop it from the config")
 	f.Bool("force", false, "replace an existing enrolment for this queue")
 	f.StringArray("repo", nil, "a repository this queue serves, as name=path (repeatable); adds to [repos] and the queue's repos list")
 	f.String("default-repo", "", "the repository a run that names none is cut from: a --repo name, a [repos] key, or a mapped path (default: the only repository, when there is one)")
-	return cmd
 }
 
 func runEnrol(cmd *cobra.Command) error {
