@@ -39,3 +39,9 @@ func (a *Adapter) MCPServerConfig(s adapter.MCPServerSpec) (any, error) {
 	}
 	return m, nil
 }
+
+// MCPToolName implements [adapter.MCPToolDenier]: Claude Code names an MCP
+// server's tool `mcp__<server>__<tool>`, the form `--disallowedTools` takes.
+func (a *Adapter) MCPToolName(server, tool string) (string, bool) {
+	return "mcp__" + server + "__" + tool, true
+}

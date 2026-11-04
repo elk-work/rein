@@ -678,10 +678,30 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 	delete(host.how, "pm")
 	delete(host.how, "wrangler")
 	delete(host.how, "production")
+	// The per-run MCP allow-list: what every run on this queue is handed, and
+	// the `mcp:<name>` it declares for each, resolved together (mcp.go). It
+	// includes the Elk run connector on the queue's own token when the adapter
+	// can take it (ark:rein#112).
+	var mcp mcpAllowList
+	if a, ok := adapter.Lookup(q.AgentKind); ok {
+		mcp = resolveMCP(r.opts.Config, q, a)
+		mcp.addRunConnector(r.opts.Config.Elk.MCPURL, a)
+		if q.IsWrangler() && !mcp.connector {
+			// No run connector here, so a Wrangler queue's `mcp:elk` is its
+			// owner's connector and a cycle's alone (config.Validate keeps
+			// a Wrangler queue's own allow-list empty).
+			mcp = mcpAllowList{declared: []string{"mcp:elk"}, skipped: mcp.skipped}
+		}
+	}
 	if q.IsWrangler() {
 		// Declared for routing; granted per run, to Wrangler cycles only
-		// (drive.go, wranglerCycle).
-		host = host.withExtra(wranglerOptIn, "pm", "mcp:elk")
+		// (drive.go, wranglerCycle). `mcp:elk` is the opt-in's only where the
+		// queue has no run connector of its own: with one, every run holds
+		// an elk server, the cycle's being the owner's.
+		host = host.withExtra(wranglerOptIn, "pm")
+		if !mcp.connector {
+			host = host.withExtra(wranglerOptIn, "mcp:elk")
+		}
 		if q.Production {
 			// The owner's consent to ship to production. It rides every
 			// heartbeat, so deleting the config line withdraws it (elk
@@ -694,17 +714,9 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 		// credential names, and each name in its map (secrets.go).
 		host = host.scopedTo(q)
 	}
-	qr := &queueRunner{r: r, q: q, workspace: ws, elk: client, mode: mode, host: host}
-	// The per-run MCP allow-list: what every run on this queue is handed, and
-	// the `mcp:<name>` it declares for each, resolved together (mcp.go).
-	if a, ok := adapter.Lookup(q.AgentKind); ok {
-		qr.mcp = resolveMCP(r.opts.Config, q, a)
-		if q.IsWrangler() {
-			qr.mcp = mcpAllowList{declared: []string{"mcp:elk"}}
-		}
-		if len(qr.mcp.declared) > 0 {
-			qr.host = qr.host.withExtra("config.toml mcp_servers, this queue", qr.mcp.declared...)
-		}
+	qr := &queueRunner{r: r, q: q, workspace: ws, elk: client, elkToken: token, mode: mode, host: host, mcp: mcp}
+	if len(qr.mcp.declared) > 0 {
+		qr.host = qr.host.withExtra("config.toml mcp_servers, this queue", qr.mcp.declared...)
 	}
 	if r.opts.Hosted {
 		qr.redact.Store(secretenv.NewRedactor(hosted.Values()))
@@ -727,8 +739,12 @@ type queueRunner struct {
 	q               config.Queue
 	workspace       string
 	elk             *elk.Client
-	mode            adapter.PermissionMode
-	host            *HostCapabilities
+	// elkToken is the queue's own run-scoped token, the one elk claims and
+	// reports with. A run that gets the Elk run connector holds it too, in
+	// its environment (ark:rein#112); it is redacted from every run's log.
+	elkToken string
+	mode     adapter.PermissionMode
+	host     *HostCapabilities
 
 	// live is the session being driven right now, registered so `rein attach`
 	// can reach it, and nil between runs.

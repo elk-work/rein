@@ -1029,10 +1029,12 @@ after the landing section, so `wrangler = true` composes with any policy.
 on a queue with the opt-in (`wranglerCycle` in `internal/runner/wrangler.go`,
 `ark:rein#50 (01M46ZQDVPJY6VF1HEGQ4ZFHKF)`). Every other run on a Wrangler queue
 gets the ordinary prompt and the ordinary MCP setup, which on a Wrangler queue
-is no servers, and its preflight list and capability checks leave out the `pm`
-and `mcp:elk` the opt-in declares. So a build run there is never told it may
-migrate or deploy, never holds the owner's connector, and a build packet
-requiring `mcp:elk` is refused the way a queue without the opt-in refuses it.
+is the queue's own `elk` run connector where the adapter takes one
+(`ark:rein#112`) and otherwise no servers, and its preflight list and capability
+checks leave out the `pm` the opt-in declares. So a build run there is never
+told it may migrate or deploy and never holds the owner's connector; a build
+packet requiring `mcp:elk` is served by the run connector on a Claude queue and
+refused on a Codex one, the way a queue without the opt-in refuses it.
 The queue still advertises `pm`, so Elk can route cycles to it; a `pm` packet
 on a queue without the opt-in is refused at preflight as before. Until v0.7.1
 the opt-in alone decided it, and every build run on mac-claude, Elk Scout's

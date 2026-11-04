@@ -33,3 +33,22 @@ func TestMCPServerConfigIsAClaudeMCPConfigEntry(t *testing.T) {
 		t.Error("an invalid spec was translated")
 	}
 }
+
+func TestTheRunConnectorIsAnHTTPServerWithTheTokenByName(t *testing.T) {
+	a := New()
+	var _ adapter.MCPToolDenier = a
+	v, err := a.MCPServerConfig(adapter.MCPServerSpec{
+		Name: adapter.RunConnectorName, URL: "https://api.elk.work/functions/v1/elk-mcp",
+		BearerTokenEnvVar: adapter.RunConnectorTokenEnv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(v)
+	want := `{"headers":{"Authorization":"Bearer ${REIN_ELK_TOKEN}"},"type":"http","url":"https://api.elk.work/functions/v1/elk-mcp"}`
+	if string(got) != want {
+		t.Errorf("run connector =\n %s\nwant\n %s", got, want)
+	}
+	if name, ok := a.MCPToolName("elk", "submit_deliverable"); !ok || name != "mcp__elk__submit_deliverable" {
+		t.Errorf("MCPToolName = %q, %v; want mcp__elk__submit_deliverable", name, ok)
+	}
+}

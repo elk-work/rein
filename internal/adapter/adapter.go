@@ -194,9 +194,11 @@ type RunSpec struct {
 	// Env is added to the inherited environment for the child process; a key
 	// present here overrides the inherited value. Adapters must not put
 	// credentials of their own in it — the vendor binary uses the developer's
-	// own login. The run loop puts exactly one kind of credential here: a
-	// scoped queue's secrets map, resolved from the keychain for this run
-	// (ark:rein#48). An adapter passes Env to the agent process and nowhere
+	// own login. The run loop puts two kinds of credential here: a scoped
+	// queue's secrets map, resolved from the keychain for this run
+	// (ark:rein#48), and the queue's own run-scoped Elk token under
+	// [RunConnectorTokenEnv], for the Elk run connector in MCPServers
+	// (ark:rein#112). An adapter passes Env to the agent process and nowhere
 	// else — never on a command line, never in a log line, never in a file.
 	Env map[string]string
 
