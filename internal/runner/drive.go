@@ -39,7 +39,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			fetchSecrets = c.Fetch.Secrets()
 		}
 	}
-	qr.redact.Store(secretenv.NewRedactor(fetchSecrets))
+	qr.redact.Store(secretenv.NewRedactor(qr.withOwnToken(fetchSecrets)))
 	qr.openLog(wo)
 	defer qr.closeLog()
 	// From the claim to the end of the run: keep the machine from idling to
@@ -66,11 +66,12 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	runtimeNames, hostNames := SplitRequirements(wo.RequiredCapabilities)
 
 	// What the Wrangler opt-in adds — the rule, the owner's connector, and the
-	// `pm` and `mcp:elk` the queue declares for them — belongs to one run at a
-	// time, and only to a Wrangler cycle: a packet that requires `pm`
-	// (wrangler.go, ark:rein#50). Any other run on a Wrangler queue sees the
-	// queue exactly as it would be without the opt-in, so an `mcp:elk` it
-	// requires is missing rather than quietly answered by the owner's connector.
+	// `pm` the queue declares for them — belongs to one run at a time, and
+	// only to a Wrangler cycle: a packet that requires `pm` (wrangler.go,
+	// ark:rein#50). Any other run on a Wrangler queue sees the queue exactly
+	// as it would be without the opt-in: its `mcp:elk` is the queue's own run
+	// connector where the adapter takes one (ark:rein#112), and otherwise
+	// missing rather than quietly answered by the owner's connector.
 	cycle := wranglerCycle(qr.q, wo.RequiredCapabilities)
 	host, mcps := qr.host, qr.mcp.declared
 	if qr.q.IsWrangler() {
@@ -80,7 +81,10 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		} else {
 			// A Wrangler queue may configure no mcp_servers of its own
 			// (config.Validate), so its ordinary allow-list is empty.
-			host, mcps = host.withoutProvenance(wranglerOptIn), nil
+			host = host.withoutProvenance(wranglerOptIn)
+			if !qr.mcp.connector {
+				mcps = nil
+			}
 			qr.log.Runner(runlog.KindNote, "not a Wrangler cycle (no pm requirement): ordinary prompt, no owner connector")
 			qr.logf("run %s: not a Wrangler cycle; ordinary prompt and no owner connector", wo.RunID)
 		}
@@ -129,8 +133,15 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		Settings:             qr.q.Settings,
 		// The queue's allow-list, and nothing else: each adapter keeps the
 		// developer's own servers out (ark:rein#21, #22), so these are the
-		// only MCP servers the session sees (mcp.go, ark:rein#40).
+		// only MCP servers the session sees (mcp.go, ark:rein#40). It holds
+		// the Elk run connector, on the queue's own token, where the adapter
+		// can take one (ark:rein#112).
 		MCPServers: qr.mcpServersForRun(),
+	}
+	// The run connector is the token Rein claims and reports with, so Rein's
+	// own tools on it are kept from the session (adapter.RunConnectorDeniedTools).
+	if qr.mcp.connector && !cycle {
+		spec.DeniedTools = append(spec.DeniedTools, qr.mcp.denied...)
 	}
 
 	if qr.r.opts.Hosted {
@@ -221,6 +232,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			spec.Env[k] = v
 		}
 		spec.Env["GH_TOKEN"] = spec.Env["REIN_GITHUB_TOKEN"]
+		// The queue's token is Rein's alone, read once at start-up: a session
+		// holding it could skip the run connector's proxy (ark:rein#112).
+		delete(spec.Env, "REIN_ELK_TOKEN")
 	} else if qr.q.Scoped() {
 		env, err := qr.resolveSecrets()
 		if err != nil {
@@ -236,11 +250,23 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		for k, v := range fetchSecrets {
 			combined[k] = v
 		}
-		qr.applySecrets(combined)
+		qr.applySecrets(qr.withOwnToken(combined))
 	} else {
 		// Every run is scoped; a queue without a secrets map keeps, beyond
 		// the system variables, only what it names (env.go).
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
+	}
+	// The run connector: a loopback proxy that holds the queue's token for
+	// this run and refuses Rein's own tools (elkproxy.go, ark:rein#112). The
+	// session gets only its address.
+	if qr.mcp.connector && !cycle {
+		proxy, err := qr.startRunConnector(&spec)
+		if err != nil {
+			qr.log.Runner(runlog.KindNote, "the Elk connector for this run could not start; nothing started")
+			return qr.stuck(ctx, wo, "Rein could not start this run's Elk connector", err.Error()+
+				"\n\nNo work was started and no worktree was created.")
+		}
+		defer proxy.Close()
 	}
 	// The capture gate first, then Chrome, so `chrome` stays at the front of
 	// PATH and the gate stays ahead of /usr/sbin/screencapture.
@@ -403,6 +429,10 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 	wo *elk.WorkOrder, wt *worktree.Worktree, repo RepoResolution) error {
 
 	var pending elk.Usage
+
+	if _, ok := spec.MCPServers[adapter.RunConnectorName]; ok && qr.mcp.connector {
+		spec.SystemPrompt += "\n\n" + runConnectorNote
+	}
 
 	// Report before spending a single token. The runbook asks for a report
 	// immediately after claiming, and it doubles as the cheapest possible
@@ -1770,7 +1800,7 @@ func capabilityHelp(m adapter.Manifest, host *HostCapabilities) string {
 // answered: on a Wrangler queue, `mcp:elk` is the owner's connector, and a run
 // that is not a Wrangler cycle does not get it (ark:rein#50). Empty otherwise.
 func (qr *queueRunner) wranglerOnlyNote(cycle bool, missing []string) string {
-	if cycle || !qr.q.IsWrangler() {
+	if cycle || !qr.q.IsWrangler() || qr.mcp.connector {
 		return ""
 	}
 	for _, name := range missing {

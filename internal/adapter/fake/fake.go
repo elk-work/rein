@@ -79,6 +79,11 @@ type Adapter struct {
 	// unsupported.
 	RefuseMCP []string
 
+	// DeniesMCPTools makes [Adapter.MCPToolName] answer, so the run loop
+	// hands this fake the Elk run connector (ark:rein#112). Off by default,
+	// which is a fake that cannot deny a tool, like Codex and Grok.
+	DeniesMCPTools bool
+
 	// Rounds, when set, scripts successive sessions separately: the Nth Start
 	// replays Rounds[N], and the last entry repeats once they run out. A zero
 	// Result in a round falls back to [Adapter.Result]. It is how a test
@@ -111,6 +116,15 @@ func (a *Adapter) MCPServerConfig(s adapter.MCPServerSpec) (any, error) {
 		m["command"] = s.Command
 	}
 	return m, nil
+}
+
+// MCPToolName implements [adapter.MCPToolDenier], answering only when
+// [Adapter.DeniesMCPTools] is set. The name is Claude Code's shape.
+func (a *Adapter) MCPToolName(server, tool string) (string, bool) {
+	if !a.DeniesMCPTools {
+		return "", false
+	}
+	return "mcp__" + server + "__" + tool, true
 }
 
 // Reader is a fake that can also read its subscription window without a

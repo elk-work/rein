@@ -285,8 +285,27 @@ mirrors Elk's `public.capability_vocabulary` by hand.
 `REIN_HOST_CAPABILITIES="github-cli,docker"` replaces the probing for a sandbox
 or CI box. `rein status` prints the list with how each entry was established.
 
-**MCP servers are allow-listed per queue.** A run sees no MCP server by
-default — every adapter cuts it off from the developer's own
+**Every run reaches Elk as its own queue.** A Claude run gets one MCP server
+Rein adds itself, `elk`, which reaches the Elk endpoint in `[elk] mcp_url` with
+the queue's own run-scoped token — the one Rein claims and reports with
+(`ark:rein#112`). It is never a person's connector: the token is bound to the
+queue's workspace and executor, and Elk refuses it any tool that needs a person
+present. **The session never holds the token.** Rein starts a proxy for each
+run on a loopback port behind a path secret that dies with the run; the session
+is given that address, and the proxy adds the token on the way to Elk. The
+proxy refuses Rein's own tools — `claim_run`, `submit_deliverable`,
+`report_progress`, `heartbeat_executor`, `attach_run`, `ask_elk`,
+`rotate_own_token`, `connect_executor`, the `wrangler_*` ledger tools,
+`deploy_app` and `set_tap_sharing` — and leaves them out of `tools/list`,
+whatever the session sends, so a run cannot report for itself, claim another
+run, rotate the token out from under Rein or ship to production; Claude is also
+told not to offer them (`--disallowedTools`). The queue declares `mcp:elk`.
+Codex and Grok queues get no `elk` server until the proxy is verified against
+them; `rein run` says so at start-up. A config server named `elk` gives way to
+it on a Claude queue.
+
+**MCP servers are allow-listed per queue.** Beyond `elk`, a run sees no MCP
+server by default — every adapter cuts it off from the developer's own
 (`ark:rein#21`, `#22`), because an inherited server acts *as somebody else*. A
 queue opts in by name, from definitions in the same file (`ark:rein#40`):
 
@@ -1011,7 +1030,8 @@ Wrangler queue advertises `pm` and `mcp:elk` — **the capability on the wire is
 still `pm`**, the name Elk routes on — and neither `pm` nor `wrangler` can be
 declared through the general capability lists to bypass the opt-in. Do not set
 `mcp_servers` on a Wrangler queue: its Wrangler cycles receive exactly one
-server, its owner's Elk connector, and its other runs receive none.
+server, its owner's Elk connector, and its other runs receive the queue's own
+`elk` run connector (Claude) or none (Codex).
 
 Bind that owner's connector URL in the OS keychain under service
 `elk-connector-url`, account `wrangler_connector_account` (or the default
@@ -1039,10 +1059,12 @@ own secret map; the owner connector remains a separate keychain binding.
 Wrangler cycle is a run whose packet requires `pm` — Elk's `pm_cycle_packet`
 sets that for a cycle on an agent queue — claimed on a queue with the opt-in.
 Any other run on a Wrangler queue, such as an ordinary build run on a queue
-that is also a build queue, gets the ordinary prompt and no MCP servers, exactly
-as on a queue without the opt-in: no Wrangler rule, no owner connector, and no
-`pm` or `mcp:elk` in its preflight list, so a build packet that requires
-`mcp:elk` there is refused rather than handed the owner's connector. A packet
+that is also a build queue, gets the ordinary prompt and MCP setup, exactly as
+on a queue without the opt-in: no Wrangler rule, no owner connector and no `pm`
+in its preflight list. Its `mcp:elk` is the queue's own run connector on a
+Claude queue (`ark:rein#112`); on a Codex queue it has none, so a build packet
+that requires `mcp:elk` there is refused rather than handed the owner's
+connector. A packet
 requiring `pm` on a queue without the opt-in is still refused at preflight. The
 queue keeps advertising `pm` and `mcp:elk` either way: the opt-in decides which
 queues may run cycles, the packet decides which runs are cycles

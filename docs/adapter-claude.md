@@ -122,6 +122,18 @@ reported anything; the claude run of the same dogfood failed instead, on a
 connector whose URL happened to be invalid. The dangerous half was never the
 error — it was the run that worked.
 
+Since `ark:rein#112` an ordinary run does reach Elk, but as its **queue**, not as
+a person, and without ever holding the queue's token: the run loop adds `elk` to
+`RunSpec.MCPServers` as `{"type":"http","url":"http://127.0.0.1:<port>/<run secret>"}`,
+the address of a per-run proxy that holds the token and refuses Rein's own tools
+(`internal/runner/elkproxy.go`). It also passes
+`--disallowedTools mcp__elk__claim_run mcp__elk__submit_deliverable …` so the
+session is never offered them. Verified on 2.1.318 by
+`TestIntegrationRunConnectorThroughTheProxy` (`internal/runner`, integration
+tag): the server connects, Elk sees the queue's token on every call,
+`list_actions` and `create_action` are offered, and `submit_deliverable`,
+`claim_run` and `rotate_own_token` are not.
+
 `--setting-sources` covers what `--strict-mcp-config` does not. The default
 keeps **`project`**, the settings checked into the repository being worked on,
 and drops the two personal sources: `user` (`~/.claude` — the developer's hooks,

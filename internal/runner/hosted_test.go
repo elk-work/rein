@@ -62,6 +62,9 @@ func TestHostedOneRunClaimsDrivesSubmitsAndExits(t *testing.T) {
 	if !spec.Hosted || spec.Timeouts.Total <= 0 || spec.Env["GH_TOKEN"] != "hosted-github-test-token" {
 		t.Fatal("hosted spec incomplete")
 	}
+	if _, ok := spec.Env["REIN_ELK_TOKEN"]; ok {
+		t.Fatal("a hosted session holds the queue's token, so it could skip the run connector's proxy")
+	}
 	if !strings.Contains(spec.SystemPrompt, "Landing policy: pr") && !strings.Contains(spec.SystemPrompt, "pull request") {
 		t.Fatal("PR default missing")
 	}

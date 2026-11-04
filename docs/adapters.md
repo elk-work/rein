@@ -325,6 +325,29 @@ runs get.
 | codex | `{url}` | `bearer_token_env_var` | `{command, args, env_vars}` |
 | grok | ACP `{"type":"http"}` | refused — ACP headers are literal | refused — no stdio in `grok agent` |
 
+### The Elk run connector
+
+Every run whose adapter can take it also gets `elk` (`ark:rein#112`): a plain
+URL server at a loopback proxy the run loop starts for the run
+(`internal/runner/elkproxy.go`). The proxy holds the queue's run-scoped token,
+adds it on the way to Elk, refuses a `tools/call` naming one of
+`RunConnectorDeniedTools` (`internal/adapter/mcp.go`) and drops those tools from
+`tools/list`, so the session never holds the token Rein claims and reports with
+and cannot use it for Rein's own tools by any route. The run loop also puts those
+tools in `RunSpec.DeniedTools`, in the adapter's naming, so the agent is never
+offered a call that will be refused:
+
+```go
+type MCPToolDenier interface {
+    MCPToolName(server, tool string) (name string, ok bool)
+}
+```
+
+Only an adapter that implements it gets the connector today, which is Claude
+(`mcp__elk__<tool>`, the form `--disallowedTools` takes); the proxy has not yet
+been verified against Codex's or Grok's MCP clients. A Wrangler cycle is
+unaffected: it gets its owner's connector, no proxy and no deny list.
+
 ## Errors
 
 | Sentinel | Means |

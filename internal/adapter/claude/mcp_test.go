@@ -33,3 +33,11 @@ func TestMCPServerConfigIsAClaudeMCPConfigEntry(t *testing.T) {
 		t.Error("an invalid spec was translated")
 	}
 }
+
+func TestClaudeNamesAnMCPToolTheWayDisallowedToolsTakesIt(t *testing.T) {
+	a := New()
+	var _ adapter.MCPToolDenier = a
+	if name, ok := a.MCPToolName("elk", "submit_deliverable"); !ok || name != "mcp__elk__submit_deliverable" {
+		t.Errorf("MCPToolName = %q, %v; want mcp__elk__submit_deliverable", name, ok)
+	}
+}

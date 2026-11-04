@@ -37,6 +37,99 @@ type mcpAllowList struct {
 	// the startup log, because a server that silently vanished from a run is
 	// the kind of thing someone spends an afternoon on.
 	skipped []string
+
+	// connector is true when servers carries the Elk run connector: the
+	// server named elk, on the queue's own run-scoped token (ark:rein#112).
+	connector bool
+
+	// denied is RunSpec.DeniedTools for a run that gets the run connector:
+	// Rein's own Elk tools, in the adapter's naming.
+	denied []string
+
+	// conf builds the run connector's server for each run's proxy address.
+	conf adapter.MCPConfigurer
+}
+
+// runConnectorUnavailable says why an adapter cannot be handed the Elk run
+// connector, or "" when it can. It must express a remote MCP server with a
+// bearer token and deny that server's tools by name; without the second, the
+// session could submit its own deliverable or rotate the queue's token
+// (adapter.RunConnectorDeniedTools).
+func runConnectorUnavailable(a adapter.Adapter) string {
+	if _, ok := a.(adapter.MCPConfigurer); !ok || !a.Manifest().Has(adapter.CapMCP) {
+		return "the " + a.Name() + " adapter cannot take an MCP server"
+	}
+	d, ok := a.(adapter.MCPToolDenier)
+	if !ok {
+		return "the " + a.Name() + " adapter cannot keep Rein's own Elk tools out of a session"
+	}
+	if _, ok := d.MCPToolName(adapter.RunConnectorName, "submit_deliverable"); !ok {
+		return "the " + a.Name() + " adapter cannot keep Rein's own Elk tools out of a session"
+	}
+	return ""
+}
+
+// addRunConnector gives every run on the queue the Elk run connector
+// (ark:rein#112): an MCP server named elk that reaches Elk as this queue. The
+// session is given a loopback address of a proxy the run loop starts for each
+// run (elkproxy.go), never the queue's token: the proxy holds the token and
+// refuses Rein's own tools whatever the session does. What is resolved here,
+// once per queue, is that the adapter can take such a server; the server's
+// address is filled in per run ([queueRunner.startRunConnector]).
+//
+// It is the queue's credential, never a person's: bound to one workspace and
+// one executor, tier run-scoped, which is what ark:rein#21 requires of
+// anything a run reaches Elk with.
+func (l *mcpAllowList) addRunConnector(endpoint string, a adapter.Adapter) {
+	if endpoint == "" {
+		return
+	}
+	if why := runConnectorUnavailable(a); why != "" {
+		l.skipped = append(l.skipped, adapter.RunConnectorName+" (Rein's Elk connector on this queue's token): "+why)
+		return
+	}
+	conf := a.(adapter.MCPConfigurer)
+	// A placeholder address proves the adapter takes a plain URL server; each
+	// run replaces it with its own proxy's.
+	v, err := conf.MCPServerConfig(adapter.MCPServerSpec{Name: adapter.RunConnectorName, URL: "http://127.0.0.1:1/run-connector"})
+	if err != nil {
+		l.skipped = append(l.skipped, adapter.RunConnectorName+" (Rein's Elk connector on this queue's token): "+err.Error())
+		return
+	}
+	d := a.(adapter.MCPToolDenier)
+	denied := make([]string, 0, len(adapter.RunConnectorDeniedTools))
+	for _, tool := range adapter.RunConnectorDeniedTools {
+		name, _ := d.MCPToolName(adapter.RunConnectorName, tool)
+		denied = append(denied, name)
+	}
+	if l.servers == nil {
+		l.servers = map[string]any{}
+	}
+	l.servers[adapter.RunConnectorName] = v
+	l.declared = append(l.declared, "mcp:"+adapter.RunConnectorName)
+	sort.Strings(l.declared)
+	l.connector = true
+	l.conf = conf
+	l.denied = denied
+}
+
+// startRunConnector starts this run's Elk proxy and points spec's elk server
+// at it. The caller closes the proxy when the run ends.
+func (qr *queueRunner) startRunConnector(spec *adapter.RunSpec) (*elkProxy, error) {
+	p, err := startElkProxy(qr.r.opts.Config.Elk.MCPURL, qr.elkToken, adapter.RunConnectorDeniedTools)
+	if err != nil {
+		return nil, err
+	}
+	v, err := qr.mcp.conf.MCPServerConfig(adapter.MCPServerSpec{Name: adapter.RunConnectorName, URL: p.URL()})
+	if err != nil {
+		p.Close()
+		return nil, err
+	}
+	if spec.MCPServers == nil {
+		spec.MCPServers = map[string]any{}
+	}
+	spec.MCPServers[adapter.RunConnectorName] = v
+	return p, nil
 }
 
 // resolveMCP builds a queue's allow-list. A server is left out, and said so,
@@ -70,6 +163,14 @@ func resolveMCP(cfg config.Config, q config.Queue, a adapter.Adapter) mcpAllowLi
 			continue
 		}
 		seen[name] = true
+		if name == adapter.RunConnectorName && runConnectorUnavailable(a) == "" {
+			// The name is the run connector's on an adapter that gets one
+			// (addRunConnector): Elk on the queue's own token, never on a
+			// credential config.toml names, which may be a person's.
+			out.skipped = append(out.skipped, name+": the name is Rein's own Elk connector, on this queue's token "+
+				"(ark:rein#112); rename the [mcp_servers."+name+"] entry to keep it")
+			continue
+		}
 		def, ok := cfg.MCPServers[name]
 		if !ok {
 			// config.Validate refuses this; kept so a hand-built config in a
@@ -127,3 +228,29 @@ func (qr *queueRunner) mcpServersForRun() map[string]any {
 	}
 	return out
 }
+
+// withOwnToken is values plus the queue's own token, for a redactor: the token
+// Rein claims and reports with never reaches a run log, whether or not the run
+// holds the Elk run connector (ark:rein#112). values is not modified.
+func (qr *queueRunner) withOwnToken(values map[string]string) map[string]string {
+	if qr.elkToken == "" {
+		return values
+	}
+	out := make(map[string]string, len(values)+1)
+	for k, v := range values {
+		out[k] = v
+	}
+	// Its own key, so a caller's map can never displace it.
+	out["rein queue token"] = qr.elkToken
+	return out
+}
+
+// runConnectorNote tells a run that holds the Elk run connector what it is
+// for and what it is not (ark:rein#112). The ordinary prompt already says not
+// to call Rein's own tools; on this server they are not offered at all.
+const runConnectorNote = "## Elk\n\n" +
+	"This run has an Elk connector: the MCP server `elk`, acting as this queue's agent in its own workspace. " +
+	"Use it when the task asks you to read or file work in Elk: list and search the List, create, link and " +
+	"comment on items, capture to Elk, send work to an agent. It is not a person's connector, so a call that " +
+	"needs a person present is refused; say so in your deliverable rather than looking for another way in. " +
+	"Rein's own tools (claiming, progress, submitting) are not offered on it: Rein reports this run for you."
