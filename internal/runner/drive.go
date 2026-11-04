@@ -250,6 +250,11 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		repo, err = ResolveRepo(qr.r.opts.Config, qr.q, wo.Text)
 	}
 	if err != nil {
+		var unresolved *UnresolvedRepoError
+		if !qr.r.opts.Hosted && errors.As(err, &unresolved) && unresolved.Name == "" &&
+			QueueHasNoCode(qr.r.opts.Config, qr.q) {
+			return qr.driveWithoutRepo(ctx, a, spec, wo, cycle, host, advisory)
+		}
 		qr.setPreflightState("Rein could not tell which repository this run is in")
 		return qr.stuck(ctx, wo, "Rein could not tell which repository this run is in", err.Error())
 	}
@@ -326,6 +331,36 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 
 	return qr.driveWithReview(ctx, a, spec, wo, wt, repo)
 }
+
+// driveWithoutRepo runs a task that needs no code on a worker that has none,
+// in an empty folder that is removed afterwards (ark:rein#103). There is no
+// branch, nothing to push and nothing to land, and the agent is told so.
+func (qr *queueRunner) driveWithoutRepo(ctx context.Context, a adapter.Adapter, spec adapter.RunSpec,
+	wo *elk.WorkOrder, cycle bool, host *HostCapabilities, advisory []string) error {
+	dir, err := os.MkdirTemp("", "rein-run-")
+	if err != nil {
+		return qr.stuck(ctx, wo, "Could not make a folder for this run", err.Error())
+	}
+	if !qr.r.opts.KeepWorktrees {
+		defer os.RemoveAll(dir)
+	}
+	defer qr.reapAdapter(a, wo.RunID, &spec)
+	spec.WorktreeDir = dir
+	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) +
+		"\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") +
+		"\n\n" + noRepoInstructions
+	if len(advisory) > 0 {
+		spec.SystemPrompt += "\n\nPreflight treated these unknown packet requirements as advisory: " + strings.Join(advisory, ", ") + ". Proceed; these names do not block this run."
+	}
+	qr.logf("run %s: no repository (this worker has none and the task names none); running in %s", wo.RunID, dir)
+	return qr.driveWithReview(ctx, a, spec, wo, nil, RepoResolution{Path: dir, Source: RepoNone})
+}
+
+// noRepoInstructions is the "This run" section for a run with no repository.
+const noRepoInstructions = "## This run\n\n" +
+	"- No repository: this worker has none and the task names none. You are in an empty folder that is removed afterwards.\n" +
+	"- Do the task and put the answer in your final message. There is nothing to commit, push, open or merge.\n" +
+	"- If the task turns out to need code, say which repository it needs and stop: that is a stuck result, not a guess.\n"
 
 // reviewOutcome is how a wait on Elk's auto-review pass ended.
 type reviewOutcome int
@@ -1002,6 +1037,11 @@ func (qr *queueRunner) baseRefFor(repo RepoResolution) string {
 // the provisioning did, it is now said out loud before the agent starts.
 func (qr *queueRunner) openingReport(repo RepoResolution, wt *worktree.Worktree) string {
 	var b strings.Builder
+	if wt == nil {
+		fmt.Fprintf(&b, "Claimed by Rein on queue %s. Starting %s in an empty folder: this worker has no code and the task names none, so there is nothing to land.\n",
+			qr.q.Name, qr.q.AgentKind)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "Claimed by Rein on queue %s. Starting %s in a worktree of %s.\n",
 		qr.q.Name, qr.q.AgentKind, repo.Path)
 	if wt.Detached {

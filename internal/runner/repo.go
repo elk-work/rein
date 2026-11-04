@@ -63,7 +63,20 @@ const (
 	RepoFromURL     RepoSource = "a github.com URL in the work order"
 	RepoFromQueue   RepoSource = "the queue's configured repo"
 	RepoFromDefault RepoSource = "default_repo in the config"
+	// RepoNone: the worker has no repository at all and the run names none,
+	// so it runs in an empty folder (ark:rein#103).
+	RepoNone RepoSource = "nowhere: this worker has no code and the task names none, so it ran in an empty folder"
 )
+
+// QueueHasNoCode reports a queue that can reach no repository at all: no
+// queue repo, no default, and no repository declared for it. A run that names
+// no repository on such a queue is not ambiguous — there is nothing to choose
+// between — so it runs in an empty folder rather than ending stuck
+// (ark:rein#103: Elk's setup test task names none, and a business user's first
+// worker often has no code).
+func QueueHasNoCode(cfg config.Config, q config.Queue) bool {
+	return q.Repo == "" && cfg.DefaultRepo == "" && len(cfg.RepositoriesFor(q)) == 0
+}
 
 // RepoResolution is where a run will be cut from.
 type RepoResolution struct {

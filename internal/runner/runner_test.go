@@ -475,6 +475,48 @@ func TestUnresolvedRepoIsStuck(t *testing.T) {
 	}
 }
 
+// ark:rein#103: a worker with no code still runs a task that names none, such
+// as Elk's setup test task, in an empty folder instead of ending stuck.
+func TestATaskNamingNoRepositoryRunsInAnEmptyFolderOnAWorkerWithNoCode(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Repos = nil
+	h.elk.Text("claim_run", strings.Replace(order("run-1"), "repo: scout\n", "", 1))
+
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	sub := h.submitted()
+	if sub.Arg("status") == "stuck" {
+		t.Fatalf("a no-code worker ended a no-repository task stuck:\n%s", sub.Arg("deliverable"))
+	}
+	if created, _ := h.wts.counts(); created != 0 {
+		t.Error("a worktree was created for a run with no repository")
+	}
+	specs := h.agent.Specs()
+	if len(specs) != 1 || specs[0].WorktreeDir == "" {
+		t.Fatalf("the agent did not run in a folder: %+v", specs)
+	}
+	if !strings.Contains(specs[0].SystemPrompt, "No repository") || strings.Contains(specs[0].SystemPrompt, "- Branch: `") {
+		t.Errorf("the agent was not told there is nothing to land:\n%s", specs[0].SystemPrompt)
+	}
+	if _, err := os.Stat(specs[0].WorktreeDir); !os.IsNotExist(err) {
+		t.Errorf("the empty folder %s was left behind", specs[0].WorktreeDir)
+	}
+}
+
+// The same task on a worker that HAS code is still ambiguous: stuck, as before.
+func TestATaskNamingNoRepositoryIsStillStuckWhereTheWorkerHasCode(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Queues[0].Repos = []string{"scout"}
+	h.elk.Text("claim_run", strings.Replace(order("run-1"), "repo: scout\n", "", 1))
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if got := h.submitted().Arg("status"); got != "stuck" {
+		t.Errorf("status = %q, want stuck", got)
+	}
+}
+
 func TestStallLadderRestartsOnceThenGivesUp(t *testing.T) {
 	h := newHarness(t)
 	h.elk.Text("claim_run", order("run-1"))

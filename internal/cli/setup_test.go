@@ -19,10 +19,12 @@ import (
 // answers each poll from a script, recording what Rein sent.
 type pairServer struct {
 	*httptest.Server
-	mu      sync.Mutex
-	started map[string]any
-	secrets []string
-	answers []map[string]any
+	mu        sync.Mutex
+	started   map[string]any
+	secrets   []string
+	answers   []map[string]any
+	collect   map[string]any
+	cancelled bool
 }
 
 func newPairServer(t *testing.T, answers ...map[string]any) *pairServer {
@@ -41,6 +43,11 @@ func newPairServer(t *testing.T, answers ...map[string]any) *pairServer {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"code": "KQ7M4MDX", "expires_at": time.Now().Add(10 * time.Minute).Format(time.RFC3339), "interval": 3,
 			})
+		case strings.HasSuffix(r.URL.Path, "/collect"):
+			_ = json.NewEncoder(w).Encode(p.collect)
+		case strings.HasSuffix(r.URL.Path, "/cancel"):
+			p.cancelled = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		case strings.HasSuffix(r.URL.Path, "/poll"):
 			next := map[string]any{"status": "pending"}
 			if len(p.answers) > 0 {
@@ -74,12 +81,16 @@ func TestSetupPairsWithACodeAndEnrolsWithTheClaimItCollects(t *testing.T) {
 	s.Text("heartbeat_executor", `Heartbeat recorded for queue "mba-claude".`)
 	p := newPairServer(t,
 		map[string]any{"status": "pending"},
-		map[string]any{"status": "approved", "claim_code": claim, "workspace": "Elk Scout", "queue_name": "mba-claude"})
+		map[string]any{"status": "approved", "workspace": "Elk Scout", "approved_by": "Casey Clark", "queue_name": "mba-claude"})
+	p.collect = map[string]any{"claim_code": claim, "workspace": "Elk Scout", "queue_name": "mba-claude"}
 
 	out, errb, code := run(t, "setup", "--agent-kind", "claude", "--host-id", "mba", "--name", "MacBook Air",
 		"--mcp-url", s.URL, "--pair-url", p.URL, "--poll", "10ms", "--no-service")
 	if code != 0 {
 		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	if !strings.Contains(out, "Casey Clark, in Elk Scout, allowed this computer") {
+		t.Errorf("setup did not say who allowed it, and where:\n%s", out)
 	}
 	if !strings.Contains(out, "KQ7M-4MDX") {
 		t.Errorf("the code was not shown in its readable form:\n%s", out)

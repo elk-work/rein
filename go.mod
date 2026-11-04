@@ -10,6 +10,7 @@ require (
 	github.com/spf13/pflag v1.0.9
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.34.0
+	golang.org/x/term v0.33.0
 )
 
 require (
