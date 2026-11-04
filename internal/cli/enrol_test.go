@@ -248,11 +248,11 @@ func TestEnrolRejectsAnOverLongQueueName(t *testing.T) {
 
 func TestEnrolRejectsAnUnknownAgentKind(t *testing.T) {
 	t.Setenv(config.EnvHome, t.TempDir())
-	_, errb, code := run(t, "enrol", "--workspace", "w", "--agent-kind", "gemini", "--token", "t")
+	_, errb, code := run(t, "enrol", "--workspace", "w", "--agent-kind", "cursor", "--token", "t")
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(errb, "claude, codex, grok, runner, other") {
+	if !strings.Contains(errb, "claude, codex, grok, gemini, runner, other") {
 		t.Errorf("error does not name the kinds Elk accepts: %q", errb)
 	}
 }

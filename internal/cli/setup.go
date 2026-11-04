@@ -324,11 +324,14 @@ func startServiceAfterSetup(cmd *cobra.Command, out io.Writer) error {
 }
 
 // detectAgentKind picks the coding agent to drive, in the order Elk's plan
-// prefers: Claude Code, then Codex, then grok.
+// prefers: Claude Code, then Codex, then grok, then Gemini CLI, which runs on
+// the person's own Google key rather than a plan, so it comes last.
 func detectAgentKind(look func(string) (string, error)) string {
-	for _, k := range []string{"claude", "codex", "grok"} {
-		if _, err := look(k); err == nil {
-			return k
+	for _, k := range []struct{ kind, binary string }{
+		{"claude", "claude"}, {"codex", "codex"}, {"grok", "grok"}, {"gemini", "gemini"},
+	} {
+		if _, err := look(k.binary); err == nil {
+			return k.kind
 		}
 	}
 	return ""

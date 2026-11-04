@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
 )
@@ -51,6 +52,13 @@ func ApplyElkSettings(cfg config.Config, workspace, queue string, s elk.WorkerSe
 	for _, name := range s.Secrets {
 		name = strings.TrimSpace(name)
 		if name == "" {
+			continue
+		}
+		// The Google key is the gemini adapter's own, read for gemini runs
+		// alone (gemini.go) and never a queue secret: a queue naming it is
+		// refused, so taking it here would make every later choice from the
+		// app fail too.
+		if name == geminiadapter.KeyName {
 			continue
 		}
 		if _, mine := secrets[name]; !mine {

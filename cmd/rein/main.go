@@ -14,6 +14,7 @@ import (
 	_ "github.com/elk-work/rein/internal/adapter/check"
 	_ "github.com/elk-work/rein/internal/adapter/claude"
 	_ "github.com/elk-work/rein/internal/adapter/codex"
+	_ "github.com/elk-work/rein/internal/adapter/gemini"
 	_ "github.com/elk-work/rein/internal/adapter/grok"
 )
 

@@ -37,10 +37,13 @@ const QueueNameMaxRunes = 12
 // at `connect_executor`, and refusing locally first means a mistyped kind
 // costs a sentence rather than a spent claim code.
 //
+// `gemini` is Google's Gemini CLI on the person's own Gemini API key
+// (internal/adapter/gemini; Casey's ruling, 2026-11-04).
+//
 // `runner` is a queue that runs CI checks rather than a coding agent
 // (internal/adapter/check; Elk Scout #1163, a): its runs carry a check packet
 // naming a commit, a workflow file and a job.
-var AgentKinds = []string{"claude", "codex", "grok", "runner", "other"}
+var AgentKinds = []string{"claude", "codex", "grok", "gemini", "runner", "other"}
 
 // KnownAgentKind reports whether kind is one Elk will accept.
 func KnownAgentKind(kind string) bool {
