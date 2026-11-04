@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// secretNameRE matches what Elk accepts for a secret's name (scout 0597).
+// secretNameRE matches what Elk accepts for a secret's name (scout 0599).
 var secretNameRE = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
 // newSecretCommand: put one secret's value in this computer's keychain for
