@@ -60,7 +60,7 @@ pass credentials as build arguments, or record them in deliverables.
    Artifact Registry mirror if Cloud Run cannot import it. Do not bake registry
    credentials into the image.
 
-3. In Elk Scout's Connected agents, enrol the Claude queue `cloud-claude` and
+3. From the Agents page in Elk Scout, enrol the Claude queue `cloud-claude` and
    obtain its scoped Elk credential privately. Preserve the enrolment's workspace
    and machine identifiers in the deployment config. Store that config as a
    Secret Manager file version mounted at `/etc/rein/config.toml`; the image has

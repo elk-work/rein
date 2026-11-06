@@ -42,8 +42,8 @@ by workspace and queue.
 
 Two ways in:
 
-  --claim-code <code>   a single-use invite from Elk (Connected agents →
-                        Connect another agent). Rein exchanges it for a durable
+  --claim-code <code>   a single-use invite from the Elk app (Agents →
+                        Connect an agent). Rein exchanges it for a durable
                         run-scoped token and stores that. This is the narrow
                         credential and the one to prefer.
   --token <token>       your own connector token. Broader than an invite — it
@@ -61,7 +61,7 @@ would be one queue draining two machines' work.
 A queue is PRIVATE by default: only the person whose credential connected it
 can send work to it. Pass --shared to let any member of the workspace queue
 work here. The choice is not permanent either way — its owner changes it later
-in Elk → Settings → Connected agents. On the --claim-code path the inviting
+from its card on Elk's Agents page. On the --claim-code path the inviting
 person already chose it on the invite sheet, so Elk ignores --shared there and
 says so in its reply.
 
@@ -78,7 +78,7 @@ docs/workspace-repositories.md.
 
 forgets a queue locally: it deletes the keychain entry first, then drops the
 queue from the config. It does not revoke the credential in Elk — an admin does
-that in Settings → Connected agents.`,
+that with Stop on its card on Elk's Agents page.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnrol(cmd)
@@ -98,7 +98,7 @@ func addEnrolConnectFlags(f *pflag.FlagSet) {
 	f.String("workspace", "", "Elk workspace to enrol into")
 	f.String("queue", "", "queue name (default: <host-id>-<agent-kind>)")
 	f.String("agent-kind", "", "coding agent this queue drives: "+strings.Join(elk.AgentKinds, ", "))
-	f.String("display-name", "", "name shown on Elk's Connected agents page (default: the queue name)")
+	f.String("display-name", "", "name shown on Elk's Agents page (default: the queue name)")
 	f.String("host-id", "", "short machine label used in the queue name (default: suggested from the hostname)")
 	f.String("mcp-url", "", "Elk MCP endpoint (default: "+DefaultMCPURL+")")
 	f.Bool("shared", false, "let any workspace member send work to this queue (default: private to you; ignored with --claim-code)")
@@ -322,7 +322,7 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	stored := firstNonEmpty(res.Token, token)
 	if stored == "" {
 		return fmt.Errorf("Elk bound queue %q but returned no durable credential.\n"+
-			"       An admin reveals it once in Settings → Connected agents; re-run with --token <that token>", queue)
+			"       Connect it again from Agents → Connect an agent in the Elk app, and re-run with the new invite", queue)
 	}
 
 	// Config first, then the token. The OS keychain has no enumeration, so
@@ -363,7 +363,7 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 		} else {
 			fmt.Fprintln(out, "access  private to you — pass --shared to open it to the workspace")
 		}
-		fmt.Fprintln(out, "        (its owner changes this later in Elk → Settings → Connected agents)")
+		fmt.Fprintln(out, "        (its owner changes this later from its card on Elk's Agents page)")
 	}
 
 	// Prove the stored credential works, without claiming anything. A
@@ -495,8 +495,8 @@ func runRevoke(cmd *cobra.Command, path string, cfg config.Config, store keyring
 
 	fmt.Fprintf(out, "Forgot queue %q in workspace %q: token deleted from the %s keyring, queue dropped from %s.\n",
 		queue, workspace, store.Name(), path)
-	fmt.Fprintln(out, "This is local only. The credential still exists in Elk until an admin revokes it in")
-	fmt.Fprintln(out, "Settings → Connected agents.")
+	fmt.Fprintln(out, "This is local only. The credential still exists in Elk until someone presses Stop on")
+	fmt.Fprintln(out, "its card on Elk's Agents page.")
 	return nil
 }
 

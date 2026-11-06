@@ -281,7 +281,7 @@ func TestAQueueSaysWhenElkCountsWorkItCannotClaim(t *testing.T) {
 // and the log says it once rather than twice a minute.
 func TestAParkedQueueSaysSoOnItsBeatAndOnceInTheLog(t *testing.T) {
 	h := newHarness(t)
-	const parked = `Queue "` + queue + `" is disabled: its agent was parked in Settings → Connected agents, and nothing ` +
+	const parked = `Queue "` + queue + `" is disabled: its agent was parked from the Agents page, and nothing ` +
 		"is handed to a parked agent until someone enables it again. Its runs stay queued. Keep " +
 		"calling `heartbeat_executor` — a parked machine should still show as parked, not absent."
 	h.elk.Reply("claim_run", elktest.Reply{Text: parked, IsError: true})
