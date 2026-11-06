@@ -1351,6 +1351,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 						OutputTokens:     ev.Usage.OutputTokens,
 						CacheReadTokens:  ev.Usage.CacheReadTokens,
 						CacheWriteTokens: ev.Usage.CacheWriteTokens,
+						ReasoningTokens:  ev.Usage.ReasoningTokens,
 						Model:            ev.Usage.Model,
 						Provider:         qr.provider(ev.Usage.Model),
 					})

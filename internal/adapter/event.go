@@ -160,11 +160,15 @@ type PermissionResponse struct {
 
 // Usage is a token increment.
 type Usage struct {
-	InputTokens      int64  `json:"input_tokens"`
-	OutputTokens     int64  `json:"output_tokens"`
-	CacheReadTokens  int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int64  `json:"cache_write_tokens,omitempty"`
-	Model            string `json:"model,omitempty"`
+	InputTokens      int64 `json:"input_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
+	// ReasoningTokens is thinking the provider counts apart from OutputTokens.
+	// Only a provider that reports it that way sets it: Claude and Codex fold
+	// thinking into output, so counting it here would bill it twice.
+	ReasoningTokens int64  `json:"reasoning_tokens,omitempty"`
+	Model           string `json:"model,omitempty"`
 }
 
 // Add accumulates u2 into u.
@@ -173,6 +177,7 @@ func (u *Usage) Add(u2 Usage) {
 	u.OutputTokens += u2.OutputTokens
 	u.CacheReadTokens += u2.CacheReadTokens
 	u.CacheWriteTokens += u2.CacheWriteTokens
+	u.ReasoningTokens += u2.ReasoningTokens
 	if u2.Model != "" {
 		u.Model = u2.Model
 	}

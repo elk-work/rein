@@ -391,7 +391,7 @@ func TestRevokeDeletesTheKeychainEntryBeforeTheConfigRow(t *testing.T) {
 		// left behind here would be unreachable forever.
 		t.Errorf("the token outlived the config row that indexes it: %v", keys)
 	}
-	if !strings.Contains(out, "Settings → Connected agents") {
+	if !strings.Contains(out, "its card on Elk's Agents page") {
 		t.Errorf("revoke did not say it is local only:\n%s", out)
 	}
 }

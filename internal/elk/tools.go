@@ -256,7 +256,7 @@ type ConnectRequest struct {
 	// claim carries its own.
 	Workspace string
 
-	// DisplayName is what the queue is called on the Connected agents page,
+	// DisplayName is what the queue is called on the Agents page,
 	// and the queue address when Queue is empty. Capped like a queue name.
 	DisplayName string
 
@@ -282,7 +282,7 @@ type ConnectRequest struct {
 	ClaimCode string
 
 	// SelfConfigure asks for the durable credential back in the reply instead
-	// of leaving a human to reveal it in Settings. Rein asserts it because it
+	// of leaving a person to make a new one in Elk. Rein asserts it because it
 	// puts the token straight into the OS keychain and never prints, logs or
 	// repeats it — which is the whole condition Elk attaches to the flag.
 	SelfConfigure bool

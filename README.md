@@ -47,8 +47,8 @@ press Allow. Rein enrols this computer as your private worker and starts its
 service. No token, link or invite is copied. It needs the server side of
 Elk #1401 lane 7 (scout migration 0596 and the `worker-pair` function).
 
-Or connect a queue by hand with a claim code from Elk → **Connected agents** →
-**Connect another agent**, and run it as a service:
+Or connect a queue by hand with a claim code from the Elk app (**Agents** →
+**Connect an agent**), and run it as a service:
 
 ```sh
 rein enrol --workspace "<your workspace>" --agent-kind claude --claim-code <code>
@@ -95,7 +95,7 @@ Two ways in, and the first is the one to prefer:
 
 | | |
 |---|---|
-| `--claim-code <code>` | a single-use invite (Elk → **Connected agents** → **Connect another agent**). Rein exchanges it for a durable **run-scoped** token and stores that. The claim carries its own workspace and queue name. |
+| `--claim-code <code>` | a single-use invite (Elk app: **Agents** → **Connect an agent**). Rein exchanges it for a durable **run-scoped** token and stores that. The claim carries its own workspace and queue name. |
 | `--token <token>` | your own connector token, from Elk → Tweaks → **Elk Connector**. Broader — it is your personal, `interactive`-tier credential — but it needs no invite. |
 
 Either can come from the environment instead of the command line, which keeps
@@ -109,7 +109,7 @@ the whole condition Elk attaches to the flag.
 **Who may send work here — `--shared`.** A queue is **private** by default:
 only the person whose credential connected it can queue work to it. Pass
 `--shared` and any member of the workspace can. Neither is permanent — the
-queue's owner changes it later in Elk → Settings → **Connected agents** — and
+queue's owner changes it later from its card on Elk's **Agents** page — and
 `rein enrol` prints which one it got, because Elk's own reply does not say.
 
 `--shared` applies to the `--token` path only. On `--claim-code` the inviting

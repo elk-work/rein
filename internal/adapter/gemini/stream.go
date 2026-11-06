@@ -42,6 +42,7 @@ type line struct {
 }
 
 type modelStats struct {
+	TotalTokens  int64  `json:"total_tokens"`
 	InputTokens  int64  `json:"input_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
 	Cached       int64  `json:"cached"`
@@ -58,7 +59,15 @@ func (m modelStats) toAdapter(model string) adapter.Usage {
 	if fresh < 0 {
 		fresh = 0
 	}
-	return adapter.Usage{InputTokens: fresh, OutputTokens: m.OutputTokens, CacheReadTokens: m.Cached, Model: model}
+	// Gemini bills thinking at its output rate and counts it apart from output.
+	// The stream has no field for it; it is what total_tokens holds beyond the
+	// prompt and the answer. Google's tool-use prompt tokens land here too, which
+	// prices those few high rather than leaving every thought unbilled.
+	thinking := m.TotalTokens - m.InputTokens - m.OutputTokens
+	if thinking < 0 {
+		thinking = 0
+	}
+	return adapter.Usage{InputTokens: fresh, OutputTokens: m.OutputTokens, CacheReadTokens: m.Cached, ReasoningTokens: thinking, Model: model}
 }
 
 // turnResult is a result line, as the session needs it.
@@ -120,7 +129,7 @@ func decode(raw []byte) (decoded, error) {
 			sort.Strings(names)
 			for _, name := range names {
 				u := l.Stats.Models[name].toAdapter(name)
-				if u.InputTokens+u.OutputTokens+u.CacheReadTokens == 0 {
+				if u.InputTokens+u.OutputTokens+u.CacheReadTokens+u.ReasoningTokens == 0 {
 					continue
 				}
 				r.usage = append(r.usage, u)
