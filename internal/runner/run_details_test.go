@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/elk/elktest"
 	"github.com/elk-work/rein/internal/runner"
 )
@@ -49,6 +50,11 @@ func TestTheAgentsLastLineIsTheDeliverablesLastLine(t *testing.T) {
 	}
 	if !strings.HasPrefix(lastReport.Arg("body"), "**Run details**") {
 		t.Errorf("the last step before the deliverable is not the run details: %q", lastReport.Arg("body"))
+	}
+	// A tool line: the Lock Screen card reads the newest step as what the agent
+	// is doing, and these details are not that (Elk #1504).
+	if got := lastReport.Arg("kind"); got != string(elk.ProgressTool) {
+		t.Errorf("the run details went out as %q, not a tool line", got)
 	}
 	if !strings.Contains(lastReport.Arg("body"), "- Branch: `") {
 		t.Errorf("the run details do not name the branch:\n%s", lastReport.Arg("body"))

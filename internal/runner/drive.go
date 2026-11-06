@@ -475,7 +475,9 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 	// immediately after claiming, and it doubles as the cheapest possible
 	// check that the claim is still live: a run cancelled between the claim
 	// and here costs nothing instead of a whole session.
-	if err := qr.report(ctx, wo.RunID, elk.ProgressStep, qr.openingReport(repo, wt), &pending); err != nil {
+	// A tool line, not a step: this is Rein's note about the machine, and a step
+	// is what a person reads on their Lock Screen as what the agent is doing.
+	if err := qr.report(ctx, wo.RunID, elk.ProgressTool, qr.openingReport(repo, wt), &pending); err != nil {
 		if errors.Is(err, elk.ErrCancelled) {
 			qr.logf("run %s: cancelled before the session started", wo.RunID)
 			qr.logStatus = runlog.StatusCancelled
@@ -1776,13 +1778,15 @@ func (qr *queueRunner) runDetails(wt *worktree.Worktree, repo RepoResolution, sp
 // reportDetails puts a successful run's details on its timeline, as the last
 // step before the deliverable, and says whether they got there. Elk's review
 // reads the deliverable alone, so details here cannot be mistaken for the end
-// of the agent's work; the app shows a multi-line step as a headline that
-// opens, so a person is one tap from the branch.
+// of the agent's work. A tool line, not a step: the Lock Screen card reads the
+// newest step as what the agent is doing, and these details reached it as
+// "Run details Repository: [path]" (Elk #1504). The task's timeline still shows
+// them, one tap from the branch.
 //
 // No usage rides on it: the final delta stays with the submit, where Elk's
 // contract asks for it.
 func (qr *queueRunner) reportDetails(ctx context.Context, runID, details string) bool {
-	err := qr.report(ctx, runID, elk.ProgressStep, details, &elk.Usage{})
+	err := qr.report(ctx, runID, elk.ProgressTool, details, &elk.Usage{})
 	if err != nil {
 		qr.logf("run %s: the run details did not reach the timeline (%v); they go at the top of the deliverable instead",
 			runID, err)
