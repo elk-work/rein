@@ -603,3 +603,8 @@ func orDefault(d, def time.Duration) time.Duration {
 	}
 	return d
 }
+
+// ProgramVersion implements [adapter.ProgramVersioner].
+func (a *Adapter) ProgramVersion(ctx context.Context) string {
+	return adapter.ReadProgramVersion(ctx, a.binary())
+}

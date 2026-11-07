@@ -120,6 +120,10 @@ type SessionReading struct {
 	RunID string `json:"run_id,omitempty"`
 	Model string `json:"model,omitempty"`
 
+	// ProgramVersion is what the AI program says its version is, as it said
+	// it: "2.1.296 (Claude Code)". Absent when it could not be read.
+	ProgramVersion string `json:"program_version,omitempty"`
+
 	// Effort is the resolved effort passed to the run. Absent when the CLI
 	// chooses its own default, which Rein does not know.
 	Effort string `json:"effort,omitempty"`

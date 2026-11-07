@@ -245,6 +245,11 @@ type queueTelemetry struct {
 	// CLI's default), so Elk's agent card can name a model between runs.
 	model string
 
+	// programVersion is what the AI program last said its version is, and
+	// programVersionAt when that was asked: see [queueRunner.recheckProgramVersion].
+	programVersion   string
+	programVersionAt time.Time
+
 	// effort is the resolved effort passed to the most recent run, retained
 	// between runs. Empty means the CLI chose its own unknown default.
 	effort string
@@ -370,7 +375,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		if tel.faulted {
 			state = StateFaulted
 		}
-		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Effort: tel.effort}
+		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Effort: tel.effort, ProgramVersion: tel.programVersion}
 		putWaiting(s, tel)
 		qr.r.putRefusal(s)
 		// No session, but the subscription is still there: the last reading,
@@ -381,11 +386,12 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	}
 
 	s := &elk.SessionReading{
-		State:     string(StateRunning),
-		RunID:     tel.runID,
-		Effort:    tel.effort,
-		StartedAt: elk.RFC3339(tel.started),
-		Land:      qr.q.LandOrDefault(),
+		State:          string(StateRunning),
+		RunID:          tel.runID,
+		Effort:         tel.effort,
+		ProgramVersion: tel.programVersion,
+		StartedAt:      elk.RFC3339(tel.started),
+		Land:           qr.q.LandOrDefault(),
 	}
 	if !tel.tokens.empty() {
 		s.Tokens = &elk.TokenReading{
@@ -684,6 +690,7 @@ func (qr *queueRunner) setupRecheckInterval() time.Duration {
 // looked inside the interval: that is the case that matters, because the
 // failed check has usually just refreshed the login itself.
 func (qr *queueRunner) recheckSetup(ctx context.Context) {
+	qr.recheckProgramVersion(ctx)
 	if qr.r.opts.Hosted {
 		return
 	}
@@ -713,6 +720,39 @@ func (qr *queueRunner) recheckSetup(ctx context.Context) {
 	if now != state {
 		qr.logf("agent setup: %s (was: %s)", now, state)
 	}
+}
+
+// programVersionEvery is how often a queue asks its AI program for its version.
+// Programs update themselves, so once at start-up would go stale, and the answer
+// never changes fast enough to matter by the minute.
+const programVersionEvery = time.Hour
+
+// recheckProgramVersion refreshes the version on the queue's reading. Bounded,
+// and a failure only means no version on the reading: it can't touch a run.
+func (qr *queueRunner) recheckProgramVersion(ctx context.Context) {
+	qr.telMu.Lock()
+	due := time.Since(qr.tel.programVersionAt) >= programVersionEvery
+	if due {
+		qr.tel.programVersionAt = time.Now()
+	}
+	qr.telMu.Unlock()
+	if !due {
+		return
+	}
+	a, ok := adapter.Lookup(qr.q.AgentKind)
+	if !ok {
+		return
+	}
+	v, ok := a.(adapter.ProgramVersioner)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	version := v.ProgramVersion(ctx)
+	qr.telMu.Lock()
+	qr.tel.programVersion = version
+	qr.telMu.Unlock()
 }
 
 func (qr *queueRunner) checkAgentSetup(ctx context.Context) {
