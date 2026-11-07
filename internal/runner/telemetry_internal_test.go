@@ -581,3 +581,24 @@ func TestSessionEffortUsesRunChoice(t *testing.T) {
 		})
 	}
 }
+
+// The reading carries what the program last said, idle or running, and a queue
+// with no version says nothing rather than something empty.
+func TestSessionReadingCarriesProgramVersion(t *testing.T) {
+	qr := testQueueRunner(testRunner(fullMachine()))
+	if s := qr.sessionReading(); s.ProgramVersion != "" {
+		t.Fatalf("before any read: %q", s.ProgramVersion)
+	}
+	qr.telMu.Lock()
+	qr.tel.programVersion = "2.1.296 (Claude Code)"
+	qr.telMu.Unlock()
+	if s := qr.sessionReading(); s.ProgramVersion != "2.1.296 (Claude Code)" {
+		t.Fatalf("idle: %q", s.ProgramVersion)
+	}
+	qr.telMu.Lock()
+	qr.tel.runID = "arun-1"
+	qr.telMu.Unlock()
+	if s := qr.sessionReading(); s.ProgramVersion != "2.1.296 (Claude Code)" {
+		t.Fatalf("running: %q", s.ProgramVersion)
+	}
+}

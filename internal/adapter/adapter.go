@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -41,6 +42,37 @@ import (
 	"github.com/elk-work/rein/internal/hosted"
 	"github.com/elk-work/rein/internal/secretenv"
 )
+
+// ProgramVersioner is an adapter that can say which version of its AI program
+// is installed. Optional, and only ever a label for a person: nothing decides
+// anything by it.
+type ProgramVersioner interface {
+	// ProgramVersion is the program's own words, or "" when it can't be read.
+	ProgramVersion(ctx context.Context) string
+}
+
+// programVersionMax caps what a program's --version may put on a reading.
+const programVersionMax = 80
+
+// ReadProgramVersion runs `bin --version` and returns its first line, or ""
+// for any failure: a missing version is no reading, never an error.
+func ReadProgramVersion(ctx context.Context, bin string) string {
+	if bin == "" {
+		return ""
+	}
+	cmd := exec.CommandContext(ctx, bin, "--version")
+	cmd.Env = secretenv.Filter(os.Environ())
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	line = strings.TrimSpace(line)
+	if len(line) > programVersionMax {
+		return ""
+	}
+	return line
+}
 
 // Adapter drives one kind of coding agent. Implementations are safe for
 // concurrent use: the run loop may hold a single adapter and start several

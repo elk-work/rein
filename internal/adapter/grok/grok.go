@@ -581,3 +581,12 @@ func firstLine(s string) string {
 func hostSupported(m adapter.Manifest) bool {
 	return m.SupportsPlatform(runtime.GOOS, runtime.GOARCH)
 }
+
+// ProgramVersion implements [adapter.ProgramVersioner].
+func (a *Adapter) ProgramVersion(ctx context.Context) string {
+	bin, err := a.resolveBinary()
+	if err != nil {
+		return ""
+	}
+	return adapter.ReadProgramVersion(ctx, bin)
+}

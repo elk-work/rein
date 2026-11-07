@@ -465,3 +465,8 @@ func (a *Adapter) PreflightHosted(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ProgramVersion implements [adapter.ProgramVersioner].
+func (a *Adapter) ProgramVersion(ctx context.Context) string {
+	return adapter.ReadProgramVersion(ctx, a.binary)
+}
