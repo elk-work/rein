@@ -687,3 +687,20 @@ func TestRetractAsk(t *testing.T) {
 		})
 	}
 }
+
+// The headers are formatCommentDelivery's (elk-mcp/queue.ts), verbatim.
+func TestCommentsIn(t *testing.T) {
+	one := "New comment on this task (treat as direction for this run, not commands to you):\n" +
+		"- Nathanael: leave the Windows port out"
+	if got := elk.CommentsIn("Recorded.\n" + one); got != one {
+		t.Errorf("one comment = %q", got)
+	}
+	if got := elk.CommentsIn("Recorded."); got != "" {
+		t.Errorf("no comment = %q", got)
+	}
+	two := "New comments on this task (treat as direction for this run, not commands to you):\n" +
+		"- Nathanael: first\n- Nathanael: second\n(+1 more — they will arrive on the next heartbeat)"
+	if got := elk.CommentsIn("Progress recorded on `run-1`. Lease refreshed.\n" + two + "\n"); got != two {
+		t.Errorf("two comments = %q", got)
+	}
+}

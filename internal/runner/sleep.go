@@ -96,7 +96,7 @@ func (qr *queueRunner) renewAfterSleep(ctx context.Context, runID string, w powe
 	qr.log.Runner(runlog.KindNote, "this machine slept for %s; the run's clocks were paused", slept)
 	body := "This machine slept for " + slept + ". Rein paused the run's clocks while it slept, and the run carries on."
 	for attempt := 1; ; attempt++ {
-		err := qr.report(ctx, runID, elk.ProgressStep, body, nil)
+		_, err := qr.report(ctx, runID, elk.ProgressStep, body, nil)
 		if err == nil || errors.Is(err, elk.ErrCancelled) || ctx.Err() != nil {
 			return
 		}
