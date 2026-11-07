@@ -477,7 +477,7 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 	// and here costs nothing instead of a whole session.
 	// A tool line, not a step: this is Rein's note about the machine, and a step
 	// is what a person reads on their Lock Screen as what the agent is doing.
-	if _, err := qr.report(ctx, wo.RunID, elk.ProgressTool, qr.openingReport(repo, wt), &pending); err != nil {
+	if _, err := qr.report(ctx, wo.RunID, elk.ProgressTool, qr.openingReport(repo, wt), "", "", &pending); err != nil {
 		if errors.Is(err, elk.ErrCancelled) {
 			qr.logf("run %s: cancelled before the session started", wo.RunID)
 			qr.logStatus = runlog.StatusCancelled
@@ -581,7 +581,7 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		qr.log.Runner(runlog.KindReview, "Elk asked for revisions; running the agent again (round %d)", round+1)
 		_, _ = qr.report(ctx, wo.RunID, elk.ProgressStep,
 			fmt.Sprintf("Elk's review asked for revisions (round %d of %d). Working them now.",
-				round+1, qr.maxReviewRounds()), &pending)
+				round+1, qr.maxReviewRounds()), "", "", &pending)
 		spec = qr.revisionSpec(a, spec, wo, res.sessionID, verdict)
 	}
 }
@@ -615,7 +615,7 @@ func (qr *queueRunner) retakeSlot(ctx context.Context, wo *elk.WorkOrder, round 
 		reported = time.Now()
 		body := fmt.Sprintf("Elk's review asked for revisions (round %d of %d). Rein is %s, and starts on them "+
 			"as soon as one is free.", round, qr.maxReviewRounds(), reason)
-		if _, err := qr.report(waitCtx, wo.RunID, elk.ProgressStep, body, pending); errors.Is(err, elk.ErrCancelled) {
+		if _, err := qr.report(waitCtx, wo.RunID, elk.ProgressStep, body, "", "", pending); errors.Is(err, elk.ErrCancelled) {
 			cancelled = true
 			cancel()
 		}
@@ -899,7 +899,7 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 					wo.RunID, qr.r.opts.StallAfter, spec.ResumeID)
 				_, _ = qr.report(ctx, wo.RunID, elk.ProgressStep,
 					fmt.Sprintf("No output for %s. Restarting the session once, resuming where it stopped.",
-						qr.r.opts.StallAfter), pending)
+						qr.r.opts.StallAfter), "", "", pending)
 				continue
 			}
 			why := fmt.Sprintf("The agent produced no output for %s.", qr.r.opts.StallAfter)
@@ -1224,6 +1224,8 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		lease     = time.NewTicker(MaxReportInterval)
 		lastToolT time.Time
 		live      = qr.live
+		// What ran since the last tool report, for its receipt.
+		didTools, didCmds, didFiles []string
 	)
 	var capC <-chan time.Time
 	if qr.r.opts.Hosted {
@@ -1240,9 +1242,9 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 	// A reply can carry task comments a person posted since the last one.
 	// They go into the session the way `rein attach` input does; a session
 	// that cannot take them gets a step line instead, so nothing vanishes.
-	var report func(kind elk.ProgressKind, body string) bool
-	report = func(kind elk.ProgressKind, body string) bool {
-		comments, err := qr.report(ctx, wo.RunID, kind, body, pending)
+	var receipt func(kind elk.ProgressKind, body, why, next string) bool
+	receipt = func(kind elk.ProgressKind, body, why, next string) bool {
+		comments, err := qr.report(ctx, wo.RunID, kind, body, why, next, pending)
 		if err != nil {
 			if errors.Is(err, elk.ErrCancelled) {
 				out.cancelled = true
@@ -1254,11 +1256,12 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		if comments != "" && live != nil {
 			if err := live.input(ctx, comments); err != nil {
 				qr.logf("run %s: passing task comments to the session: %v", wo.RunID, err)
-				return report(elk.ProgressStep, "Couldn't pass your message to the session")
+				return receipt(elk.ProgressStep, "Couldn't pass your message to the session", "", "")
 			}
 		}
 		return true
 	}
+	report := func(kind elk.ProgressKind, body string) bool { return receipt(kind, body, "", "") }
 
 	for {
 		select {
@@ -1271,7 +1274,8 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			return out
 
 		case <-lease.C:
-			if !report(elk.ProgressStep, qr.statusLine(out)) {
+			why, next := whyNext(text.String())
+			if !receipt(elk.ProgressStep, qr.statusLine(out), why, next) {
 				out.text = text.String()
 				return out
 			}
@@ -1351,14 +1355,24 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					name = ev.Tool.Name
 				}
 				out.tools = append(out.tools, name)
-				if cmd := toolCommand(ev.Tool); cmd != "" {
+				cmd, file := toolCommand(ev.Tool), editedFile(ev.Tool)
+				switch {
+				case cmd != "":
 					out.commands = append(out.commands, cmd)
 					out.notePRs(cmd)
+					didCmds = append(didCmds, cmd)
+				case file != "":
+					didFiles = append(didFiles, file)
+				default:
+					didTools = append(didTools, name)
 				}
 				// Throttled: named, but not one round trip per call.
 				if time.Since(lastToolT) >= MinReportInterval || time.Since(lastRep) >= MinReportInterval {
 					lastToolT = time.Now()
-					if !report(elk.ProgressTool, "Ran "+name+".") {
+					body := orDefault(didLine(didTools, didCmds, didFiles), "Ran "+name+".")
+					didTools, didCmds, didFiles = nil, nil, nil
+					why, next := whyNext(text.String())
+					if !receipt(elk.ProgressTool, body, why, next) {
 						out.text = text.String()
 						return out
 					}
@@ -1541,11 +1555,13 @@ func (qr *queueRunner) provider(model string) string {
 //
 // It also returns any task comments Elk delivered in its reply
 // ([elk.CommentsIn]), which only the watch loop can hand to a session.
-func (qr *queueRunner) report(ctx context.Context, runID string, kind elk.ProgressKind, body string, pending *elk.Usage) (string, error) {
+func (qr *queueRunner) report(ctx context.Context, runID string, kind elk.ProgressKind, body, why, next string,
+	pending *elk.Usage) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		body = "Working."
 	}
-	p := elk.Progress{RunID: runID, Kind: kind, Body: truncate(qr.redactString(body), 4000)}
+	p := elk.Progress{RunID: runID, Kind: kind, Body: truncate(qr.redactString(body), 4000),
+		Why: qr.redactString(why), Next: qr.redactString(next)}
 	if pending.Valid() && !pending.Empty() {
 		u := *pending
 		p.Usage = &u
@@ -1602,7 +1618,7 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 			title = "Landing policy breached: " + title
 			banner = verdict.banner(land)
 			_, _ = qr.report(ctx, wo.RunID, elk.ProgressStep, "Landing check: the run went past its queue's policy ("+
-				land+"). "+verdict.Breaches[0], pending)
+				land+"). "+verdict.Breaches[0], "", "", pending)
 		}
 	}
 
@@ -1818,7 +1834,7 @@ func (qr *queueRunner) runDetails(wt *worktree.Worktree, repo RepoResolution, sp
 // No usage rides on it: the final delta stays with the submit, where Elk's
 // contract asks for it.
 func (qr *queueRunner) reportDetails(ctx context.Context, runID, details string) bool {
-	_, err := qr.report(ctx, runID, elk.ProgressTool, details, &elk.Usage{})
+	_, err := qr.report(ctx, runID, elk.ProgressTool, details, "", "", &elk.Usage{})
 	if err != nil {
 		qr.logf("run %s: the run details did not reach the timeline (%v); they go at the top of the deliverable instead",
 			runID, err)

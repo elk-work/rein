@@ -89,3 +89,25 @@ func TestAwaitReviewCarriesComments(t *testing.T) {
 		t.Errorf("the revision round lost the verdict or the comments:\n%s", specs[1].Prompt)
 	}
 }
+
+// The tool report is a receipt: what ran, with the agent's Why and Next.
+func TestToolReportIsAReceipt(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Script = []adapter.Event{
+		{Kind: adapter.EventText, Text: "Why: the sheet has no picker\nNext: run the tests"},
+		{Kind: adapter.EventToolUse, Tool: &adapter.ToolUse{Name: "Edit", Input: []byte(`{"file_path":"/w/a.ts"}`)}},
+	}
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	for _, r := range h.elk.CallsTo("report_progress") {
+		if r.Arg("body") == "Edited a.ts" {
+			if r.Arg("why") != "the sheet has no picker" || r.Arg("next") != "run the tests" {
+				t.Errorf("receipt = %#v", r.Args)
+			}
+			return
+		}
+	}
+	t.Errorf("no receipt for the edit\nlog:\n%s", h.log)
+}
