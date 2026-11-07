@@ -625,17 +625,11 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 // CommentsIn returns the task comments Elk delivered in a reply, from the
 // "New comment(s) on this task" header (formatCommentDelivery in
 // elk-mcp/queue.ts) to the end, or "" when the reply carries none.
+// The block always opens with a newline; the one prepended here covers a
+// reply that is the block alone and was trimmed.
 func CommentsIn(text string) string {
-	for i := 0; i < len(text); {
-		line := text[i:]
-		if strings.HasPrefix(line, "New comment on this task") || strings.HasPrefix(line, "New comments on this task") {
-			return strings.TrimSpace(line)
-		}
-		nl := strings.IndexByte(line, '\n')
-		if nl < 0 {
-			break
-		}
-		i += nl + 1
+	if _, c, ok := strings.Cut("\n"+text, "\nNew comment"); ok {
+		return strings.TrimSpace("New comment" + c)
 	}
 	return ""
 }

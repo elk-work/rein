@@ -760,6 +760,14 @@ type queueRunner struct {
 	human   human
 	humanMu sync.Mutex
 
+	// unsent is the task comments Elk delivered in a reply that no session
+	// has taken yet. Elk advances its cursor on every reply, so these are
+	// the only copy: watch hands them to the session at its next receipt,
+	// a revision prompt carries them, and the run's end logs what is left.
+	// Guarded because renewAfterSleep reports from its own goroutine.
+	unsent   []string
+	unsentMu sync.Mutex
+
 	// log is the current run's event log, and logStatus is how the run will
 	// be recorded as having ended. Both are set by drive and cleared by it.
 	// A nil log is a working no-op — see [runlog.Writer].

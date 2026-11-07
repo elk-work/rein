@@ -179,13 +179,16 @@ func (qr *queueRunner) secureDeliverable(ctx context.Context, a adapter.Adapter,
 	if a.Manifest().Has(adapter.CapResume) && res.sessionID != "" {
 		qr.logf("run %s: not submitting yet: %s; asking the agent once for its deliverable", wo.RunID, plainWhy(why))
 		qr.log.Runner(runlog.KindNote, "not submitting yet: %s; asking the agent once for its deliverable", plainWhy(why))
-		_, _ = qr.report(ctx, wo.RunID, elk.ProgressStep,
+		_ = qr.report(ctx, wo.RunID, elk.ProgressStep,
 			"The agent stopped without a summary a person could read ("+plainWhy(why)+"). "+
 				"Rein asked it once more to write one before handing the run in.", "", "", pending)
 
 		next := spec
 		next.ResumeID = res.sessionID
 		next.Prompt = deliverableDirective(why, verdict)
+		if c := qr.takeComments(); c != "" {
+			next.Prompt += "\n\n" + c
+		}
 		again, err := qr.runSession(ctx, a, next, wo, wt, repo, pending)
 		if err != nil || again.done {
 			return again, err
