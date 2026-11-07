@@ -87,6 +87,9 @@ func (qr *queueRunner) swapCredential(ctx context.Context) error {
 	}
 	back, err := qr.r.opts.Store.Get(qr.workspace, qr.q.Name)
 	if err != nil || back != got.Token {
+		// Put the one that still works back: the next attempt revokes this
+		// replacement, and a restart must not read it.
+		_ = qr.r.opts.Store.Set(qr.workspace, qr.q.Name, qr.elkToken)
 		return errors.New("the keychain did not keep the new connection")
 	}
 	qr.elk.SetToken(got.Token)

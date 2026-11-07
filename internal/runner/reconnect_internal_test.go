@@ -220,3 +220,32 @@ func TestEveryBeatDeclaresReconnectExceptHosted(t *testing.T) {
 		t.Fatal("a hosted run claimed it can reconnect")
 	}
 }
+
+// A keychain that took the write and then could not read it back must not be left
+// holding the replacement: the next attempt revokes it, and a restart would read it.
+type unreadableStore struct {
+	keyring.Store
+	failReads int
+}
+
+func (u *unreadableStore) Get(w, q string) (string, error) {
+	if u.failReads > 0 {
+		u.failReads--
+		return "", errors.New("locked")
+	}
+	return u.Store.Get(w, q)
+}
+
+func TestApplyReconnectPutsTheWorkingCredentialBack(t *testing.T) {
+	rig := newReconnectRig(t)
+	u := &unreadableStore{Store: rig.store.Store, failReads: 1}
+	rig.qr.r.opts.Store = u
+	rig.qr.noteReconnect(&elk.Heartbeat{Reconnect: true})
+	rig.qr.applyReconnect(context.Background())
+	if got, err := u.Store.Get("Elk Scout", "mac-claude"); err != nil || got != oldCred {
+		t.Fatalf("the keychain holds %q, err %v", got, err)
+	}
+	if rig.qr.elkToken != oldCred {
+		t.Fatal("switched to a credential the keychain could not read back")
+	}
+}
