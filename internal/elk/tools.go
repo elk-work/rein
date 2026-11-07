@@ -20,9 +20,12 @@ const (
 	ToolAskElk            = "ask_elk"
 	ToolSubmitDeliverable = "submit_deliverable"
 	ToolHeartbeatExecutor = "heartbeat_executor"
-	ToolListExecutors     = "list_executors"
-	ToolListWorkspaces    = "list_workspaces"
-	ToolListActions       = "list_actions"
+	// ToolReconnectOwnCredential replaces the calling queue's credential, with
+	// an overlap, when a person asked for it in the Elk app (ark:scout#4417).
+	ToolReconnectOwnCredential = "reconnect_own_credential"
+	ToolListExecutors          = "list_executors"
+	ToolListWorkspaces         = "list_workspaces"
+	ToolListActions            = "list_actions"
 )
 
 // QueueNameMaxRunes is Elk's cap on a queue name, counted in Unicode scalars
@@ -897,6 +900,10 @@ type Heartbeat struct {
 	// that sends none, which leaves the config exactly as it is.
 	Settings *WorkerSettings
 
+	// Reconnect is true when a person pressed Reconnect on this worker in the
+	// Elk app and this credential is the one to replace (ark:scout#4417).
+	Reconnect bool
+
 	// Model and Effort are what the queue's person set for it in Elk, from
 	// the reply's structured content (ark:rein#106). Nil means Elk set
 	// nothing — an Elk that sends no structured content, a null, a missing
@@ -971,10 +978,47 @@ func (c *Client) HeartbeatExecutor(ctx context.Context, req HeartbeatRequest) (*
 	return hb, nil
 }
 
+// ReconnectedCredential is what reconnect_own_credential hands back once. Token
+// is a secret: it never goes in a log, an error or a report.
+type ReconnectedCredential struct {
+	Token     string
+	ExpiresAt string
+	// Already is true when the credential this client holds is the replacement:
+	// a beat raced its first use, and there is nothing to replace. Token is empty.
+	Already bool
+}
+
+// ReconnectOwnCredential asks Elk for this queue's replacement credential. The
+// one this client holds keeps working until the new one is first used.
+func (c *Client) ReconnectOwnCredential(ctx context.Context) (*ReconnectedCredential, error) {
+	res, err := c.call(ctx, ToolReconnectOwnCredential, map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	if err := res.Err(); err != nil {
+		return nil, err
+	}
+	var body struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+		Already   bool   `json:"already"`
+	}
+	if len(res.Structured) == 0 || json.Unmarshal(res.Structured, &body) != nil {
+		return nil, errors.New("elk: reconnect_own_credential returned no credential")
+	}
+	if body.Already {
+		return &ReconnectedCredential{Already: true}, nil
+	}
+	if strings.TrimSpace(body.Token) == "" {
+		return nil, errors.New("elk: reconnect_own_credential returned no credential")
+	}
+	return &ReconnectedCredential{Token: strings.TrimSpace(body.Token), ExpiresAt: body.ExpiresAt}, nil
+}
+
 // readStructured folds the reply's structured content into hb:
 //
 //	{"queue": "<name>", "waiting": <int>, "model": "<id>" | null,
-//	 "effort": "<level>" | null, "settings": {...}}
+//	 "effort": "<level>" | null, "settings": {...}, "reconnect": <bool>}
 //
 // Each field is read on its own, so one Rein cannot read costs only itself:
 // a model sent as a number must not lose the queue depth or the settings
@@ -1019,6 +1063,12 @@ func (hb *Heartbeat) readStructured(raw json.RawMessage) {
 		}
 		if s = strings.TrimSpace(s); s != "" {
 			*f.dst = &s
+		}
+	}
+	if v, ok := fields["reconnect"]; ok && !isNull(v) {
+		var reconnect bool
+		if json.Unmarshal(v, &reconnect) == nil {
+			hb.Reconnect = reconnect
 		}
 	}
 	if v, ok := fields["settings"]; ok && !isNull(v) {

@@ -112,6 +112,14 @@ func (s *Server) Reply(tool string, r Reply) {
 }
 
 // Text scripts a tool with a fixed successful text answer.
+// AcceptToken replaces the one bearer this server answers, as Elk does once a
+// credential has been replaced and its old one ended.
+func (s *Server) AcceptToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = token
+}
+
 func (s *Server) Text(tool, text string) { s.Reply(tool, Reply{Text: text}) }
 
 // SetNotice arms a one-time workspace notice, prepended to the next successful
@@ -164,7 +172,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	if got != s.token {
+	s.mu.Lock()
+	want := s.token
+	s.mu.Unlock()
+	if got != want {
 		writeJSON(w, 401, map[string]any{"error": "unauthorized"})
 		return
 	}

@@ -294,3 +294,39 @@ func TestNewRejectsEmptyInputs(t *testing.T) {
 		t.Error("empty token accepted")
 	}
 }
+
+func TestSetTokenAppliesToTheNextCall(t *testing.T) {
+	s := elktest.New(t, "new-credential")
+	c, err := elk.New(s.URL, "old-credential", elk.WithoutInitialize())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Ping(context.Background()); !elk.IsUnauthorized(err) {
+		t.Fatalf("with the old credential: %v", err)
+	}
+	c.SetToken("new-credential")
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("with the new credential: %v", err)
+	}
+}
+
+func TestHeartbeatReadsReconnect(t *testing.T) {
+	s := elktest.New(t, "tok")
+	c, err := elk.New(s.URL, "tok", elk.WithoutInitialize())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Reply(elk.ToolHeartbeatExecutor, elktest.Reply{Text: "ok", Structured: map[string]any{"reconnect": true}})
+	hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Queue: "q"})
+	if err != nil || !hb.Reconnect {
+		t.Fatalf("hb=%+v err=%v", hb, err)
+	}
+	// An Elk that says nothing, or something Rein cannot read, asks for nothing.
+	for _, st := range []map[string]any{nil, {"reconnect": "yes"}, {"reconnect": nil}} {
+		s.Reply(elk.ToolHeartbeatExecutor, elktest.Reply{Text: "ok", Structured: st})
+		hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Queue: "q"})
+		if err != nil || hb.Reconnect {
+			t.Fatalf("for %v: hb=%+v err=%v", st, hb, err)
+		}
+	}
+}

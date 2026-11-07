@@ -159,6 +159,21 @@ func New(url, token string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// SetToken replaces the token this client authenticates with, for every later
+// call, including those already waiting on another goroutine. The session stays:
+// Elk's sessions are not tied to a credential.
+func (c *Client) SetToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.token = strings.TrimSpace(token)
+}
+
+func (c *Client) currentToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token
+}
+
 // URL returns the endpoint this client posts to, with no token in it.
 func (c *Client) URL() string { return c.baseURL }
 
@@ -336,7 +351,7 @@ func (c *Client) post(ctx context.Context, id *int64, method string, params any)
 	// Both, because a streamable-HTTP server chooses: Elk answers JSON today
 	// and is free to answer a single SSE event tomorrow.
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+c.currentToken())
 	req.Header.Set("User-Agent", ClientName+"/"+c.version)
 
 	c.mu.Lock()
