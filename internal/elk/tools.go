@@ -580,6 +580,9 @@ type Progress struct {
 	Body  string
 	Kind  ProgressKind
 	Usage *Usage
+	// Why and Next finish a receipt (Body is what was done): one line each,
+	// sent only when set, clipped to Elk's 140 characters.
+	Why, Next string
 }
 
 // ReportProgress heartbeats a claimed run and renews its 15-minute lease.
@@ -601,6 +604,14 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 	args := map[string]any{"run_id": p.RunID, "body": p.Body}
 	if p.Kind != "" {
 		args["kind"] = string(p.Kind)
+	}
+	for k, v := range map[string]string{"why": p.Why, "next": p.Next} {
+		if v = strings.TrimSpace(v); v != "" {
+			if r := []rune(v); len(r) > 140 {
+				v = string(r[:140])
+			}
+			args[k] = v
+		}
 	}
 	p.Usage.put(args)
 
