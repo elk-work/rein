@@ -750,6 +750,10 @@ type queueRunner struct {
 	// can reach it, and nil between runs.
 	live *liveSession
 
+	// reconnect is a person's Reconnect from the Elk app, waiting for the next
+	// moment between runs (reconnect.go).
+	reconnect reconnectState
+
 	// settingsSeen is the last Elk-app settings this queue acted on, so one
 	// that cannot be applied is logged once, not on every beat.
 	settingsSeen string
@@ -897,6 +901,8 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 		// which means one call answers both "am I visible" and "is there
 		// anything".
 		depth, known := qr.heartbeat(ctx)
+		// Here and nowhere else: this loop holds no run at this point.
+		qr.applyReconnect(ctx)
 
 		// Say so in the log. A daemon that writes three lines at startup and
 		// then nothing for a week is indistinguishable from a daemon that
@@ -1032,6 +1038,10 @@ func (qr *queueRunner) heartbeatRequest() elk.HeartbeatRequest {
 	} else {
 		req.DeclaredCapabilities = qr.host.Names()
 	}
+	// Never over Elk's cap: without it the app hands the person the new connection.
+	if !qr.r.opts.Hosted && len(req.DeclaredCapabilities) < MaxDeclaredCapabilities {
+		req.DeclaredCapabilities = append(req.DeclaredCapabilities, CapabilityReconnect)
+	}
 	// The fleet reading rides every beat, from whichever clock sent it. It is
 	// free here — the call is happening anyway — and never costs the beat: Elk
 	// counts the machine alive whether or not it could store the reading.
@@ -1058,6 +1068,7 @@ func (qr *queueRunner) heartbeat(ctx context.Context) (depth int, known bool) {
 		qr.noteHeartbeatReply(hb.Text)
 		qr.absorbElkModel(hb)
 		qr.applySettings(hb.Settings)
+		qr.noteReconnect(hb)
 		return hb.Waiting, true
 	case ctx.Err() != nil:
 	case errors.As(err, new(*elk.UnknownToolError)):

@@ -156,8 +156,9 @@ const RunConnectorName = "elk"
 // does, and an adapter that can also hides them from the session. Most are
 // Rein's own: claiming, reporting, submitting and heartbeating are what Rein
 // does for the run, and a second reporter is the ark:rein#21 incident (grok
-// posted its own deliverable before Rein did). rotate_own_token and
-// connect_executor would replace the very token Rein is using. The wrangler_*
+// posted its own deliverable before Rein did). rotate_own_token,
+// reconnect_own_credential and connect_executor would replace the very token
+// Rein is using. The wrangler_*
 // tools answer only to the Wrangler executor, which a Wrangler queue's token
 // is, so an ordinary run on that queue must not reach them; a Wrangler cycle
 // uses the owner's connector and is not affected. deploy_app ships to
@@ -171,6 +172,7 @@ var RunConnectorDeniedTools = []string{
 	"attach_run",
 	"ask_elk",
 	"rotate_own_token",
+	"reconnect_own_credential",
 	"connect_executor",
 	"wrangler_resolve_run",
 	"wrangler_read_ledger",
