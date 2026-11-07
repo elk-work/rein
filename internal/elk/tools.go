@@ -983,6 +983,9 @@ func (c *Client) HeartbeatExecutor(ctx context.Context, req HeartbeatRequest) (*
 type ReconnectedCredential struct {
 	Token     string
 	ExpiresAt string
+	// Already is true when the credential this client holds is the replacement:
+	// a beat raced its first use, and there is nothing to replace. Token is empty.
+	Already bool
 }
 
 // ReconnectOwnCredential asks Elk for this queue's replacement credential. The
@@ -998,8 +1001,15 @@ func (c *Client) ReconnectOwnCredential(ctx context.Context) (*ReconnectedCreden
 	var body struct {
 		Token     string `json:"token"`
 		ExpiresAt string `json:"expires_at"`
+		Already   bool   `json:"already"`
 	}
-	if len(res.Structured) == 0 || json.Unmarshal(res.Structured, &body) != nil || strings.TrimSpace(body.Token) == "" {
+	if len(res.Structured) == 0 || json.Unmarshal(res.Structured, &body) != nil {
+		return nil, errors.New("elk: reconnect_own_credential returned no credential")
+	}
+	if body.Already {
+		return &ReconnectedCredential{Already: true}, nil
+	}
+	if strings.TrimSpace(body.Token) == "" {
 		return nil, errors.New("elk: reconnect_own_credential returned no credential")
 	}
 	return &ReconnectedCredential{Token: strings.TrimSpace(body.Token), ExpiresAt: body.ExpiresAt}, nil

@@ -79,6 +79,9 @@ func (qr *queueRunner) swapCredential(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if got.Already {
+		return nil
+	}
 	if err := qr.r.opts.Store.Set(qr.workspace, qr.q.Name, got.Token); err != nil {
 		return errors.New("the new connection could not be stored in this computer's keychain")
 	}

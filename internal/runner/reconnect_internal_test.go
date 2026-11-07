@@ -166,6 +166,22 @@ func TestApplyReconnectTreatsAnEmptyReplyAsAFailure(t *testing.T) {
 	}
 }
 
+func TestApplyReconnectStopsAskingWhenItHoldsTheReplacement(t *testing.T) {
+	rig := newReconnectRig(t)
+	rig.srv.Reply(elk.ToolReconnectOwnCredential, elktest.Reply{Text: "Nothing to replace.", Structured: map[string]any{"already": true}})
+	rig.qr.noteReconnect(&elk.Heartbeat{Reconnect: true})
+	rig.qr.applyReconnect(context.Background())
+	if got := rig.stored(t); got != oldCred || rig.qr.elkToken != oldCred {
+		t.Fatalf("stored = %q, run token = %q", got, rig.qr.elkToken)
+	}
+	if rig.qr.reconnect.wanted.Load() {
+		t.Fatal("still wanted after Elk said there was nothing to do")
+	}
+	if !rig.qr.reconnect.nextTry.IsZero() {
+		t.Fatal("treated as a failure")
+	}
+}
+
 func TestApplyReconnectNeverRunsHosted(t *testing.T) {
 	rig := newReconnectRig(t)
 	rig.qr.r.opts.Hosted = true
