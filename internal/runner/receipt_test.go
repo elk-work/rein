@@ -35,3 +35,15 @@ func TestWhyNext(t *testing.T) {
 		t.Errorf("whyNext without = %q, %q", why, next)
 	}
 }
+
+// Why and Next are read from what the agent wrote since the last receipt,
+// so a turn-one Why does not ride every later one.
+func TestWhyNextSince(t *testing.T) {
+	off := 0
+	if why, next := whyNextSince("Why: a\nNext: b\n", &off); why != "a" || next != "b" {
+		t.Errorf("first = %q, %q", why, next)
+	}
+	if why, next := whyNextSince("Why: a\nNext: b\nmore text\n", &off); why != "" || next != "" {
+		t.Errorf("second rode the first's lines: %q, %q", why, next)
+	}
+}

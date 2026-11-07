@@ -7,6 +7,7 @@ import (
 
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/elk/elktest"
+	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/runner"
 )
 
@@ -51,10 +52,53 @@ func TestWatchSendsCommentsToSession(t *testing.T) {
 	}
 }
 
+// A comment in the reply to a report outside watch (here the opening one)
+// is not lost: it reaches the session at the next receipt.
+func TestCommentFromOpeningReportReachesSession(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Script = []adapter.Event{
+		{Kind: adapter.EventToolUse, Tool: &adapter.ToolUse{Name: "Read"}},
+		{Kind: adapter.EventText, Text: "carrying on"},
+	}
+	var n int
+	var mu sync.Mutex
+	h.elk.Handle("report_progress", func(map[string]any) elktest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		if n++; n == 1 {
+			return elktest.Reply{Text: "Progress recorded on `run-1`. Lease refreshed.\n" + commentBlock}
+		}
+		return elktest.Reply{Text: "Progress recorded on `run-1`. Lease refreshed."}
+	})
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if sent := h.agent.Sessions()[0].Sent(); len(sent) != 1 || sent[0] != commentBlock {
+		t.Errorf("sent = %q, want the opening reply's comment block once", sent)
+	}
+}
+
+// A comment that arrives while the agent's question is open is held, not
+// sent: an adapter may take input then as the answer (Codex does).
+func TestCommentsWaitForAnOpenQuestion(t *testing.T) {
+	h := commentHarness(t)
+	h.agent.Script = []adapter.Event{
+		{Kind: adapter.EventQuestion, Text: "Which target framework?"},
+	}
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if sent := h.agent.Sessions()[0].Sent(); len(sent) != 0 {
+		t.Errorf("a comment went in while the question was open: %q", sent)
+	}
+}
+
 func TestWatchReportsWhenSendFails(t *testing.T) {
 	h := commentHarness(t)
 	h.agent.Capabilities.Capabilities[adapter.CapSteer] = adapter.SupportNo
-	if err := h.run(runner.Options{}); err != nil {
+	logs := openRunLogs(t)
+	if err := h.run(runner.Options{Logs: logs}); err != nil {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}
 	if sent := h.agent.Sessions()[0].Sent(); len(sent) != 0 {
@@ -70,6 +114,19 @@ func TestWatchReportsWhenSendFails(t *testing.T) {
 	}
 	if !strings.Contains(h.log.String(), "steer") {
 		t.Errorf("the send failure was not logged\nlog:\n%s", h.log)
+	}
+	recs, err := logs.Records("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, r := range recs {
+		if r.Kind == string(runlog.KindNote) {
+			notes = append(notes, r.Text)
+		}
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "leave the Windows port out") {
+		t.Errorf("the undelivered comment is not in the local run log: %q", notes)
 	}
 }
 
@@ -87,6 +144,9 @@ func TestAwaitReviewCarriesComments(t *testing.T) {
 	if !strings.Contains(specs[1].Prompt, "does not say which tests were run") ||
 		!strings.Contains(specs[1].Prompt, "leave the Windows port out") {
 		t.Errorf("the revision round lost the verdict or the comments:\n%s", specs[1].Prompt)
+	}
+	if strings.Contains(specs[1].Prompt, "> - Nathanael") || strings.Contains(specs[1].Prompt, "> New comment") {
+		t.Errorf("the comments read as part of the review:\n%s", specs[1].Prompt)
 	}
 }
 

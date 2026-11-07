@@ -101,3 +101,10 @@ func distinct(ss []string) []string {
 	}
 	return out
 }
+
+// whyNextSince is [whyNext] over the text past *off, and moves *off to the end.
+func whyNextSince(text string, off *int) (why, next string) {
+	s := text[min(*off, len(text)):]
+	*off = len(text)
+	return whyNext(s)
+}
