@@ -653,6 +653,15 @@ func (qr *queueRunner) retakeSlot(ctx context.Context, wo *elk.WorkOrder, round 
 func (qr *queueRunner) awaitReview(ctx context.Context, wo *elk.WorkOrder) (string, reviewOutcome) {
 	deadline := time.Now().Add(qr.reviewTimeout())
 	poll := qr.reviewPollInterval()
+	// Comments Elk delivers while Rein waits. Elk has advanced its cursor
+	// past them, so they ride along with the revisions or, if none come,
+	// stay in the local log as the only account of them.
+	var held []string
+	defer func() {
+		if len(held) > 0 {
+			qr.log.Runner(runlog.KindNote, "task comments that reached no session: %s", strings.Join(held, "\n\n"))
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -664,9 +673,16 @@ func (qr *queueRunner) awaitReview(ctx context.Context, wo *elk.WorkOrder) (stri
 		}
 
 		res, err := qr.elk.AskElk(ctx, wo.RunID, "")
+		if err == nil {
+			if c := elk.CommentsIn(res.Text); c != "" {
+				held = append(held, c)
+			}
+		}
 		switch {
 		case err == nil && res.Revisions != "":
-			return res.Revisions, reviewRevisions
+			revisions := strings.Join(append([]string{res.Revisions}, held...), "\n\n")
+			held = nil
+			return revisions, reviewRevisions
 		case err == nil:
 			// An answer, a delivered comment, "no question asked yet" — no
 			// verdict either way. Keep waiting.

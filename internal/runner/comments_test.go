@@ -72,3 +72,20 @@ func TestWatchReportsWhenSendFails(t *testing.T) {
 		t.Errorf("the send failure was not logged\nlog:\n%s", h.log)
 	}
 }
+
+// A comment delivered while Rein waits on the review rides along with the
+// revisions it is waiting for.
+func TestAwaitReviewCarriesComments(t *testing.T) {
+	h := reviewHarness(t, "No question asked yet.\n"+commentBlock, askRevisions)
+	if err := h.run(reviewOptions()); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	specs := h.agent.Specs()
+	if len(specs) != 2 {
+		t.Fatalf("the agent ran %d times, want 2\nlog:\n%s", len(specs), h.log)
+	}
+	if !strings.Contains(specs[1].Prompt, "does not say which tests were run") ||
+		!strings.Contains(specs[1].Prompt, "leave the Windows port out") {
+		t.Errorf("the revision round lost the verdict or the comments:\n%s", specs[1].Prompt)
+	}
+}
