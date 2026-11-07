@@ -614,6 +614,24 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 	return res, res.Err()
 }
 
+// CommentsIn returns the task comments Elk delivered in a reply, from the
+// "New comment(s) on this task" header (formatCommentDelivery in
+// elk-mcp/queue.ts) to the end, or "" when the reply carries none.
+func CommentsIn(text string) string {
+	for i := 0; i < len(text); {
+		line := text[i:]
+		if strings.HasPrefix(line, "New comment on this task") || strings.HasPrefix(line, "New comments on this task") {
+			return strings.TrimSpace(line)
+		}
+		nl := strings.IndexByte(line, '\n')
+		if nl < 0 {
+			break
+		}
+		i += nl + 1
+	}
+	return ""
+}
+
 // notRunningStatusRE pulls the status out of "This run is `done`, not
 // running." and "it is `done`, not running.".
 var notRunningStatusRE = regexp.MustCompile("is `([a-z_]+)`, not running")
