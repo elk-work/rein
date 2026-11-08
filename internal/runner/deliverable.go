@@ -175,6 +175,14 @@ func (qr *queueRunner) secureDeliverable(ctx context.Context, a adapter.Adapter,
 	if why == "" {
 		return res, nil
 	}
+	// A concise stated reason is enough for a run with no commits. Do not
+	// replace it with boilerplate or demand a minimum-length explanation.
+	if wt != nil && qr.r.opts.Landing != nil {
+		st := qr.r.opts.Landing.Inspect(ctx, wt)
+		if st.CommitsKnown && st.Commits == 0 && statedReason(agentAccount(res.out)) {
+			return res, nil
+		}
+	}
 	first := res
 	if a.Manifest().Has(adapter.CapResume) && res.sessionID != "" {
 		qr.logf("run %s: not submitting yet: %s; asking the agent once for its deliverable", wo.RunID, plainWhy(why))
@@ -210,6 +218,14 @@ func (qr *queueRunner) secureDeliverable(ctx context.Context, a adapter.Adapter,
 		last = agentAccount(first.out)
 	}
 	res.out.deliverable = qr.fallbackDeliverable(ctx, wt, why, last, rec)
+	if wt != nil && qr.r.opts.Landing != nil && !statedReason(last) {
+		st := qr.r.opts.Landing.Inspect(ctx, wt)
+		if st.CommitsKnown && st.Commits == 0 {
+			res.out.emptyResult = true
+			res.out.deliverable = "This run produced nothing: no commits beyond its base and no stated reason. " +
+				"Rein marked it stuck. Retry the task or investigate why the agent exited without a result.\n\n" + res.out.deliverable
+		}
+	}
 	return res, nil
 }
 
@@ -295,4 +311,17 @@ func lastN(list []string, n int) []string {
 		return list
 	}
 	return list[len(list)-n:]
+}
+
+// statedReason deliberately accepts any non-empty agent account except a small
+// set of generic completion acknowledgements. It does not guess whether prose
+// is a valid blocker or no-change explanation. Rein's generated fallback never
+// counts: callers use the original agent text before generating it.
+func statedReason(text string) bool {
+	switch strings.ToLower(strings.Trim(strings.TrimSpace(text), ".!")) {
+	case "", "done", "finished", "completed", "success", "ok":
+		return false
+	default:
+		return true
+	}
 }

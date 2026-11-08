@@ -365,6 +365,8 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			"\n\nRepository: "+repo.String(), code)
 	}
 	defer qr.reap(wt)
+	// Finish Ark while the worktree (and its shared .ark) still exists.
+	defer qr.finishArkRuns(ctx, wt)
 	defer qr.reapAdapter(a, wo.RunID, &spec)
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
@@ -495,6 +497,9 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		rec               runRecord
 	)
 	for round := 1; ; round++ {
+		// A reopened revision is running again; a failed attempt must not
+		// inherit the earlier round's successful submission.
+		qr.logStatus = runlog.StatusInterrupted
 		res, err := qr.runSession(ctx, a, spec, wo, wt, repo, &pending)
 		if err != nil || res.done {
 			return err
@@ -1165,6 +1170,8 @@ func drain(sess adapter.Session) {
 
 // watchOutcome is what one session run produced.
 type watchOutcome struct {
+	emptyResult bool // no commits and no stated reason after the deliverable retry
+
 	capped    bool
 	result    *adapter.Result
 	text      string // assistant text, for a deliverable an adapter did not summarise
@@ -1551,6 +1558,9 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 	}
 
 	status := elk.StatusReady
+	if out.emptyResult {
+		status = elk.StatusStuck
+	}
 	title := firstLine(wo.Direction)
 	if out.result != nil && !out.result.OK() {
 		status = elk.StatusStuck
@@ -1644,6 +1654,7 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 	// values are taken out of whatever the agent wrote (secrets.go) — and out
 	// of the copy reportLostSubmit logs if Elk refuses it.
 	s.Deliverable = qr.redactString(s.Deliverable)
+	qr.resultSummary = s.Deliverable
 	s.Title = qr.redactString(s.Title)
 	s.Summary = qr.redactString(s.Summary)
 	for i := range s.Links {
@@ -1665,6 +1676,15 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 		qr.log.Runner(runlog.KindSubmit, "submitting failed: %v", err)
 		return nil, fmt.Errorf("submitting run %s: %w", wo.RunID, err)
 	}
+	// The log's own outcome mirrors what Elk recorded rather than what was
+	// asked for: Elk coerces a status it disagrees with, and a log that said
+	// otherwise would be a second, quieter version of the truth.
+	// Record it before a hosted refusal can return.
+	if res.Status == elk.StatusStuck || s.Status == elk.StatusStuck {
+		qr.logStatus = runlog.StatusStuck
+	} else {
+		qr.logStatus = runlog.StatusSubmitted
+	}
 	qr.hostedSubmitted = true
 	if qr.r.opts.Hosted && s.Status == elk.StatusStuck && s.Title != "The run hit the hosted run cap" {
 		if s.Title == notAPITitle {
@@ -1674,14 +1694,6 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 	}
 	*pending = elk.Usage{}
 	qr.logf("run %s: submitted %s", wo.RunID, res.Status)
-	// The log's own outcome mirrors what Elk recorded rather than what was
-	// asked for: Elk coerces a status it disagrees with, and a log that said
-	// otherwise would be a second, quieter version of the truth.
-	if res.Status == elk.StatusStuck || s.Status == elk.StatusStuck {
-		qr.logStatus = runlog.StatusStuck
-	} else {
-		qr.logStatus = runlog.StatusSubmitted
-	}
 	qr.log.Runner(runlog.KindSubmit, "submitted %s — %s", res.Status, firstLine(s.Title))
 	return res, nil
 }
