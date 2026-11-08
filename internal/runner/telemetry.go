@@ -190,13 +190,13 @@ func (r *Runner) hostReading() *elk.HostReading {
 	// simulator open, and the difference IS the interesting number.
 	// Through the gate's hysteresis, so the fleet reading and the gate agree
 	// rather than the reading flapping where the gate holds (ark:rein#33).
-	total, _ := StableSlots(m.Headroom, r.opts.MaxConcurrent, r.gate.lastCount())
+	total, used, limited := r.gate.capacity(m.Headroom)
 	h.Runner = &elk.RunnerReading{
 		Name:           RunnerName,
 		Version:        r.opts.Version,
 		SlotsTotal:     total,
-		SlotsUsed:      r.gate.inFlight(),
-		SlotsLimitedBy: SlotsLimitedBy(m.Headroom, r.opts.MaxConcurrent),
+		SlotsUsed:      used,
+		SlotsLimitedBy: limited,
 	}
 	return h
 }

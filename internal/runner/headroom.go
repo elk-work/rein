@@ -60,7 +60,11 @@ type HeadroomFunc func(dir string) Headroom
 // with a sentence saying why. The sentence is the point: a runner that quietly
 // drops to one slot looks exactly like a runner with nothing to do.
 func Slots(h Headroom, hard int) (int, string) {
-	n, limits, _, floored := slots(h, hard)
+	return slotsDescription(h, hard, 0)
+}
+
+func slotsDescription(h Headroom, hard, allocated int) (int, string) {
+	n, limits, _, floored := slots(h, hard, allocated)
 	if hard < MinSlots {
 		hard = MinSlots
 	}
@@ -77,7 +81,10 @@ func Slots(h Headroom, hard int) (int, string) {
 		fmt.Fprintf(&why, " — the floor: %s, short of the %s of RAM and %s of disk one run is budgeted",
 			strings.Join(limits, " and "), humanBytes(RAMPerRun), humanBytes(DiskPerRun))
 	default:
-		fmt.Fprintf(&why, " — held down by %s, budgeting %s (cap %d)", strings.Join(limits, " and "), budget(kindsOf(h, hard)), hard)
+		fmt.Fprintf(&why, " — held down by %s, budgeting %s (cap %d)", strings.Join(limits, " and "), budget(kindsOf(h, hard, allocated)), hard)
+	}
+	if allocated > 0 && h.RAMKnown {
+		fmt.Fprintf(&why, "; %d older holds already reflected in free RAM", allocated)
 	}
 	return n, why.String()
 }
@@ -104,15 +111,19 @@ const (
 // prev <= 0 means nothing has been measured, and the reading is taken as it
 // stands.
 func StableSlots(h Headroom, hard, prev int) (int, string) {
-	raw, why := Slots(h, hard)
+	return stableSlots(h, hard, prev, 0)
+}
+
+func stableSlots(h Headroom, hard, prev, allocated int) (int, string) {
+	raw, why := slotsDescription(h, hard, allocated)
 	if prev <= 0 || raw == prev {
 		return raw, why
 	}
 	if hard < MinSlots {
 		hard = MinSlots
 	}
-	low, _, _, _ := slots(shift(h, false), hard)
-	high, _, _, _ := slots(shift(h, true), hard)
+	low, _, _, _ := slots(shift(h, false), hard, allocated)
+	high, _, _, _ := slots(shift(h, true), hard, allocated)
 	n := prev
 	switch {
 	case low > prev:
@@ -158,8 +169,8 @@ func shift(h Headroom, up bool) Headroom {
 }
 
 // kindsOf is the binding limits of a reading as bare nouns.
-func kindsOf(h Headroom, hard int) []string {
-	_, _, kinds, _ := slots(h, hard)
+func kindsOf(h Headroom, hard, allocated int) []string {
+	_, _, kinds, _ := slots(h, hard, allocated)
 	return kinds
 }
 
@@ -183,19 +194,22 @@ func budget(kinds []string) string {
 }
 
 // slots is the arithmetic behind [Slots], separated from the prose so the
-// fleet reading can name the limit without parsing a sentence.
+// fleet reading can name the limit without parsing a sentence. allocated is
+// the number of older holds whose memory is already reflected in free RAM.
+// Thus total = older holds + free RAM / budget: comparing total with all
+// holds charges only young holds against free RAM. Disk stays conservative.
 //
 // It returns the count, the prose fragments naming each binding limit, the
 // same limits as bare nouns — "memory", "disk" — and whether the floor was
 // applied.
-func slots(h Headroom, hard int) (n int, limits, kinds []string, floored bool) {
+func slots(h Headroom, hard, allocated int) (n int, limits, kinds []string, floored bool) {
 	if hard < MinSlots {
 		hard = MinSlots
 	}
 	n = hard
 
 	if h.RAMKnown {
-		if byRAM := int(h.FreeRAM / RAMPerRun); byRAM < n {
+		if byRAM := int(h.FreeRAM/RAMPerRun) + allocated; byRAM < n {
 			n = byRAM
 			limits = append(limits, fmt.Sprintf("%s RAM free", humanBytesDown(h.FreeRAM)))
 			kinds = append(kinds, "memory")
@@ -222,7 +236,7 @@ func slots(h Headroom, hard int) (n int, limits, kinds []string, floored bool) {
 // is the one place in the payload where an absent field means "no" rather than
 // "unknown".
 func SlotsLimitedBy(h Headroom, hard int) string {
-	_, _, kinds, _ := slots(h, hard)
+	_, _, kinds, _ := slots(h, hard, 0)
 	return strings.Join(kinds, " and ")
 }
 
