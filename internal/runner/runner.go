@@ -731,10 +731,13 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 
 // queueRunner serves one queue.
 //
-// One run at a time: [queueRunner.serve] calls [queueRunner.claimAndDrive]
-// serially, which is what lets the current run's event log live in a field
-// rather than being threaded through every method that might want to record
-// something. The concurrency in this loop is between queues, never within one.
+// The serve loop claims and drives one run at a time, which is what lets the
+// current run's event log live in a field. A run that has been submitted and
+// is waiting on Elk's review is the exception (review_detach.go, ark:rein#65):
+// that wait runs on its own goroutine, with its own copy of the per-run
+// fields, so the loop can claim the queue's next run — a Wrangler cycle
+// behind a build under review, in particular. The concurrency in the loop is
+// otherwise between queues.
 type queueRunner struct {
 	hostedSubmitted bool
 	hostedDeadline  time.Time
@@ -821,6 +824,28 @@ type queueRunner struct {
 	// timing out) says so once a lease rather than on every poll.
 	claimErr   string
 	claimErrAt time.Time
+
+	// reviews is the wait for review continuations this queue handed off
+	// (review_detach.go). serve waits on it as it exits, so a shutdown still
+	// finishes the wait it interrupted and --once still sees the revision.
+	reviews sync.WaitGroup
+
+	// reviewing is the run ids those continuations still hold. reviewMu
+	// guards it. A claim of one of them is not driven a second time.
+	reviewMu  sync.Mutex
+	reviewing map[string]struct{}
+
+	// reviewParent, when set, is the queue runner this one was forked from
+	// to finish a review. handedRunID is that run. Telemetry the fleet reads
+	// lives on the parent; the fork forwards while the parent is still
+	// showing this run.
+	reviewParent *queueRunner
+	handedRunID  string
+
+	// subOwner, when set, is the queue whose subscription this fork shares.
+	// A revision that learns the window is spent has to stop the queue that
+	// claims, which is the parent.
+	subOwner *queueRunner
 }
 
 // logf writes one line to the daemon's log, through the current run's
@@ -831,6 +856,10 @@ func (qr *queueRunner) logf(format string, args ...any) {
 }
 
 func (qr *queueRunner) serve(ctx context.Context) error {
+	// A review wait handed off the loop has to finish before serve returns:
+	// --once would otherwise exit before Elk answered, and a shutdown would
+	// leave the worktree behind. Between claims the loop does not wait.
+	defer qr.reviews.Wait()
 	if !qr.r.opts.Hosted {
 		qr.checkAgentSetup(ctx)
 	}
@@ -1176,6 +1205,13 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		return false, strings.TrimPrefix(err.Error(), elk.ErrNoWork.Error()+": "), nil
 	case err != nil:
 		return false, "", fmt.Errorf("claim: %w", err)
+	}
+	if qr.alreadyReviewing(wo.RunID) {
+		// This queue already holds the run, on the review continuation. Driving
+		// it again would be a second agent in the same worktree. The claim is
+		// ours either way; the slot taken to ask goes back with the return.
+		qr.logf("run %s is already with Elk's review on this queue; not starting it again", wo.RunID)
+		return false, "", nil
 	}
 	hold.setRun(wo.RunID)
 	qr.setWaiting("")

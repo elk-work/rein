@@ -24,9 +24,11 @@ import (
 // are the same HTTP request either way; the real question is WHICH CLOCK fires
 // it, and the loop as it stood answered that for us:
 //
-// **A queue's own heartbeat stops for the whole of a run.** [queueRunner.serve]
+// **A queue's own heartbeat stops while a session is running.** [queueRunner.serve]
 // is one goroutine per queue that beats, then calls claimAndDrive — which
-// blocks until the run is submitted, reviewed and reaped. A thirty-seven-minute
+// blocks until the run is submitted. The review wait continues beside the loop
+// (review_detach.go), so the beat resumes while Elk reviews; a long session
+// still goes quiet for its whole length. A thirty-seven-minute
 // run is thirty-seven minutes with no beat, and Elk's online window is fifteen.
 // So the queue that has the most interesting session reading in the fleet is
 // exactly the queue that cannot send one, and — separately, and worse — has
@@ -291,7 +293,24 @@ func (qr *queueRunner) startRun(runID string) {
 // the machine's fault, and neither should make a queue look broken.
 func (qr *queueRunner) endRun(status runlog.Status) {
 	qr.telMu.Lock()
+	qr.tel.runID = ""
+	qr.tel.started = time.Time{}
+	qr.tel.faulted = status == runlog.StatusStuck
+	qr.telMu.Unlock()
+	if qr.reviewParent != nil {
+		qr.reviewParent.endRunIfCurrent(qr.handedRunID, status)
+	}
+}
+
+// endRunIfCurrent closes the fleet's view of runID when it is still the run
+// this queue is showing. A review continuation finishes on a fork; if the
+// queue has since claimed another run, that run's reading is left alone.
+func (qr *queueRunner) endRunIfCurrent(runID string, status runlog.Status) {
+	qr.telMu.Lock()
 	defer qr.telMu.Unlock()
+	if qr.tel.runID != runID {
+		return
+	}
 	qr.tel.runID = ""
 	qr.tel.started = time.Time{}
 	qr.tel.faulted = status == runlog.StatusStuck
@@ -300,7 +319,20 @@ func (qr *queueRunner) endRun(status runlog.Status) {
 // noteUsage folds one usage increment into the run's total.
 func (qr *queueRunner) noteUsage(u adapter.Usage) {
 	qr.telMu.Lock()
+	qr.tel.tokens.add(u)
+	qr.telMu.Unlock()
+	if qr.reviewParent != nil {
+		qr.reviewParent.noteUsageIf(qr.handedRunID, u)
+	}
+}
+
+// noteUsageIf adds u when runID is still the run this queue is showing.
+func (qr *queueRunner) noteUsageIf(runID string, u adapter.Usage) {
+	qr.telMu.Lock()
 	defer qr.telMu.Unlock()
+	if qr.tel.runID != runID {
+		return
+	}
 	qr.tel.tokens.add(u)
 }
 
@@ -324,6 +356,23 @@ func (qr *queueRunner) noteEvent(kind adapter.EventKind) {
 // compared with its numbers blanked, the way heartbeat replies are, so that a
 // wait whose sentence only counts up the minutes is still the same wait.
 func (qr *queueRunner) setWaiting(reason string) (changed bool) {
+	changed = qr.storeWaiting(reason)
+	if qr.reviewParent != nil && qr.reviewParent.showing(qr.handedRunID) {
+		qr.reviewParent.storeWaiting(reason)
+	}
+	return changed
+}
+
+// showing reports whether the fleet reading is this run, or idle. A review
+// fork forwards its wait onto the parent only then: once the queue has claimed
+// another run, that run is what the beat is about.
+func (qr *queueRunner) showing(runID string) bool {
+	qr.telMu.Lock()
+	defer qr.telMu.Unlock()
+	return qr.tel.runID == "" || qr.tel.runID == runID
+}
+
+func (qr *queueRunner) storeWaiting(reason string) (changed bool) {
 	qr.telMu.Lock()
 	defer qr.telMu.Unlock()
 	changed = digitsRE.ReplaceAllString(reason, "#") != digitsRE.ReplaceAllString(qr.tel.waitingOn, "#")

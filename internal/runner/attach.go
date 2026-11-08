@@ -257,20 +257,25 @@ func (r *sessionRegistry) remove(runID string) {
 	}
 }
 
-// byQueue is the session one queue is driving right now, or nil.
+// byQueue is the newest session one queue is driving right now, or nil.
 //
-// One at a time by construction: [queueRunner.serve] calls claimAndDrive
-// serially, so a queue never has two. The concurrency in the loop is between
-// queues, never within one.
+// The serve loop drives one claimed run at a time. A revision of a run that
+// was with Elk's review can be in session too, on the review continuation
+// (review_detach.go), so a queue can briefly have two. The newer one is the
+// run a person attaching to the queue is asking about.
 func (r *sessionRegistry) byQueue(queue string) *liveSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var found *liveSession
 	for _, l := range r.byRun {
-		if l.queue == queue {
-			return l
+		if l.queue != queue {
+			continue
+		}
+		if found == nil || l.started.After(found.started) {
+			found = l
 		}
 	}
-	return nil
+	return found
 }
 
 func (r *sessionRegistry) all() []*liveSession {

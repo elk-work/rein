@@ -42,10 +42,21 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	}
 	qr.redact.Store(secretenv.NewRedactor(qr.withOwnToken(fetchSecrets)))
 	qr.openLog(wo)
-	defer qr.closeLog()
+	// Cleanup is a stack rather than defers so a review wait can take it with
+	// it (review_detach.go). The serve loop then claims the queue's next run
+	// while this one is still with Elk, and the worktree stays until the
+	// review — and any revision — is actually finished.
+	clean := &cleanupStack{}
+	st := &driveState{cur: qr}
+	defer func() {
+		if !st.detached {
+			clean.run()
+		}
+	}()
+	clean.add(func() { st.cur.closeLog() })
 	// From the claim to the end of the run: keep the machine from idling to
 	// sleep, and renew the lease the moment it wakes (sleep.go, ark:rein#90).
-	defer qr.holdAcrossSleep(ctx, wo.RunID)()
+	clean.add(qr.holdAcrossSleep(ctx, wo.RunID))
 	if qr.r.opts.Hosted {
 		qr.applySecrets(hosted.Values())
 	}
@@ -303,12 +314,12 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			return qr.stuck(ctx, wo, "Rein could not start this run's Elk connector", err.Error()+
 				"\n\nNo work was started and no worktree was created.")
 		}
-		defer proxy.Close()
+		clean.add(proxy.Close)
 	}
 	// The capture gate first, then Chrome, so `chrome` stays at the front of
 	// PATH and the gate stays ahead of /usr/sbin/screencapture.
-	defer qr.giveCapture(&spec)()
-	defer qr.giveChrome(&spec)()
+	clean.add(qr.giveCapture(&spec))
+	clean.add(qr.giveChrome(&spec))
 
 	var repo RepoResolution
 	var wt *worktree.Worktree
@@ -321,7 +332,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		var unresolved *UnresolvedRepoError
 		if !qr.r.opts.Hosted && errors.As(err, &unresolved) && unresolved.Name == "" &&
 			QueueHasNoCode(qr.r.opts.Config, qr.q) {
-			return qr.driveWithoutRepo(ctx, a, spec, wo, cycle, host, advisory)
+			return qr.driveWithoutRepo(ctx, a, spec, wo, cycle, host, advisory, clean, st)
 		}
 		qr.setPreflightState("Rein could not tell which repository this run is in")
 		return qr.stuck(ctx, wo, "Rein could not tell which repository this run is in", err.Error())
@@ -364,10 +375,11 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		return qr.stuckCode(ctx, wo, title, err.Error()+
 			"\n\nRepository: "+repo.String(), code)
 	}
-	defer qr.reap(wt)
-	// Finish Ark while the worktree (and its shared .ark) still exists.
-	defer qr.finishArkRuns(ctx, wt)
-	defer qr.reapAdapter(a, wo.RunID, &spec)
+	// Added like defers, so they run in reverse: the adapter tidies up, Ark
+	// is finished, then the worktree is reaped.
+	clean.add(func() { st.cur.reap(wt) })
+	clean.add(func() { st.cur.finishArkRuns(ctx, wt) })
+	clean.add(func() { st.cur.reapAdapter(a, wo.RunID, &spec) })
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
 	if !qr.r.opts.Hosted {
@@ -399,22 +411,23 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		qr.logf("run %s: %s", wo.RunID, wt.Ark.Note)
 	}
 
-	return qr.driveWithReview(ctx, a, spec, wo, wt, repo)
+	return qr.driveWithReview(ctx, a, spec, wo, wt, repo, clean, st)
 }
 
 // driveWithoutRepo runs a task that needs no code on a worker that has none,
 // in an empty folder that is removed afterwards (ark:rein#103). There is no
 // branch, nothing to push and nothing to land, and the agent is told so.
 func (qr *queueRunner) driveWithoutRepo(ctx context.Context, a adapter.Adapter, spec adapter.RunSpec,
-	wo *elk.WorkOrder, cycle bool, host *HostCapabilities, advisory []string) error {
+	wo *elk.WorkOrder, cycle bool, host *HostCapabilities, advisory []string,
+	clean *cleanupStack, st *driveState) error {
 	dir, err := os.MkdirTemp("", "rein-run-")
 	if err != nil {
 		return qr.stuck(ctx, wo, "Could not make a folder for this run", err.Error())
 	}
 	if !qr.r.opts.KeepWorktrees {
-		defer os.RemoveAll(dir)
+		clean.add(func() { _ = os.RemoveAll(dir) })
 	}
-	defer qr.reapAdapter(a, wo.RunID, &spec)
+	clean.add(func() { st.cur.reapAdapter(a, wo.RunID, &spec) })
 	spec.WorktreeDir = dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) +
 		"\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") +
@@ -423,7 +436,7 @@ func (qr *queueRunner) driveWithoutRepo(ctx context.Context, a adapter.Adapter, 
 		spec.SystemPrompt += "\n\nPreflight treated these unknown packet requirements as advisory: " + strings.Join(advisory, ", ") + ". Proceed; these names do not block this run."
 	}
 	qr.logf("run %s: no repository (this worker has none and the task names none); running in %s", wo.RunID, dir)
-	return qr.driveWithReview(ctx, a, spec, wo, nil, RepoResolution{Path: dir, Source: RepoNone})
+	return qr.driveWithReview(ctx, a, spec, wo, nil, RepoResolution{Path: dir, Source: RepoNone}, clean, st)
 }
 
 // noRepoInstructions is the "This run" section for a run with no repository.
@@ -464,8 +477,13 @@ const (
 // Hosted mode is the exception, and leaves at the submit on purpose
 // (ark:rein#78): a billed container is the wrong place to wait, and a revision
 // there is taken by a fresh attempt rather than this process.
+//
+// On a machine, the wait does not stay on this goroutine (ark:rein#65). The
+// serve loop is what claims the queue's next run, and it used to sit here for
+// up to the review timeout — slot already given back, queue still unable to
+// claim, Wrangler cycle included. The wait continues beside the loop.
 func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, spec adapter.RunSpec,
-	wo *elk.WorkOrder, wt *worktree.Worktree, repo RepoResolution) error {
+	wo *elk.WorkOrder, wt *worktree.Worktree, repo RepoResolution, clean *cleanupStack, st *driveState) error {
 
 	var pending elk.Usage
 
@@ -489,106 +507,79 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		qr.logf("run %s: %v", wo.RunID, err)
 	}
 
-	// verdict is the review text a revision round answers, and sentBack the
-	// deliverable that review sent back; both empty in round 1. rec is what
-	// every session of the run did, for a deliverable Rein has to write.
+	// sentBack is the deliverable this round handed in, empty in round 1.
+	// rec is what the session did, for a deliverable Rein has to write.
+	// Later rounds, after Elk asks for revisions, run beside this goroutine
+	// (review_detach.go).
 	var (
-		verdict, sentBack string
-		rec               runRecord
+		sentBack string
+		rec      runRecord
 	)
-	for round := 1; ; round++ {
-		// A reopened revision is running again; a failed attempt must not
-		// inherit the earlier round's successful submission.
-		qr.logStatus = runlog.StatusInterrupted
-		res, err := qr.runSession(ctx, a, spec, wo, wt, repo, &pending)
-		if err != nil || res.done {
-			return err
-		}
-		rec.add(res.out)
-
-		// Never hand in a blank, a one-liner, or a promise (ark:rein#83).
-		res, err = qr.secureDeliverable(ctx, a, spec, wo, wt, repo, res, verdict, sentBack, &rec, &pending)
-		if err != nil || res.done {
-			return err
-		}
-
-		sub, err := qr.submitReady(ctx, wo, res.out, wt, repo, spec, res.sessionID, &pending)
-		if err != nil || sub == nil || !sub.ReviewPending {
-			return err
-		}
-		sentBack = agentAccount(res.out)
-
-		if qr.r.opts.Hosted {
-			// A hosted run does not wait for the review (ark:rein#78). Its
-			// container is billed by the minute and nobody is working while
-			// Elk reviews: on the hosted proof the wait was over 90% of the
-			// run's compute. So it exits here. If the review asks for
-			// revisions the run reopens, and taking them is a fresh attempt
-			// in a fresh container — the session file died with this one, so
-			// that attempt starts from the work order and the verdict, not a
-			// resume (hosted-rein-queue design, "Idle").
-			qr.logf("run %s: submitted; Elk is reviewing it. Hosted, so Rein exits now rather than wait in a "+
-				"billed container; a revision is taken by a fresh run", wo.RunID)
-			qr.log.Runner(runlog.KindReview, "submitted; hosted, so not waiting for Elk's review — a revision is taken by a fresh run")
-			return nil
-		}
-
-		qr.logf("run %s: submitted; Elk is reviewing it. Waiting up to %s (round %d), with the slot given back",
-			wo.RunID, qr.reviewTimeout(), round)
-		qr.log.Runner(runlog.KindReview, "submitted; waiting up to %s for Elk's review (round %d), with the slot given back",
-			qr.reviewTimeout(), round)
-		// No agent is running while Elk reviews — the session has ended and
-		// a revision resumes it — so the slot goes back for the wait and is
-		// taken again only if there is more to do (ark:rein#60). Holding it
-		// made every reviewed run on a one-slot machine twenty minutes of
-		// nobody working, Wrangler cycle included.
-		qr.slot.release()
-		var outcome reviewOutcome
-		verdict, outcome = qr.awaitReview(ctx, wo)
-		switch outcome {
-		case reviewInterrupted:
-			// Rein is stopping while Elk still has the run (ark:rein#81). The
-			// run stays `ready` in Elk, which is a legitimate place to leave
-			// it; saying the review "asked for nothing" was not true.
-			qr.logf("run %s: Rein stopped before Elk's review answered; the run stays ready in Elk, and a "+
-				"revision request now finds no agent to work it", wo.RunID)
-			qr.log.Runner(runlog.KindReview, "Rein stopped before Elk's review answered; the run stays ready")
-			return nil
-		case reviewCancelled:
-			qr.logf("run %s: cancelled while Elk was reviewing — nothing further submitted", wo.RunID)
-			qr.logStatus = runlog.StatusCancelled
-			qr.log.Runner(runlog.KindReview, "cancelled while Elk was reviewing")
-			return nil
-		case reviewSettled:
-			qr.logf("run %s: Elk's review asked for nothing; the run is the user's now", wo.RunID)
-			qr.log.Runner(runlog.KindReview, "Elk's review asked for nothing; the run is the user's now")
-			return nil
-		}
-
-		if round >= qr.maxReviewRounds() {
-			// This deliverable replaces the agent's last one on the run, so
-			// that one travels with it — last, as the agent wrote it. Work
-			// that merged before the review gave up is otherwise invisible
-			// to the person who now has to decide about it.
-			return qr.submitStuck(ctx, wo,
-				fmt.Sprintf("Elk's review still wants changes after %d rounds", round),
-				stuckBody("Rein stopped rather than loop. The last thing Elk asked for:\n\n"+
-					blockquote(verdict)+"\n\n"+
-					"A person should look at this: either the request is not something the agent can act on, "+
-					"or the work needs a different approach.",
-					qr.runDetails(wt, repo, spec, res.sessionID),
-					"### What the agent submitted last", agentAccount(res.out)), &pending)
-		}
-		if stop, err := qr.retakeSlot(ctx, wo, round+1, &pending); stop {
-			return err
-		}
-		qr.logf("run %s: Elk asked for revisions; running the agent again (round %d)", wo.RunID, round+1)
-		qr.log.Runner(runlog.KindReview, "Elk asked for revisions; running the agent again (round %d)", round+1)
-		_ = qr.report(ctx, wo.RunID, elk.ProgressStep,
-			fmt.Sprintf("Elk's review asked for revisions (round %d of %d). Working them now.",
-				round+1, qr.maxReviewRounds()), &pending)
-		spec = qr.revisionSpec(a, spec, wo, res.sessionID, verdict)
+	const round = 1
+	// A reopened revision is running again; a failed attempt must not
+	// inherit the earlier round's successful submission.
+	qr.logStatus = runlog.StatusInterrupted
+	res, err := qr.runSession(ctx, a, spec, wo, wt, repo, &pending)
+	if err != nil || res.done {
+		return err
 	}
+	rec.add(res.out)
+
+	// Never hand in a blank, a one-liner, or a promise (ark:rein#83).
+	res, err = qr.secureDeliverable(ctx, a, spec, wo, wt, repo, res, "", sentBack, &rec, &pending)
+	if err != nil || res.done {
+		return err
+	}
+
+	sub, err := qr.submitReady(ctx, wo, res.out, wt, repo, spec, res.sessionID, &pending)
+	if err != nil || sub == nil || !sub.ReviewPending {
+		return err
+	}
+	sentBack = agentAccount(res.out)
+
+	if qr.r.opts.Hosted {
+		// A hosted run does not wait for the review (ark:rein#78). Its
+		// container is billed by the minute and nobody is working while
+		// Elk reviews: on the hosted proof the wait was over 90% of the
+		// run's compute. So it exits here. If the review asks for
+		// revisions the run reopens, and taking them is a fresh attempt
+		// in a fresh container — the session file died with this one, so
+		// that attempt starts from the work order and the verdict, not a
+		// resume (hosted-rein-queue design, "Idle").
+		qr.logf("run %s: submitted; Elk is reviewing it. Hosted, so Rein exits now rather than wait in a "+
+			"billed container; a revision is taken by a fresh run", wo.RunID)
+		qr.log.Runner(runlog.KindReview, "submitted; hosted, so not waiting for Elk's review — a revision is taken by a fresh run")
+		return nil
+	}
+
+	qr.logf("run %s: submitted; Elk is reviewing it. Waiting up to %s (round %d), with the slot given back",
+		wo.RunID, qr.reviewTimeout(), round)
+	qr.log.Runner(runlog.KindReview, "submitted; waiting up to %s for Elk's review (round %d), with the slot given back",
+		qr.reviewTimeout(), round)
+	// No agent is running while Elk reviews — the session has ended and
+	// a revision resumes it — so the slot goes back for the wait and is
+	// taken again only if there is more to do (ark:rein#60). Holding it
+	// made every reviewed run on a one-slot machine twenty minutes of
+	// nobody working, Wrangler cycle included.
+	//
+	// Giving the slot back is not enough for this queue's own next claim:
+	// that claim happens on this goroutine, which is the serve loop. The
+	// wait continues beside it (ark:rein#65).
+	qr.slot.release()
+	qr.detachReview(ctx, reviewCont{
+		round:     round,
+		a:         a,
+		spec:      spec,
+		wo:        wo,
+		wt:        wt,
+		repo:      repo,
+		pending:   &pending,
+		sentBack:  sentBack,
+		rec:       rec,
+		sessionID: res.sessionID,
+		clean:     clean,
+	}, st)
+	return nil
 }
 
 // retakeSlot gets a slot back for a run Elk's review has reopened, before the

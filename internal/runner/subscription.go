@@ -104,6 +104,16 @@ func subscriptionFile(stateDir, queue string) string {
 	return filepath.Join(stateDir, "headroom", url.PathEscape(queue)+".json")
 }
 
+// headroom is this queue's subscription state. A review fork shares the
+// parent's: a revision that finds the window spent has to hold the queue
+// that claims next, and that is the parent.
+func (qr *queueRunner) headroom() *subscription {
+	if qr.subOwner != nil {
+		return qr.subOwner.headroom()
+	}
+	return &qr.sub
+}
+
 // subscriptionPath is where this queue's state lives, or "" when the runner
 // has no state directory (most tests).
 func (qr *queueRunner) subscriptionPath() string {
@@ -197,11 +207,11 @@ func (qr *queueRunner) loadSubscription() {
 	if !ok {
 		return
 	}
-	qr.sub.mu.Lock()
-	defer qr.sub.mu.Unlock()
-	qr.sub.last = p.Last
+	qr.headroom().mu.Lock()
+	defer qr.headroom().mu.Unlock()
+	qr.headroom().last = p.Last
 	if p.Until.After(time.Now()) {
-		qr.sub.until, qr.sub.reason = p.Until, p.Reason
+		qr.headroom().until, qr.headroom().reason = p.Until, p.Reason
 	}
 }
 
@@ -238,30 +248,30 @@ func (qr *queueRunner) absorbRateLimit(rl *adapter.RateLimit) {
 	}
 	now := time.Now()
 
-	qr.sub.mu.Lock()
-	if prev := qr.sub.last; prev != nil && !rl.SampledAt.IsZero() && rl.SampledAt.Before(prev.SampledAt) {
-		qr.sub.mu.Unlock()
+	qr.headroom().mu.Lock()
+	if prev := qr.headroom().last; prev != nil && !rl.SampledAt.IsZero() && rl.SampledAt.Before(prev.SampledAt) {
+		qr.headroom().mu.Unlock()
 		return
 	}
-	if prev := qr.sub.last; prev != nil && rl.SampledAt.Equal(prev.SampledAt) && rl.Exhausted == prev.Exhausted &&
+	if prev := qr.headroom().last; prev != nil && rl.SampledAt.Equal(prev.SampledAt) && rl.Exhausted == prev.Exhausted &&
 		rl.ExhaustedUntil.Equal(prev.ExhaustedUntil) {
 		// The same reading handed in twice.
-		qr.sub.last = rl
-		qr.sub.mu.Unlock()
+		qr.headroom().last = rl
+		qr.headroom().mu.Unlock()
 		return
 	}
-	qr.sub.last = rl
-	wasUntil := qr.sub.until
+	qr.headroom().last = rl
+	wasUntil := qr.headroom().until
 	if rl.Exhausted {
-		qr.sub.until, qr.sub.reason = qr.holdFor(rl, now)
+		qr.headroom().until, qr.headroom().reason = qr.holdFor(rl, now)
 	} else {
 		// The vendor says there is room. That outranks any hold, including a
 		// fallback this runner chose for itself.
-		qr.sub.until, qr.sub.reason = time.Time{}, ""
+		qr.headroom().until, qr.headroom().reason = time.Time{}, ""
 	}
-	until, reason := qr.sub.until, qr.sub.reason
+	until, reason := qr.headroom().until, qr.headroom().reason
 	p := persistedSubscription{Until: until, Reason: reason, Last: rl}
-	qr.sub.mu.Unlock()
+	qr.headroom().mu.Unlock()
 
 	qr.saveSubscription(p)
 	switch {
@@ -338,23 +348,23 @@ func describeSource(rl *adapter.RateLimit) string {
 // queue coming back.
 func (qr *queueRunner) holding() (time.Time, string, bool) {
 	now := time.Now()
-	qr.sub.mu.Lock()
-	until, reason := qr.sub.until, qr.sub.reason
+	qr.headroom().mu.Lock()
+	until, reason := qr.headroom().until, qr.headroom().reason
 	lapsed := !until.IsZero() && !now.Before(until)
-	if lapsed && qr.awaitsHeadroomRead() && qr.sub.lastRead.Before(until) {
+	if lapsed && qr.awaitsHeadroomRead() && qr.headroom().lastRead.Before(until) {
 		// The hold has run out, but the queue is to be asked before it
 		// claims (refreshHeadroom) and has not been yet. Clearing it here —
 		// the heartbeat calls this too, between the refresh and the claim —
 		// would let a claim through unasked, so it stays held until the read
 		// lands. A failed read still counts as asked.
-		qr.sub.mu.Unlock()
+		qr.headroom().mu.Unlock()
 		return until, reason, true
 	}
 	if lapsed {
-		qr.sub.until, qr.sub.reason = time.Time{}, ""
+		qr.headroom().until, qr.headroom().reason = time.Time{}, ""
 	}
-	last := qr.sub.last
-	qr.sub.mu.Unlock()
+	last := qr.headroom().last
+	qr.headroom().mu.Unlock()
 
 	if lapsed {
 		qr.saveSubscription(persistedSubscription{Last: last})
@@ -396,18 +406,18 @@ func (qr *queueRunner) refreshHeadroom(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	qr.sub.mu.Lock()
+	qr.headroom().mu.Lock()
 	sampled := time.Time{}
-	if qr.sub.last != nil {
-		sampled = qr.sub.last.SampledAt
+	if qr.headroom().last != nil {
+		sampled = qr.headroom().last.SampledAt
 	}
-	holdEnded := !qr.sub.until.IsZero() && !now.Before(qr.sub.until) && qr.sub.lastRead.Before(qr.sub.until)
+	holdEnded := !qr.headroom().until.IsZero() && !now.Before(qr.headroom().until) && qr.headroom().lastRead.Before(qr.headroom().until)
 	due := holdEnded ||
-		(now.Sub(sampled) >= qr.refreshAge() && now.Sub(qr.sub.lastRead) >= qr.refreshAge())
+		(now.Sub(sampled) >= qr.refreshAge() && now.Sub(qr.headroom().lastRead) >= qr.refreshAge())
 	if due {
-		qr.sub.lastRead = now
+		qr.headroom().lastRead = now
 	}
-	qr.sub.mu.Unlock()
+	qr.headroom().mu.Unlock()
 	if !due {
 		return
 	}
@@ -420,19 +430,19 @@ func (qr *queueRunner) refreshHeadroom(ctx context.Context) {
 			return
 		}
 		msg := firstLine(err.Error())
-		qr.sub.mu.Lock()
-		changed := msg != qr.sub.readErr
-		qr.sub.readErr = msg
-		qr.sub.mu.Unlock()
+		qr.headroom().mu.Lock()
+		changed := msg != qr.headroom().readErr
+		qr.headroom().readErr = msg
+		qr.headroom().mu.Unlock()
 		if changed {
 			qr.logf("headroom read failed (carrying the last reading forward): %s", msg)
 		}
 		return
 	}
-	qr.sub.mu.Lock()
-	hadErr := qr.sub.readErr != ""
-	qr.sub.readErr = ""
-	qr.sub.mu.Unlock()
+	qr.headroom().mu.Lock()
+	hadErr := qr.headroom().readErr != ""
+	qr.headroom().readErr = ""
+	qr.headroom().mu.Unlock()
 	if hadErr {
 		qr.logf("headroom read recovered")
 	}
@@ -460,9 +470,9 @@ func (qr *queueRunner) absorbSession(sess adapter.Session) {
 // and reporting it would show an account as full that has been empty for
 // hours.
 func (qr *queueRunner) carriedReading(now time.Time) *adapter.RateLimit {
-	qr.sub.mu.Lock()
-	last := qr.sub.last
-	qr.sub.mu.Unlock()
+	qr.headroom().mu.Lock()
+	last := qr.headroom().last
+	qr.headroom().mu.Unlock()
 	if last == nil {
 		return nil
 	}

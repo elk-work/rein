@@ -297,6 +297,16 @@ the submit rather than idle in a billed container while Elk reviews. A revision
 the review asks for is taken by a fresh attempt, from the work order and the
 verdict, since the session file died with the container.
 
+**The review wait does not hold the queue** (ark:rein#65). The slot was already
+given back for the wait, which let some other queue start. The wait itself
+stayed on the serve loop, so the queue that had submitted claimed nothing of
+its own until the review answered — up to `--review-timeout`, and a Wrangler
+queue's next cycle waited out a build that was only under review. The wait now
+runs beside the loop. The queue claims its next run while the earlier one is
+with Elk, and a revision still takes a slot again before the agent starts:
+behind a Wrangler cycle, ahead of a new build. Shutting down mid-wait is still
+not an approval.
+
 **A revision's reply replaces the deliverable**, so the resume prompt says so:
 the agent ends with the whole deliverable again, answering the review in its
 own words, not with a note about the change. The reply then goes through the
