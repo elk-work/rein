@@ -168,6 +168,8 @@ func TestStartRefusesRatherThanDegrades(t *testing.T) {
 			PermissionMode: adapter.PermissionAsk}, adapter.ErrCapability},
 		{"tool allow list", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
 			PermissionMode: adapter.PermissionFull, AllowedTools: []string{"bash"}}, adapter.ErrNotSupported},
+		{"sandbox bypass", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi", PermissionMode: adapter.PermissionFull, Env: map[string]string{sandboxEnv: "off"}}, adapter.ErrNotSupported},
+		{"conflicting stricter sandbox", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi", PermissionMode: adapter.PermissionFull, Env: map[string]string{sandboxEnv: "strict"}}, adapter.ErrNotSupported},
 		{"stdio mcp", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
 			PermissionMode: adapter.PermissionFull,
 			MCPServers:     map[string]any{"x": map[string]any{"command": "npx"}}}, adapter.ErrNotSupported},

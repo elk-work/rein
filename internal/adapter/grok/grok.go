@@ -222,6 +222,11 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if err != nil {
 		return nil, err
 	}
+	// Do not silently weaken a caller's explicit profile, nor permit an
+	// override such as off to bypass the advertised permission boundary.
+	if profile, set := spec.Env[sandboxEnv]; set && profile != mode.sandboxProfile {
+		return nil, fmt.Errorf("%w: grok permission mode %q requires sandbox %q, conflicts with %q", adapter.ErrNotSupported, spec.PermissionMode, mode.sandboxProfile, profile)
+	}
 	// XAI_API_KEY in the session's environment moves it onto metered xAI API
 	// billing; the auth method on initialize is the backstop (planauth.go).
 	if err := spec.CheckPlanEnv(); err != nil {

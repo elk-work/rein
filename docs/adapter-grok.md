@@ -154,7 +154,8 @@ the commit succeeded. The common Git directory is deliberately not granted
 wholesale to suppress that warning.
 
 `PermissionReadOnly` retains `read-only`. The selected permission profile wins
-over a caller's `GROK_SANDBOX`; the `sandboxFailed` guard still refuses an agent
+over inherited environment defaults. A conflicting explicit `RunSpec.Env`
+profile is rejected rather than silently weakened. The `sandboxFailed` guard still refuses an agent
 that warns it continued without enforcement. The live regression test is
 `TestIntegrationLinkedWorktreeSandbox` (build tag `integration`).
 
