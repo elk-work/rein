@@ -9,9 +9,9 @@
 // This is Grok Build, xAI's official CLI — not `@vibe-kit/grok-cli`, which is
 // a different and unrelated tool (elk `docs/rein.md` §3).
 //
-// Two of the manifest's declarations are `partial` and both are honest
-// admissions rather than gaps in the code; docs/adapter-grok.md gives the
-// evidence for each and says exactly what would promote it.
+// The manifest's approvals declaration is `partial`, an honest
+// admission rather than a gap in the code; docs/adapter-grok.md gives the
+// evidence and says exactly what would promote it.
 package grok
 
 import (
@@ -55,6 +55,8 @@ const sandboxEnv = "GROK_SANDBOX"
 // mean something: read everywhere, write only to ~/.grok and the temp dirs.
 const sandboxReadOnly = "read-only"
 
+const sandboxWorktree = "rein-worktree"
+
 // defaultStartupTimeout bounds initialize + session/new. Grok connects the MCP
 // servers during session/new, so this is seconds rather than milliseconds.
 const defaultStartupTimeout = 90 * time.Second
@@ -85,8 +87,8 @@ func (a *Adapter) Name() string { return Kind }
 
 // Manifest implements [adapter.Adapter].
 //
-// Checked against `grok 1.0.13` on darwin/arm64, 2026-08-29. Two declarations
-// are `partial`, and `partial` fails closed exactly like `no` — which is the
+// Worktree verified against `grok 1.0.70` on darwin/arm64, 2026-11-08. Approvals
+// remain `partial`, and `partial` fails closed exactly like `no` — which is the
 // point. An adapter that cannot control approvals must not be handed a run
 // that requires them, and saying so in the manifest is how that refusal
 // happens before a worktree exists rather than in the middle of a session.
@@ -96,7 +98,7 @@ func (a *Adapter) Manifest() adapter.Manifest {
 		Binary: Binary,
 		Capabilities: map[adapter.Capability]adapter.Support{
 			adapter.CapGit:              adapter.SupportYes,
-			adapter.CapWorktree:         adapter.SupportPartial,
+			adapter.CapWorktree:         adapter.SupportYes,
 			adapter.CapFileEdit:         adapter.SupportYes,
 			adapter.CapShell:            adapter.SupportYes,
 			adapter.CapMCP:              adapter.SupportYes,
@@ -116,12 +118,8 @@ func (a *Adapter) Manifest() adapter.Manifest {
 			"apparently from the developer's own permission rules. Rein therefore " +
 			"cannot claim to control Grok's approvals, so `ask` and `accept_edits` " +
 			"fail closed and the usable modes are read_only and full. " +
-			"worktree is `partial` for the same kind of reason: read_only is " +
-			"enforced by Grok's own OS sandbox (GROK_SANDBOX=read-only), but full " +
-			"runs with no sandbox and ACP exposes no per-session filesystem bound, " +
-			"so in full the agent can reach outside the directory it was given. " +
-			"Promoting it means mapping full onto GROK_SANDBOX=workspace and " +
-			"verifying it holds. " +
+			"worktree is `yes`: full uses a private workspace-derived sandbox " +
+			"with narrow grants for this checkout's git metadata and session state. " +
 			"mcp is `yes` — a Rein-supplied server reached session/new and was " +
 			"counted in the agent's connection tally — but ACP MCP here is http and " +
 			"sse only, no stdio, and Start rejects a server config that is neither " +
@@ -224,6 +222,11 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if err != nil {
 		return nil, err
 	}
+	// Do not silently weaken a caller's explicit profile, nor permit an
+	// override such as off to bypass the advertised permission boundary.
+	if profile, set := spec.Env[sandboxEnv]; set && profile != mode.sandboxProfile {
+		return nil, fmt.Errorf("%w: grok permission mode %q requires sandbox %q, conflicts with %q", adapter.ErrNotSupported, spec.PermissionMode, mode.sandboxProfile, profile)
+	}
 	// XAI_API_KEY in the session's environment moves it onto metered xAI API
 	// billing; the auth method on initialize is the backstop (planauth.go).
 	if err := spec.CheckPlanEnv(); err != nil {
@@ -269,7 +272,7 @@ type permissionMode struct {
 // permissionSettings maps Rein's modes onto what `grok agent` actually offers.
 //
 //	read_only → GROK_SANDBOX=read-only, yoloMode        the OS refuses the writes
-//	full      → yoloMode                                everything auto-approved
+//	full      → GROK_SANDBOX=rein-worktree, yoloMode   auto-approved inside the sandbox
 //	ask, accept_edits → refused
 //
 // `read_only` sets yoloMode deliberately, and the reasoning matters: with
@@ -288,7 +291,7 @@ func permissionSettings(m adapter.PermissionMode) (permissionMode, error) {
 	case adapter.PermissionReadOnly:
 		return permissionMode{sandboxProfile: sandboxReadOnly, yolo: true}, nil
 	case adapter.PermissionFull:
-		return permissionMode{yolo: true}, nil
+		return permissionMode{sandboxProfile: sandboxWorktree, yolo: true}, nil
 	case adapter.PermissionAsk, adapter.PermissionAcceptEdits:
 		return permissionMode{}, fmt.Errorf(
 			"%w: grok declares approvals `partial`, so %q cannot be served; see docs/adapter-grok.md",
@@ -298,10 +301,7 @@ func permissionSettings(m adapter.PermissionMode) (permissionMode, error) {
 	}
 }
 
-// specWithSandbox adds the sandbox profile to the child environment without
-// disturbing an explicit one the caller set: a run that says GROK_SANDBOX in
-// [adapter.RunSpec.Env] means it, and silently overwriting it would be the
-// same class of mistake as silently downgrading a permission mode.
+// specWithSandbox makes the permission boundary authoritative over caller env.
 func specWithSandbox(spec adapter.RunSpec, mode permissionMode) adapter.RunSpec {
 	if mode.sandboxProfile == "" {
 		return spec
@@ -310,9 +310,7 @@ func specWithSandbox(spec adapter.RunSpec, mode permissionMode) adapter.RunSpec 
 	for k, v := range spec.Env {
 		env[k] = v
 	}
-	if _, set := env[sandboxEnv]; !set {
-		env[sandboxEnv] = mode.sandboxProfile
-	}
+	env[sandboxEnv] = mode.sandboxProfile
 	spec.Env = env
 	return spec
 }
@@ -397,6 +395,11 @@ func (a *Adapter) spawnProcess(ctx context.Context, spec adapter.RunSpec) (*proc
 	// (ark:rein#21, home.go).
 	home, err := newPrivateHome(spec.RunID)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := home.configure(ctx, path, spec); err != nil {
+		home.remove()
 		return nil, err
 	}
 
@@ -524,9 +527,8 @@ func pipes(cmd *exec.Cmd) (io.WriteCloser, io.Reader, io.Reader, error) {
 	return stdin, stdout, stderr, nil
 }
 
-// mergeMaps overlays b on a without touching either. A key the caller set in
-// [adapter.RunSpec.Env] wins over the isolation default, deliberately: a run
-// that names GROK_HOME means it, the same way an explicit GROK_SANDBOX does.
+// mergeMaps overlays b on a without touching either. Isolation values are
+// supplied last so callers cannot replace the private home or sandbox.
 func mergeMaps(a, b map[string]string) map[string]string {
 	out := make(map[string]string, len(a)+len(b))
 	for k, v := range a {

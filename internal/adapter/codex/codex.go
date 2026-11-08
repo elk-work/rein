@@ -301,7 +301,9 @@ func (a *Adapter) spawnProcess(ctx context.Context, spec adapter.RunSpec) (*proc
 		return nil, err
 	}
 
-	args := []string{"app-server"}
+	// The built-in apps connector survives an empty CODEX_HOME. Keep it out
+	// unless a server is explicitly supplied through RunSpec.MCPServers.
+	args := []string{"app-server", "-c", "features.apps=false"}
 	if spec.Hosted {
 		args = append(args, "-c", `cli_auth_credentials_store="ephemeral"`)
 	}
