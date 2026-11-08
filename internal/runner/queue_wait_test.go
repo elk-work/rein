@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/adapter/fake"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
@@ -297,6 +298,109 @@ func TestAParkedQueueSaysSoOnItsBeatAndOnceInTheLog(t *testing.T) {
 	}
 	if n := strings.Count(h.log.String(), "is disabled"); n != 1 {
 		t.Errorf("the refusal was logged %d times, want once:\n%s", n, h.log)
+	}
+}
+
+// ark:rein#65: giving the slot back let another queue start, but the wait
+// stayed on the serve goroutine, so the queue that had submitted claimed
+// nothing of its own until the review answered. A Wrangler queue is both
+// the Wrangler and a build queue. A build under review must not hold the
+// next cycle for the review timeout.
+func TestAQueueClaimsItsNextRunWhileItsOwnRunWaitsOnReview(t *testing.T) {
+	h := wranglerHarness(t, "wrangler")
+	var (
+		mu         sync.Mutex
+		aClaimed   bool
+		aSubmitted bool
+		bClaimed   bool
+	)
+	h.elk.Handle("heartbeat_executor", func(args map[string]any) elktest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		switch {
+		case !aClaimed:
+			n = 2
+		case aSubmitted && !bClaimed:
+			n = 1
+		}
+		return elktest.Reply{Text: beat(queue, n)}
+	})
+	h.elk.Handle("claim_run", func(map[string]any) elktest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case !aClaimed:
+			aClaimed = true
+			return elktest.Reply{Text: order("run-a", "git") + "\n" + elk.AutoReviewLine + "\n"}
+		case aSubmitted && !bClaimed:
+			bClaimed = true
+			return elktest.Reply{Text: order("run-b", "pm")}
+		}
+		return elktest.Reply{Text: cleared(queue)}
+	})
+	h.elk.Handle("submit_deliverable", func(args map[string]any) elktest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		if args["run_id"] == "run-a" {
+			aSubmitted = true
+			return elktest.Reply{Text: strings.ReplaceAll(submitReviewPending, "run-1", "run-a")}
+		}
+		return elktest.Reply{Text: "Deliverable saved: run `run-b` is `ready`. The user will review it in Elk."}
+	})
+	h.elk.Handle("ask_elk", func(map[string]any) elktest.Reply {
+		return elktest.Reply{Text: askWaiting}
+	})
+
+	opts := oneSlotOptions()
+	// Long enough that a serve loop still blocked in the review wait cannot
+	// reach run-b before the deadline. The wait is what used to hold the queue.
+	opts.ReviewTimeout = time.Hour
+	ok, err := h.runLoopUntil(opts, 8*time.Second, func() bool {
+		calls := h.elk.Calls()
+		b := callIndex(calls, 0, submitOf("run-b"))
+		if b < 0 {
+			return false
+		}
+		// The review poll is still running after run-b's result. That is the
+		// wait leaving the serve loop: a loop blocked in it could not have
+		// claimed run-b yet.
+		return callIndex(calls, b, func(c elktest.Call) bool {
+			return c.Tool == "ask_elk" && c.Arg("run_id") == "run-a"
+		}) >= 0
+	})
+	if err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if !ok {
+		t.Fatalf("run-b was not claimed while run-a waited on review\nlog:\n%s", h.log)
+	}
+
+	calls := h.elk.Calls()
+	b := callIndex(calls, 0, submitOf("run-b"))
+	after := callIndex(calls, b, func(c elktest.Call) bool { return c.Tool == "ask_elk" && c.Arg("run_id") == "run-a" })
+	if after < 0 {
+		t.Fatalf("run-b finished only after run-a's review wait — the serve loop was still in it\nlog:\n%s", h.log)
+	}
+	if !strings.Contains(h.log.String(), "with the slot given back") {
+		t.Errorf("the log does not say the slot was given back:\n%s", h.log)
+	}
+	specs := h.agent.Specs()
+	if len(specs) < 2 {
+		t.Fatalf("the agent ran %d times, want run-a and the Wrangler cycle run-b", len(specs))
+	}
+	var cycle *adapter.RunSpec
+	for i := range specs {
+		if specs[i].RunID == "run-b" {
+			cycle = &specs[i]
+			break
+		}
+	}
+	if cycle == nil {
+		t.Fatal("run-b never started")
+	}
+	if !strings.Contains(cycle.SystemPrompt, "This run is a Wrangler cycle") {
+		t.Error("the run claimed during the review was not the Wrangler cycle")
 	}
 }
 
