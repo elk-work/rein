@@ -205,7 +205,8 @@ func (s *session) handshake(ctx context.Context) error {
 //
 // The developer's own `~/.codex/config.toml` servers do not load beside it:
 // the session runs under a private CODEX_HOME with no config.toml (home.go,
-// ark:rein#21). The built-in `codex_apps` still does (ark:rein#22).
+// ark:rein#21). The built-in apps feature is disabled at process startup
+// (ark:rein#22).
 func (s *session) threadConfig() map[string]any {
 	if len(s.spec.MCPServers) == 0 {
 		return nil

@@ -10,10 +10,9 @@ of Grok.
 This is Grok Build, xAI's official CLI, **not** `@vibe-kit/grok-cli`, which is
 an unrelated tool with a confusingly similar name (elk `docs/rein.md` §3).
 
-Everything below was checked against `grok 1.0.13` on darwin/arm64 with a
-cached grok.com login, on **2026-08-29**. Where a claim is specification rather
-than observation it says so — and two of them are, which is why two
-capabilities are declared `partial`.
+The original ACP probes used `grok 1.0.13` on darwin/arm64 on 2026-08-29.
+Worktree isolation and the empty MCP inventory were rechecked with `grok 1.0.70`
+on 2026-11-08. Approvals remain `partial`, as explained below.
 
 ## Why ACP and not `grok -p --output-format streaming-json`
 
@@ -63,7 +62,7 @@ tests have to replay in request order rather than in file order; see
 | Rein mode | How | Usable |
 |---|---|---|
 | `read_only` | `GROK_SANDBOX=read-only` on the child process, plus `_meta.yoloMode` | yes |
-| `full` | `_meta.yoloMode: true` | yes |
+| `full` | `GROK_SANDBOX=rein-worktree`, plus `_meta.yoloMode: true` | yes |
 | `ask` | — | **no**: fails closed on `approvals: partial` |
 | `accept_edits` | — | **no**: same |
 
@@ -88,7 +87,7 @@ ACP has no per-session tool policy.
 | Capability | Declared | Because |
 |---|---|---|
 | `git` | yes | `run_terminal_command` ran `git status`; verified |
-| `worktree` | **partial** | see below |
+| `worktree` | **yes** | workspace sandbox with linked Git metadata grants |
 | `file_edit` | yes | the `write` tool created a file; verified |
 | `shell` | yes | verified |
 | `mcp` | yes | a Rein-supplied server reached `session/new`; verified |
@@ -134,24 +133,30 @@ code.
 `TestIntegrationApprovalIsNeverAsked` fails loudly if a request ever arrives —
 deliberately, because that day is good news and should not pass unnoticed.
 
-### `worktree: partial` — enforced in one mode, not the other
+### `worktree: yes` — linked checkout commits inside the sandbox
 
-`read_only` is enforced by Grok's own OS sandbox. `full` runs with no sandbox,
-and ACP exposes no per-session filesystem bound, so in `full` the agent can
-reach outside the directory it was given.
+`full` selects `rein-worktree`, written to the run-private `sandbox.toml`.
+It uses Grok’s [custom profile format](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md).
+It extends `workspace` and grants the checkout's Git directory (index and HEAD),
+plus the common repository's `objects`, `refs` and `logs/refs` directories.
+Git resolves both directories with `rev-parse`; no other worktree's index,
+repository configuration or hooks directory is granted. The linked session
+archive gets its own narrow grant so ACP sessions can start and resume.
+Non-Git working directories need no extra Git grants. Temporary directories
+remain writable, as in the underlying workspace profile; this is write
+isolation, not a read or network boundary.
 
-The fix is small — map `full` onto `GROK_SANDBOX=workspace`, which is precisely
-"write to CWD and the temp dirs" — and it is **`ark:rein#15
-(01M17ZQJ6DFAFGMEE3JVQYS1KS)`**, blocked on **`ark:rein#16
-(01M17ZQJ6RVRMTFXCFXFKQQ9GD)`**: no `GROK_SANDBOX` profile currently applies on
-the maintainer's Mac, because a hook source path under `~/.grok/hooks` is a symlink and
-Grok refuses to start with its protections missing. Making `full` depend on a
-sandbox before that is fixed would make grok unusable on the only machine we
-have. (That refusal is Grok failing closed, and it is the right behaviour;
-`ark:rein#16` has the one-line local fix.)
+Verified with Grok 1.0.70 on macOS, 2026-11-08, in a throwaway linked worktree:
+`workspace` refused the commit (exit 128); `rein-worktree` committed (exit 0).
+Both refused a write to a sibling outside the checkout (exit 1). Git's optional
+packed-refs maintenance emitted a denied-lock warning under the custom profile;
+the commit succeeded. The common Git directory is deliberately not granted
+wholesale to suppress that warning.
 
-Note the consequence for `read_only` today: it does not work on that machine
-either, for the same reason. `full` is unaffected.
+`PermissionReadOnly` retains `read-only`. The selected permission profile wins
+over a caller's `GROK_SANDBOX`; the `sandboxFailed` guard still refuses an agent
+that warns it continued without enforcement. The live regression test is
+`TestIntegrationLinkedWorktreeSandbox` (build tag `integration`).
 
 ### `mcp: yes`, with a shape constraint
 
@@ -227,15 +232,19 @@ the session emits a progress event naming the path, for the same reason as the
 Codex adapter: deleting it would log the developer out, and copying it back
 would mean this package handling a token.
 
-**One residual.** `context7` still reaches the session — a plugin-contributed
-server discovered from the Claude plugin directory under the real `$HOME`, which
-`GROK_HOME` does not move. It is a public documentation lookup with two
-read-only tools, no credential in its URL and no identity; `ark:rein#22` tracks
-closing it, and records the options (moving `HOME` itself, or writing
-`[plugins] disabled` into the private home).
-`TestIntegrationSessionSeesOnlyTheSpecsMCPServers` asserts that no
-config-derived server reaches a real session, and that the agent does not report
-having an Elk tool.
+**Plugin discovery is disabled per run.** Before starting the agent, Rein runs
+`grok plugin list --json` under the private home and the session's working
+directory/environment, then writes every returned name into `[plugins].disabled`
+in its private `config.toml`. A failed inventory, malformed JSON or an unnamed
+plugin aborts startup. The discovery subprocess uses `read-only` because the
+custom workspace profile has not yet been created. The vendor's own config is
+never copied or edited. This closes plugin-contributed servers such as
+`context7` (`ark:rein#22`).
+
+`TestIntegrationSessionSeesOnlyTheSpecsMCPServers` checks the protocol inventory;
+the linked-worktree integration probe also checks an empty RunSpec has an empty
+MCP inventory. Unit tests cover plugin inventory validation and config encoding;
+replay tests cover passing the requested servers through `session/new`.
 
 ## Rate limits: the `StopFailure` hook (`ark:rein#40`)
 

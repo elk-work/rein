@@ -257,11 +257,6 @@ func TestIntegrationSessionSeesOnlyTheSpecsMCPServers(t *testing.T) {
 
 	t.Logf("MCP servers this session started: %v", started)
 	for name := range started {
-		// codex_apps is a built-in of the binary, not user configuration; it
-		// survives an empty CODEX_HOME and is tracked in ark:rein#22.
-		if name == "codex_apps" {
-			continue
-		}
 		t.Errorf("the session started MCP server %q, which the packet did not ask for", name)
 	}
 

@@ -34,14 +34,14 @@ func TestManifestIsWellFormedAndRegistered(t *testing.T) {
 			t.Errorf("capability %q is undeclared; declare a value rather than leaving a gap", c)
 		}
 	}
-	// The two honest admissions. If either is ever promoted to yes it should
-	// be because a probe verified it, and this test is where that shows up.
+	// Approvals remain partial; the linked-worktree probe now verifies full
+	// permission runs under a sandbox that permits commits.
 	if m.Supports(adapter.CapApprovals) != adapter.SupportPartial {
 		t.Errorf("approvals = %q; it is `partial` until a session/request_permission round trip is observed",
 			m.Supports(adapter.CapApprovals))
 	}
-	if m.Supports(adapter.CapWorktree) != adapter.SupportPartial {
-		t.Errorf("worktree = %q; it is `partial` until `full` runs under a sandbox too",
+	if m.Supports(adapter.CapWorktree) != adapter.SupportYes {
+		t.Errorf("worktree = %q; full must run under the verified worktree sandbox",
 			m.Supports(adapter.CapWorktree))
 	}
 	if m.Notes == "" {
@@ -63,8 +63,8 @@ func TestPartialApprovalsFailClosed(t *testing.T) {
 		}
 	}
 	missing := m.Satisfies([]string{"worktree", "shell"})
-	if len(missing) != 1 || missing[0] != "worktree" {
-		t.Errorf("Satisfies = %v, want worktree to be the only miss", missing)
+	if len(missing) != 0 {
+		t.Errorf("Satisfies = %v, want worktree and shell supported", missing)
 	}
 }
 
@@ -80,8 +80,8 @@ func TestPermissionSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("full: %v", err)
 	}
-	if full.sandboxProfile != "" || !full.yolo {
-		t.Errorf("full → %+v, want yolo and no sandbox", full)
+	if full.sandboxProfile != sandboxWorktree || !full.yolo {
+		t.Errorf("full → %+v, want yolo inside the worktree sandbox", full)
 	}
 	for _, mode := range []adapter.PermissionMode{adapter.PermissionAsk, adapter.PermissionAcceptEdits} {
 		if _, err := permissionSettings(mode); !errors.Is(err, adapter.ErrNotSupported) {
@@ -93,11 +93,11 @@ func TestPermissionSettings(t *testing.T) {
 	}
 }
 
-func TestSpecWithSandboxRespectsAnExplicitEnv(t *testing.T) {
+func TestSpecWithSandboxOverridesAnExplicitEnv(t *testing.T) {
 	spec := adapter.RunSpec{Env: map[string]string{sandboxEnv: "strict", "OTHER": "1"}}
 	got := specWithSandbox(spec, permissionMode{sandboxProfile: sandboxReadOnly})
-	if got.Env[sandboxEnv] != "strict" {
-		t.Errorf("%s = %q; an explicit profile in RunSpec.Env must win", sandboxEnv, got.Env[sandboxEnv])
+	if got.Env[sandboxEnv] != sandboxReadOnly {
+		t.Errorf("%s = %q; the permission boundary must win", sandboxEnv, got.Env[sandboxEnv])
 	}
 	if got.Env["OTHER"] != "1" {
 		t.Errorf("the rest of the environment was lost: %v", got.Env)
@@ -168,8 +168,6 @@ func TestStartRefusesRatherThanDegrades(t *testing.T) {
 			PermissionMode: adapter.PermissionAsk}, adapter.ErrCapability},
 		{"tool allow list", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
 			PermissionMode: adapter.PermissionFull, AllowedTools: []string{"bash"}}, adapter.ErrNotSupported},
-		{"worktree is required", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
-			PermissionMode: adapter.PermissionFull, RequiredCapabilities: []string{"worktree"}}, adapter.ErrCapability},
 		{"stdio mcp", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
 			PermissionMode: adapter.PermissionFull,
 			MCPServers:     map[string]any{"x": map[string]any{"command": "npx"}}}, adapter.ErrNotSupported},

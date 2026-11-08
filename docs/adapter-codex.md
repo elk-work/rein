@@ -201,9 +201,11 @@ session emits a progress event naming the path. Deleting it would log the
 developer out; copying it back would mean this package handling a token. It
 does neither.
 
-**One residual.** `codex_apps` is a built-in of the binary rather than user
-configuration, and survives an otherwise empty home. It carries no Elk tool and
-no identity; `ark:rein#22` tracks closing it.
+`codex_apps` is a built-in of the binary rather than user configuration, and
+survives an otherwise empty home. The installed binary's `codex features list`
+probe on 2026-11-08 exposed the stable `apps` feature, enabled by default. Rein
+now starts app-server with `-c features.apps=false` (`ark:rein#22`). The launch
+regression test asserts this switch reaches the child process.
 `TestIntegrationSessionSeesOnlyTheSpecsMCPServers` asserts the set of servers a
 real session starts, and fails on anything else.
 

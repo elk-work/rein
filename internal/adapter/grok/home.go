@@ -1,11 +1,17 @@
 package grok
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/elk-work/rein/internal/adapter"
 )
 
@@ -57,14 +63,7 @@ import (
 //   - `sessions/` — session state. `session/load` reads it, and `resume` is a
 //     declared capability, so it has to survive a home that does not.
 //
-// # What this does not close
-//
-// One plugin-contributed server still reaches the session: `context7`,
-// discovered from the Claude plugin directory under the real `$HOME` rather
-// than from `$GROK_HOME`. It is a public documentation lookup with two
-// read-only tools, no credential in its URL and no identity — a different thing
-// entirely from the Elk connector — but it is not nothing, and
-// `ark:rein#22` tracks closing it. `docs/adapter-grok.md` has the detail.
+// Plugins are enumerated and disabled before the agent starts; see configure.
 type privateHome struct {
 	dir  string
 	real string
@@ -231,4 +230,113 @@ func sanitizeRunID(runID string) string {
 		return ""
 	}
 	return b.String() + "-"
+}
+
+// configure runs discovery with the same private home, cwd and environment as
+// the agent. A failed or unrecognisable inventory must not start a session.
+func (h *privateHome) configure(ctx context.Context, binary string, spec adapter.RunSpec) error {
+	cmd := exec.CommandContext(ctx, binary, "plugin", "list", "--json")
+	cmd.Dir = spec.WorktreeDir
+	cmd.Env = h.runEnv(spec.InheritedEnv(), mergeMaps(spec.Env, map[string]string{sandboxEnv: sandboxReadOnly}))
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("grok: enumerate plugins: %w", err)
+	}
+	names, err := pluginNames(out)
+	if err != nil {
+		return err
+	}
+	if err := h.writeTOML("config.toml", map[string]any{"plugins": map[string]any{"disabled": names}}); err != nil {
+		return err
+	}
+	if spec.Env[sandboxEnv] != sandboxWorktree {
+		return nil
+	}
+	paths, err := gitWritePaths(ctx, spec.WorktreeDir)
+	if err != nil {
+		return err
+	}
+	// Session state is intentionally carried across homes for ACP resume.
+	// Grant only that directory, never the real home's configuration or login.
+	if sessions, err := filepath.EvalSymlinks(filepath.Join(h.dir, "sessions")); err == nil {
+		if strings.ContainsAny(sessions, "*?[") || strings.TrimSpace(sessions) != sessions {
+			return fmt.Errorf("grok: session path cannot be represented by sandbox")
+		}
+		paths = append(paths, sessions)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return h.writeTOML("sandbox.toml", map[string]any{"profiles": map[string]any{sandboxWorktree: map[string]any{"extends": "workspace", "read_write": paths}}})
+}
+
+func pluginNames(data []byte) ([]string, error) {
+	var plugins []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &plugins); err != nil || plugins == nil {
+		return nil, fmt.Errorf("grok: invalid plugin inventory")
+	}
+	names := make([]string, 0, len(plugins))
+	seen := map[string]bool{}
+	for _, p := range plugins {
+		if strings.TrimSpace(p.Name) == "" {
+			return nil, fmt.Errorf("grok: plugin inventory has an unnamed plugin")
+		}
+		if !seen[p.Name] {
+			names = append(names, p.Name)
+			seen[p.Name] = true
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (h *privateHome) writeTOML(name string, value any) error {
+	var b bytes.Buffer
+	if err := toml.NewEncoder(&b).Encode(value); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(h.dir, name), b.Bytes(), 0o600)
+}
+
+// Git keeps a linked checkout's index/HEAD apart from its shared object and
+// reference storage. Never grant the entire common directory: that would also
+// expose other worktrees' indexes and the repository's configuration/hooks.
+func gitWritePaths(ctx context.Context, dir string) ([]string, error) {
+	resolve := func(flag string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", flag)
+		cmd.Dir = dir
+		cmd.Env = mergeEnv(os.Environ(), map[string]string{"LC_ALL": "C"})
+		out, err := cmd.Output()
+		if err != nil {
+			if e, ok := err.(*exec.ExitError); ok && strings.Contains(string(e.Stderr), "not a git repository") {
+				return "", nil
+			}
+			return "", fmt.Errorf("grok: resolve worktree git metadata: %w", err)
+		}
+		path, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+		if err != nil {
+			return "", err
+		}
+		if strings.ContainsAny(path, "*?[") || strings.TrimSpace(path) != path {
+			return "", fmt.Errorf("grok: git path cannot be represented by sandbox: %q", path)
+		}
+		return path, nil
+	}
+	common, err := resolve("--git-common-dir")
+	if err != nil {
+		return nil, err
+	}
+	if common == "" {
+		return []string{}, nil
+	}
+	gitDir, err := resolve("--git-dir")
+	if err != nil {
+		return nil, err
+	}
+	paths := []string{filepath.Join(common, "objects"), filepath.Join(common, "refs"), filepath.Join(common, "logs", "refs")}
+	if gitDir != common {
+		paths = append(paths, gitDir)
+	}
+	return paths, nil
 }
