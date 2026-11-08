@@ -130,6 +130,9 @@ const (
 
 // Options configure a [Runner].
 type Options struct {
+	// ArkCommand overrides the local Ark CLI for lifecycle tests.
+	ArkCommand func(context.Context, string, ...string) (string, error)
+
 	Hosted bool
 	// HostedClone is the clone seam; nil uses worktree.Manager.Clone.
 	HostedClone func(context.Context, string, string, map[string]string) (*worktree.Worktree, error)
@@ -767,8 +770,9 @@ type queueRunner struct {
 	// log is the current run's event log, and logStatus is how the run will
 	// be recorded as having ended. Both are set by drive and cleared by it.
 	// A nil log is a working no-op — see [runlog.Writer].
-	log       *runlog.Writer
-	logStatus runlog.Status
+	log           *runlog.Writer
+	logStatus     runlog.Status
+	resultSummary string
 
 	// tel is this queue's fleet reading state, and lastReplyShape is what Elk
 	// last said back. Both are guarded because the telemetry tick reads and

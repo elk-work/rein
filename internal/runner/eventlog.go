@@ -21,6 +21,7 @@ import (
 // openLog starts the current run's event log.
 func (qr *queueRunner) openLog(wo *elk.WorkOrder) {
 	qr.logStatus = runlog.StatusInterrupted
+	qr.resultSummary = ""
 	qr.humanMu.Lock()
 	qr.human = human{}
 	qr.humanMu.Unlock()
