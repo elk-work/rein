@@ -205,10 +205,13 @@ gh pr checks <n>
 gh api repos/elk-work/<repo>/commits/<head-sha>/status --jq '.statuses[] | select(.context=="ci-plan") | .state + ": " + .description'
 ```
 
-- **Enforce** (scout since 2026-10-01; `ci-plan` is its required check):
-  `failure` names each unmet suite and what would satisfy it. `pending` means
-  a leg is still running. Merge on `success` only; an armed auto-merge waits
-  for it. The status's Details link opens the job summary with the full table.
+- **Enforce** (scout since 2026-10-01): `failure` names each unmet suite and
+  what would satisfy it. `pending` means a leg is still running. Scout's
+  required check is `elk-ci` since 2026-11-08 (Elk Scout #1346), which posts the
+  same enforce reading from the gh-connector function; `ci-plan` still reports
+  but no longer gates the merge. Merge on `success` only; an armed auto-merge
+  waits for `elk-ci`. The status's Details link opens the job summary with the
+  full table.
 - **Advisory** (`CI_PLAN_MODE` unset — a repo trialling a manifest): the
   status is **always success**, so read the description. `advisory · plan
   met: …` or `advisory · no suites implicated` means done; `advisory · enforce
