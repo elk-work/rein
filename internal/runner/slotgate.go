@@ -14,6 +14,10 @@ import (
 // that the measurement is not the workload.
 const DefaultSlotInterval = 5 * time.Second
 
+// RAMReservationWindow covers startup, before a run's allocation is expected
+// to appear in free RAM. This is an age-based estimate, not an RSS measurement.
+const RAMReservationWindow = 3 * time.Minute
+
 // slotPriority orders the claims waiting for a slot on this machine. A higher
 // priority goes first; equal priorities go in the order they started waiting.
 //
@@ -225,6 +229,7 @@ func (g *slotGate) enter(ctx context.Context, req slotRequest, onWait func(reaso
 // not get to take it, because the Wrangler is in line ahead of it and the slot
 // is counted as the Wrangler's.
 func (g *slotGate) tryEnter(w *slotWaiter) (*slotHold, string) {
+	measuredAt := time.Now()
 	reading := g.probe(g.workDir)
 
 	g.mu.Lock()
@@ -233,7 +238,7 @@ func (g *slotGate) tryEnter(w *slotWaiter) (*slotHold, string) {
 	// several queues ask every five seconds, and a reading that straddles a
 	// slot's line must not flap the count — and the log — between them
 	// (ark:rein#33).
-	n, why := StableSlots(reading, g.hard, g.last)
+	n, why := stableSlots(reading, g.hard, g.last, g.allocatedLocked(measuredAt))
 	if n != g.last {
 		g.logf("concurrency: %s", why)
 		g.last = n
@@ -256,6 +261,29 @@ func (g *slotGate) tryEnter(w *slotWaiter) (*slotHold, string) {
 	}
 	g.holds = append(g.holds, h)
 	return h, ""
+}
+
+// allocatedLocked counts only holds old enough at the start of the reading.
+// Holds granted while the probe was running remain reservations, even if the
+// probe was delayed. g.mu also serializes accounting with concurrent grants.
+func (g *slotGate) allocatedLocked(at time.Time) int {
+	n := 0
+	for _, h := range g.holds {
+		if at.Sub(h.since) >= RAMReservationWindow {
+			n++
+		}
+	}
+	return n
+}
+
+// capacity reports the same accounting as admission without changing hysteresis.
+func (g *slotGate) capacity(reading Headroom) (total, used int, limited string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	allocated := g.allocatedLocked(time.Now())
+	total, _ = stableSlots(reading, g.hard, g.last, allocated)
+	_, _, kinds, _ := slots(reading, g.hard, allocated)
+	return total, len(g.holds), strings.Join(kinds, " and ")
 }
 
 // slotWaitPrefix opens every slot-wait reason.

@@ -282,3 +282,95 @@ func TestSpanReadsLikeAPersonWouldSayIt(t *testing.T) {
 		}
 	}
 }
+
+// A fixed reading already includes the allocations of older runs. New claims
+// must still reserve their budget, even when every probe returns that reading.
+func TestSlotGateReservesYoungHoldsAgainstFixedReading(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		old  int
+		want int
+	}{
+		{"empty machine admits only two", 0, 2},
+		{"two allocated runs leave room up to cap", 2, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := oneSlot()
+			g.hard = 4
+			g.probe = func(string) Headroom {
+				return Headroom{RAMKnown: true, FreeRAM: 8 * gib}
+			}
+			for i := 0; i < tc.old; i++ {
+				g.holds = append(g.holds, &slotHold{g: g, since: time.Now().Add(-RAMReservationWindow - time.Minute)})
+			}
+			// All probes begin before any grant: none can see the new allocations.
+			var probed sync.WaitGroup
+			probed.Add(12)
+			g.probe = func(string) Headroom {
+				probed.Done()
+				probed.Wait()
+				return Headroom{RAMKnown: true, FreeRAM: 8 * gib}
+			}
+			var claims sync.WaitGroup
+			for i := 0; i < 12; i++ {
+				claims.Add(1)
+				go func() {
+					defer claims.Done()
+					// No priority competitors: exercise the capacity check directly.
+					g.tryEnter(&slotWaiter{since: time.Now()})
+				}()
+			}
+			claims.Wait()
+			if got := g.inFlight(); got != tc.want {
+				t.Fatalf("admitted %d total runs, want %d", got, tc.want)
+			}
+			total, used, limited := g.capacity(Headroom{RAMKnown: true, FreeRAM: 8 * gib})
+			if total != tc.want || used != tc.want || (tc.old == 2 && limited != "") {
+				t.Fatalf("telemetry capacity = %d, %d, %q", total, used, limited)
+			}
+		})
+	}
+}
+
+func TestReservationAgeUsesTheReadingTime(t *testing.T) {
+	at := time.Now()
+	g := oneSlot()
+	g.holds = []*slotHold{
+		{since: at.Add(-RAMReservationWindow)},
+		{since: at.Add(-RAMReservationWindow + time.Nanosecond)},
+		{since: at.Add(time.Second)}, // granted after this reading started
+	}
+	if got := g.allocatedLocked(at); got != 1 {
+		t.Fatalf("allocated = %d, want only the hold at the reservation boundary", got)
+	}
+	// Releasing an older hold must remove its credit.
+	g.holds[0].g = g
+	g.holds[0].release()
+	if got := g.allocatedLocked(at); got != 0 {
+		t.Fatalf("released hold still credited: %d", got)
+	}
+}
+
+func TestStableSlotsWithAllocatedHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		h          Headroom
+		prev, want int
+	}{
+		{"two old runs and eight free", Headroom{RAMKnown: true, FreeRAM: 8 * gib}, 0, 4},
+		{"below boundary keeps four", Headroom{RAMKnown: true, FreeRAM: 8*gib - 20<<20}, 4, 4},
+		{"above boundary keeps three", Headroom{RAMKnown: true, FreeRAM: 8*gib + 20<<20}, 3, 3},
+		{"clear rise", Headroom{RAMKnown: true, FreeRAM: 9 * gib}, 3, 4},
+		{"clear fall", Headroom{RAMKnown: true, FreeRAM: 7*gib - 1}, 4, 3},
+		{"no spare RAM", Headroom{RAMKnown: true}, 0, 2},
+		{"disk remains a limit", Headroom{RAMKnown: true, FreeRAM: 8 * gib, DiskKnown: true, FreeDisk: 20 * gib}, 0, 2},
+		{"unknown RAM", Headroom{}, 0, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, why := stableSlots(tc.h, 4, tc.prev, 2)
+			if got != tc.want {
+				t.Fatalf("got %d, want %d: %s", got, tc.want, why)
+			}
+		})
+	}
+}
