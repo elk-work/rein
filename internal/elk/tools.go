@@ -663,6 +663,20 @@ func asNotRunning(runID string, res *ToolResult, prefix string) *NotRunningError
 	return e
 }
 
+// proofRefusalPrefix opens Elk's refusal of a finish with no screenshot and
+// no Tests section (elk-mcp PROOF_REFUSAL, scout 0647).
+const proofRefusalPrefix = "Not saved: Before you finish"
+
+// ProofRefusal returns Elk's words when err is its refusal of a finish that
+// carries no proof, so the runner can pass them to the session.
+func ProofRefusal(err error) (string, bool) {
+	var te *ToolError
+	if errors.As(err, &te) && strings.HasPrefix(te.Text, proofRefusalPrefix) {
+		return te.Text, true
+	}
+	return "", false
+}
+
 // ------------------------------------------------------------ auto-review
 
 // AutoReviewLine is the marching-orders line Elk renders into a work order
@@ -809,6 +823,9 @@ type Submission struct {
 	// StopCode names why a stuck run stopped, so Elk can group runs stopped
 	// for one reason: repo_access, agent_login, worktree_init or other.
 	StopCode string
+	// NoProof says why a finished run carries no screenshot and no Tests
+	// section (scout 0647). Sent only when set.
+	NoProof string
 }
 
 // SubmitResult is what Elk recorded.
@@ -858,6 +875,7 @@ func (c *Client) SubmitDeliverable(ctx context.Context, s Submission) (*SubmitRe
 	putIf(args, "title", s.Title)
 	putIf(args, "summary", s.Summary)
 	putIf(args, "stop_code", s.StopCode)
+	putIf(args, "no_proof", s.NoProof)
 	if len(s.CompletedActions) > 0 {
 		args["completed_actions"] = s.CompletedActions
 	}
