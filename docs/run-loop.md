@@ -1336,3 +1336,5 @@ v0 runner can finish work in — `ask` and `accept_edits` both need an adapter
 declaring `approvals`, and there is nobody to answer — and it is defensible for
 exactly the reason `elk docs/rein.md` §3 gives: a run happens in a git worktree
 of a repository we own, and nowhere else. Narrow a queue that is not that.
+
+Pending local reviews are saved per run under `~/.rein/state/reviews`; after a restart Rein resumes the review in the kept worktree and handles a send-back as the next round, removing the saved review when it settles.
