@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/elk-work/rein/internal/adapter"
@@ -55,6 +57,8 @@ type driveState struct {
 // reviewCont is one run paused at Elk's review, with everything a revision
 // round needs. It outlives the serve goroutine's drive call.
 type reviewCont struct {
+	verdict   string
+	restored  bool
 	round     int
 	a         adapter.Adapter
 	spec      adapter.RunSpec
@@ -150,7 +154,18 @@ func (qr *queueRunner) alreadyReviewing(runID string) bool {
 // asks for revisions. Cleanup — the worktree, the log, the proxy — runs here,
 // when the run is actually over.
 func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
-	defer c.clean.run()
+	defer func() {
+		qr.slot.release()
+		c.clean.run()
+		if !qr.keepReview {
+			path := reviewFile(qr.r.opts.StateDir, c.wo.RunID)
+			if path != "" {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					qr.logf("removing pending review: %v", err)
+				}
+			}
+		}
+	}()
 	round := c.round
 	spec := c.spec
 	verdict := ""
@@ -169,15 +184,29 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		}
 		announced = false
 
+		c.round, c.spec, c.sessionID, c.sentBack, c.rec = round, spec, sessionID, sentBack, rec
+		if err := qr.saveReview(c); err != nil {
+			qr.keepReview = true
+			qr.logf("run %s: could not persist pending review; keeping worktree: %v", c.wo.RunID, err)
+			return
+		}
 		var outcome reviewOutcome
-		verdict, outcome = qr.awaitReview(ctx, c.wo)
+		if c.verdict != "" {
+			verdict, outcome = c.verdict, reviewRevisions
+		} else {
+			verdict, outcome = qr.awaitReview(ctx, c.wo)
+		}
 		switch outcome {
 		case reviewInterrupted:
 			// Rein is stopping while Elk still has the run (ark:rein#81). The
 			// run stays `ready` in Elk, which is a legitimate place to leave
 			// it; saying the review "asked for nothing" was not true.
-			qr.logf("run %s: Rein stopped before Elk's review answered; the run stays ready in Elk, and a "+
-				"revision request now finds no agent to work it", c.wo.RunID)
+			qr.keepReview = qr.r.opts.StateDir != ""
+			next := "no persistent state directory is configured"
+			if qr.keepReview {
+				next = "the review will resume on the next start"
+			}
+			qr.logf("run %s: Rein stopped before Elk's review answered; the run stays ready in Elk; %s", c.wo.RunID, next)
 			qr.log.Runner(runlog.KindReview, "Rein stopped before Elk's review answered; the run stays ready")
 			return
 		case reviewCancelled:
@@ -209,7 +238,14 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 			}
 			return
 		}
+		c.verdict = verdict
+		if err := qr.saveReview(c); err != nil {
+			qr.keepReview = true
+			qr.logf("saving review verdict: %v", err)
+			return
+		}
 		if stop, err := qr.retakeSlot(ctx, c.wo, round+1, c.pending); stop {
+			qr.keepReview = ctx.Err() != nil && qr.r.opts.StateDir != ""
 			if err != nil {
 				qr.logf("run %s: %v", c.wo.RunID, err)
 			}
@@ -217,9 +253,26 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		}
 		qr.logf("run %s: Elk asked for revisions; running the agent again (round %d)", c.wo.RunID, round+1)
 		qr.log.Runner(runlog.KindReview, "Elk asked for revisions; running the agent again (round %d)", round+1)
-		_ = qr.report(ctx, c.wo.RunID, elk.ProgressStep,
+		if err := qr.report(ctx, c.wo.RunID, elk.ProgressStep,
 			fmt.Sprintf("Elk's review asked for revisions (round %d of %d). Working them now.",
-				round+1, qr.maxReviewRounds()), "", "", c.pending)
+				round+1, qr.maxReviewRounds()), "", "", c.pending); errors.Is(err, elk.ErrCancelled) {
+			qr.logStatus = runlog.StatusCancelled
+			return
+		} else if err != nil && c.restored {
+			qr.keepReview = true
+			qr.logf("confirming saved revision claim: %v", err)
+			return
+		}
+		if c.restored {
+			if err := qr.restoreReviewRuntime(&c); err != nil {
+				qr.keepReview = true
+				qr.logf("restoring review runtime: %v", err)
+				return
+			}
+			spec = c.spec
+			c.restored = false
+		}
+		c.verdict = ""
 		spec = qr.revisionSpec(c.a, spec, c.wo, sessionID, verdict)
 
 		round++

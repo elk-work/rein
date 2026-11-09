@@ -209,9 +209,9 @@ type Options struct {
 	// [MinTelemetryInterval].
 	TelemetryInterval time.Duration
 
-	// StateDir is where Rein keeps state that must survive a restart — today,
-	// each queue's subscription hold (subscription.go), so a service restarted
-	// while a subscription is exhausted does not claim straight back into it.
+	// StateDir holds pending reviews and each queue's subscription hold
+	// (subscription.go), so a restart resumes reviews and does not claim
+	// straight back into an exhausted subscription.
 	// Empty keeps it in memory only, which is what most tests want; `rein run`
 	// passes `<Rein home>/state`.
 	StateDir string
@@ -849,6 +849,7 @@ type queueRunner struct {
 	// showing this run.
 	reviewParent *queueRunner
 	handedRunID  string
+	keepReview   bool // shutdown leaves the pending review and its worktree intact
 
 	// subOwner, when set, is the queue whose subscription this fork shares.
 	// A revision that learns the window is spent has to stop the queue that
@@ -865,8 +866,8 @@ func (qr *queueRunner) logf(format string, args ...any) {
 
 func (qr *queueRunner) serve(ctx context.Context) error {
 	// A review wait handed off the loop has to finish before serve returns:
-	// --once would otherwise exit before Elk answered, and a shutdown would
-	// leave the worktree behind. Between claims the loop does not wait.
+	// --once must wait for Elk, and shutdown must finish persisting its
+	// pending review. Between claims the loop does not wait.
 	defer qr.reviews.Wait()
 	if !qr.r.opts.Hosted {
 		qr.checkAgentSetup(ctx)
@@ -907,6 +908,8 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	if qr.r.opts.DryRun {
 		return qr.dryRun(ctx)
 	}
+
+	qr.resumeReviews(ctx)
 
 	// The zero value makes the first poll claim whatever the depth says. A
 	// runner starting up is a runner that may just have crashed, and its own

@@ -36,6 +36,11 @@ func (r *Runner) reapOwed(ctx context.Context) int {
 		if ctx.Err() != nil {
 			return n
 		}
+		if path := reviewFile(r.opts.StateDir, m.RunID); path != "" {
+			if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+				continue
+			}
+		}
 		if r.reapedUnmarked[m.RunID] {
 			// Reaped already; only the mark is left (below). Reaping again
 			// would be a second reap of a worktree that is gone.

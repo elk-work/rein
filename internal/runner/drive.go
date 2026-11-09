@@ -377,9 +377,21 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	}
 	// Added like defers, so they run in reverse: the adapter tidies up, Ark
 	// is finished, then the worktree is reaped.
-	clean.add(func() { st.cur.reap(wt) })
-	clean.add(func() { st.cur.finishArkRuns(ctx, wt) })
-	clean.add(func() { st.cur.reapAdapter(a, wo.RunID, &spec) })
+	clean.add(func() {
+		if !st.cur.keepReview {
+			st.cur.reap(wt)
+		}
+	})
+	clean.add(func() {
+		if !st.cur.keepReview {
+			st.cur.finishArkRuns(ctx, wt)
+		}
+	})
+	clean.add(func() {
+		if !st.cur.keepReview {
+			st.cur.reapAdapter(a, wo.RunID, &spec)
+		}
+	})
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
 	if !qr.r.opts.Hosted {
@@ -425,9 +437,17 @@ func (qr *queueRunner) driveWithoutRepo(ctx context.Context, a adapter.Adapter, 
 		return qr.stuck(ctx, wo, "Could not make a folder for this run", err.Error())
 	}
 	if !qr.r.opts.KeepWorktrees {
-		clean.add(func() { _ = os.RemoveAll(dir) })
+		clean.add(func() {
+			if !st.cur.keepReview {
+				_ = os.RemoveAll(dir)
+			}
+		})
 	}
-	clean.add(func() { st.cur.reapAdapter(a, wo.RunID, &spec) })
+	clean.add(func() {
+		if !st.cur.keepReview {
+			st.cur.reapAdapter(a, wo.RunID, &spec)
+		}
+	})
 	spec.WorktreeDir = dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) +
 		"\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") +
