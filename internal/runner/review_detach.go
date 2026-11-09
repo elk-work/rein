@@ -255,7 +255,7 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		qr.log.Runner(runlog.KindReview, "Elk asked for revisions; running the agent again (round %d)", round+1)
 		if err := qr.report(ctx, c.wo.RunID, elk.ProgressStep,
 			fmt.Sprintf("Elk's review asked for revisions (round %d of %d). Working them now.",
-				round+1, qr.maxReviewRounds()), c.pending); errors.Is(err, elk.ErrCancelled) {
+				round+1, qr.maxReviewRounds()), "", "", c.pending); errors.Is(err, elk.ErrCancelled) {
 			qr.logStatus = runlog.StatusCancelled
 			return
 		} else if err != nil && c.restored {
@@ -294,7 +294,7 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		if res.done {
 			return
 		}
-		sub, err := qr.submitReady(ctx, c.wo, res.out, c.wt, c.repo, spec, res.sessionID, c.pending)
+		sub, err := qr.submitWithProof(ctx, c.a, spec, c.wo, c.wt, c.repo, &res, &rec, c.pending)
 		if err != nil {
 			qr.logf("run %s: %v", c.wo.RunID, err)
 			return

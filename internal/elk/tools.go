@@ -580,6 +580,9 @@ type Progress struct {
 	Body  string
 	Kind  ProgressKind
 	Usage *Usage
+	// Why and Next finish a receipt (Body is what was done): one line each,
+	// sent only when set, clipped to Elk's 140 characters.
+	Why, Next string
 }
 
 // ReportProgress heartbeats a claimed run and renews its 15-minute lease.
@@ -602,6 +605,14 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 	if p.Kind != "" {
 		args["kind"] = string(p.Kind)
 	}
+	for k, v := range map[string]string{"why": p.Why, "next": p.Next} {
+		if v = strings.TrimSpace(v); v != "" {
+			if r := []rune(v); len(r) > 140 {
+				v = string(r[:140])
+			}
+			args[k] = v
+		}
+	}
 	p.Usage.put(args)
 
 	res, err := c.call(ctx, ToolReportProgress, args)
@@ -612,6 +623,18 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 		return res, nr
 	}
 	return res, res.Err()
+}
+
+// CommentsIn returns the task comments Elk delivered in a reply, from the
+// "New comment(s) on this task" header (formatCommentDelivery in
+// elk-mcp/queue.ts) to the end, or "" when the reply carries none.
+// The block always opens with a newline; the one prepended here covers a
+// reply that is the block alone and was trimmed.
+func CommentsIn(text string) string {
+	if _, c, ok := strings.Cut("\n"+text, "\nNew comment"); ok {
+		return strings.TrimSpace("New comment" + c)
+	}
+	return ""
 }
 
 // notRunningStatusRE pulls the status out of "This run is `done`, not
@@ -638,6 +661,20 @@ func asNotRunning(runID string, res *ToolResult, prefix string) *NotRunningError
 		e.Status = m[1]
 	}
 	return e
+}
+
+// proofRefusalPrefix opens Elk's refusal of a finish with no screenshot and
+// no Tests section (elk-mcp PROOF_REFUSAL, scout 0647).
+const proofRefusalPrefix = "Not saved: Before you finish"
+
+// ProofRefusal returns Elk's words when err is its refusal of a finish that
+// carries no proof, so the runner can pass them to the session.
+func ProofRefusal(err error) (string, bool) {
+	var te *ToolError
+	if errors.As(err, &te) && strings.HasPrefix(te.Text, proofRefusalPrefix) {
+		return te.Text, true
+	}
+	return "", false
 }
 
 // ------------------------------------------------------------ auto-review
@@ -786,6 +823,9 @@ type Submission struct {
 	// StopCode names why a stuck run stopped, so Elk can group runs stopped
 	// for one reason: repo_access, agent_login, worktree_init or other.
 	StopCode string
+	// NoProof says why a finished run carries no screenshot and no Tests
+	// section (scout 0647). Sent only when set.
+	NoProof string
 }
 
 // SubmitResult is what Elk recorded.
@@ -835,6 +875,7 @@ func (c *Client) SubmitDeliverable(ctx context.Context, s Submission) (*SubmitRe
 	putIf(args, "title", s.Title)
 	putIf(args, "summary", s.Summary)
 	putIf(args, "stop_code", s.StopCode)
+	putIf(args, "no_proof", s.NoProof)
 	if len(s.CompletedActions) > 0 {
 		args["completed_actions"] = s.CompletedActions
 	}

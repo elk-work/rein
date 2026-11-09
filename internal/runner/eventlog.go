@@ -55,6 +55,9 @@ func (qr *queueRunner) closeLog() {
 	// And it ends here, wherever inside drive the run got to. `stuck` is the
 	// only ending that leaves the queue reporting `faulted` afterwards; see
 	// [queueRunner.endRun].
+	if c := qr.takeComments(); c != "" {
+		qr.log.Runner(runlog.KindNote, "task comments that reached no session: %s", c)
+	}
 	qr.endRun(qr.logStatus)
 	qr.log.Close(qr.logStatus)
 	// The run is over and its values with it; the next run arms its own.
