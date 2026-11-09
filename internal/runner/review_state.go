@@ -11,6 +11,7 @@ import (
 	"github.com/elk-work/rein/internal/adapter"
 	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
 	"github.com/elk-work/rein/internal/elk"
+	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -126,6 +127,9 @@ func (qr *queueRunner) resumeReviews(ctx context.Context) {
 			continue
 		}
 		child.openLog(p.WorkOrder)
+		child.logStatus = runlog.StatusSubmitted
+		child.log.Runner(runlog.KindReview, "resuming pending review after restart (round %d)", p.Round)
+		child.log.Update(func(m *runlog.Meta) { m.SessionID = p.SessionID })
 		if p.Worktree != nil {
 			child.recordWorktree(p.Worktree, p.Repo)
 		}
