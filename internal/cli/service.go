@@ -290,6 +290,10 @@ func runServiceStatus(cmd *cobra.Command) error {
 		return nil
 	}
 	m, err := serviceManager(cmd, service.Config{})
+	if errors.Is(err, service.ErrNoManager) {
+		fmt.Fprintf(out, "%s: service manager unavailable\n", service.Name)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -317,7 +321,7 @@ func runServiceStatus(cmd *cobra.Command) error {
 	}
 	w.Flush()
 
-	if !st.Installed {
+	if !st.Installed && !st.Unavailable {
 		fmt.Fprintln(out, "\nnothing installed — `rein service install`.")
 	}
 	return nil

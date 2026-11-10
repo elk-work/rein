@@ -46,6 +46,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
@@ -95,6 +96,10 @@ const (
 
 // Adapter drives Claude Code. The zero value is not usable; call [New].
 type Adapter struct {
+	authMu       sync.Mutex
+	authFailed   bool
+	authVerified bool
+
 	// Binary overrides the executable name or path. Empty means
 	// [DefaultBinary] resolved on PATH. This is the config override a
 	// developer needs when `claude` is not on the daemon's PATH.
@@ -260,18 +265,29 @@ func (a *Adapter) Preflight(ctx context.Context) error {
 
 	var st authStatus
 	if jsonErr := json.Unmarshal([]byte(authOut), &st); jsonErr != nil {
-		// Older or newer builds may print prose. Fall back to something a human
-		// can still act on rather than failing a working machine on a format
-		// change.
+		// Unknown output cannot establish a working login. Keep the familiar
+		// logged-out message actionable, and otherwise fail closed.
 		if strings.Contains(strings.ToLower(authOut), "not logged in") {
 			return fmt.Errorf("%w: %s reports no login; run `%s auth login`",
 				adapter.ErrPreflight, bin, bin)
 		}
-		return nil
+		return fmt.Errorf("%w: cannot read Claude authentication status; run `claude auth login`", adapter.ErrPreflight)
 	}
 	if !st.LoggedIn {
 		return fmt.Errorf("%w: %s is not logged in; run `%s auth login`",
 			adapter.ErrPreflight, bin, bin)
+	}
+	a.authMu.Lock()
+	defer a.authMu.Unlock()
+	if !a.authVerified || a.authFailed {
+		if err := a.verifyLogin(ctx, path); err != nil {
+			if a.authFailed {
+				return fmt.Errorf("%w: %w: Claude login has not recovered; run `claude auth login`", adapter.ErrPreflight, adapter.ErrLoginRequired)
+			}
+			return err
+		}
+		a.authFailed = false
+		a.authVerified = true
 	}
 	return nil
 }
@@ -378,16 +394,17 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	}
 
 	s := &Session{
-		spec:       spec,
-		startCtx:   ctx,
-		tmpDir:     tmpDir,
-		events:     make(chan adapter.Event),
-		done:       make(chan struct{}),
-		started:    time.Now(),
-		clock:      a.clock,
-		grace:      a.InterruptGrace,
-		dec:        &decoder{},
-		hookEvents: make(chan hookPayload, 16),
+		loginFailed: func() { a.authMu.Lock(); a.authFailed = true; a.authMu.Unlock() },
+		spec:        spec,
+		startCtx:    ctx,
+		tmpDir:      tmpDir,
+		events:      make(chan adapter.Event),
+		done:        make(chan struct{}),
+		started:     time.Now(),
+		clock:       a.clock,
+		grace:       a.InterruptGrace,
+		dec:         &decoder{},
+		hookEvents:  make(chan hookPayload, 16),
 	}
 	if s.grace <= 0 {
 		s.grace = defaultInterruptGrace

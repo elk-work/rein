@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,5 +117,28 @@ func TestAHealthyQueueNeverRechecksOnABeat(t *testing.T) {
 		if s != "ready" {
 			t.Errorf("a beat said %q", s)
 		}
+	}
+}
+
+func TestRuntimeLoginFailureStopsClaimsAndReportsNotReady(t *testing.T) {
+	h := newHarness(t)
+	h.agent.Script = []adapter.Event{{Kind: adapter.EventError, Err: fmt.Errorf("%w: run `claude auth login`", adapter.ErrLoginRequired)}}
+	h.elk.Text("claim_run", order("run-1"))
+	h.elk.Text("claim_run", order("run-2"))
+	if err := h.runLoop(runner.Options{PollInterval: 10 * time.Millisecond, HostCapabilities: machineHolds()}, 500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	states := beatStates(t, h)
+	if len(states) < 2 || states[len(states)-1] != "Agent authentication required" {
+		t.Fatalf("states=%v", states)
+	}
+	if n := len(h.elk.CallsTo("claim_run")); n != 1 {
+		t.Fatalf("claimed %d times after login failure", n)
+	}
+	if got := h.submitted().Arg("stop_code"); got != "agent_login" {
+		t.Fatalf("stop code=%s", got)
+	}
+	if got := h.submitted().Arg("deliverable"); !strings.Contains(got, "claude auth login") {
+		t.Fatalf("deliverable=%s", got)
 	}
 }

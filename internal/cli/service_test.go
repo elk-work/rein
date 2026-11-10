@@ -80,6 +80,9 @@ func TestServiceStatusReportsNotInstalled(t *testing.T) {
 	if !strings.Contains(out, service.Name) {
 		t.Errorf("status does not name the service:\n%s", out)
 	}
+	if strings.Contains(out, "service manager unavailable") {
+		return
+	}
 	for _, want := range []string{"platform", "command", "logs"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status is missing the %q row:\n%s", want, out)
@@ -91,5 +94,23 @@ func writeConfig(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServiceStatusWithoutUserManager(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("systemd user manager is Linux only")
+	}
+	dir := t.TempDir()
+	t.Setenv(config.EnvHome, dir)
+	t.Setenv("REIN_KEYRING", "file")
+	// Existing systemctl, but no bus: the cloud sandbox regression.
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte("#!/bin/sh\necho 'Failed to connect to bus: No medium found' >&2\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	out, errb, code := run(t, "service", "status")
+	if code != 0 || !strings.Contains(out, "service manager unavailable") || strings.Contains(out, "nothing installed") {
+		t.Fatalf("exit=%d out=%s stderr=%s", code, out, errb)
 	}
 }

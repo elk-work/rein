@@ -680,6 +680,9 @@ func (r *Runner) telemetryPass(ctx context.Context, d time.Duration) {
 func (qr *queueRunner) setPreflightState(state string) {
 	qr.telMu.Lock()
 	qr.preflightState = state
+	if state == "ready" {
+		qr.loginBlocked = false
+	}
 	qr.telMu.Unlock()
 }
 
