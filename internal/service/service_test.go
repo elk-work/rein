@@ -175,6 +175,7 @@ func TestStatusString(t *testing.T) {
 		want string
 	}{
 		{service.Status{}, "not installed"},
+		{service.Status{Unavailable: true}, "service manager unavailable"},
 		{service.Status{Installed: true}, "installed, not running"},
 		{service.Status{Installed: true, Running: true}, "running"},
 	} {

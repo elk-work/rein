@@ -929,6 +929,12 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			qr.interrupt(sess)
 			why := fmt.Sprintf("hit the hosted run cap of %s", qr.r.opts.Config.Hosted.RunCap())
 			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run hit the hosted run cap", why, pending)
+		case errors.Is(out.err, adapter.ErrLoginRequired):
+			qr.telMu.Lock()
+			qr.preflightState = setupLogin
+			qr.loginBlocked = true
+			qr.telMu.Unlock()
+			return sessionResult{done: true}, qr.submitStuckCode(ctx, wo, "The agent needs you to sign in again", out.err.Error(), "agent_login", pending)
 		case out.err != nil && errors.Is(out.err, adapter.ErrNotAPIAuth):
 			return sessionResult{done: true}, qr.submitStuck(ctx, wo, notAPITitle, out.err.Error(), pending)
 		case out.err != nil && errors.Is(out.err, adapter.ErrNotPlanAuth):

@@ -82,6 +82,9 @@ var Passthrough = []string{"REIN_HOME", "REIN_KEYRING", "REIN_HOST_CAPABILITIES"
 // underlying library's sentinel so callers need not import it.
 var ErrNotInstalled = kservice.ErrNotInstalled
 
+// ErrNoManager means this machine has no supported service manager.
+var ErrNoManager = kservice.ErrNoServiceSystemDetected
+
 // Config describes the service to install. The zero value is usable: it
 // installs the running binary against the default Rein home.
 type Config struct {
@@ -314,13 +317,16 @@ func (m *Manager) Stop() error {
 
 // Status is what a person wants to know: installed, and running.
 type Status struct {
-	Installed bool
-	Running   bool
+	Installed   bool
+	Running     bool
+	Unavailable bool
 }
 
 // String renders a [Status] as one word.
 func (s Status) String() string {
 	switch {
+	case s.Unavailable:
+		return "service manager unavailable"
 	case !s.Installed:
 		return "not installed"
 	case s.Running:
@@ -332,6 +338,15 @@ func (s Status) String() string {
 
 // Status reports whether the service is installed and running.
 func (m *Manager) Status() (Status, error) {
+	if runtime.GOOS == "linux" {
+		available, err := userManagerAvailable()
+		if err != nil {
+			return Status{}, err
+		}
+		if !available {
+			return Status{Unavailable: true}, nil
+		}
+	}
 	st, err := m.svc.Status()
 	switch {
 	case errors.Is(err, kservice.ErrNotInstalled):

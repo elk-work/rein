@@ -793,6 +793,7 @@ type queueRunner struct {
 	tel            queueTelemetry
 	lastReplyShape string
 	preflightState string
+	loginBlocked   bool
 	// setupCheckedAt is when this queue last ran its own setup check
 	// ([queueRunner.checkAgentSetup]), guarded by telMu like the state.
 	setupCheckedAt time.Time
@@ -1000,6 +1001,14 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 			// exhausted_until and exhausted_reason already say why, on
 			// every beat; a second sentence would only disagree with them.
 			qr.setWaiting("")
+		}
+
+		qr.telMu.Lock()
+		loginRequired := qr.loginBlocked
+		qr.telMu.Unlock()
+		if loginRequired {
+			wantClaim = false
+			qr.setWaiting("not claiming: agent authentication required")
 		}
 
 		var (

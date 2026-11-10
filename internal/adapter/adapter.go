@@ -553,6 +553,9 @@ var (
 	// human can act on.
 	ErrPreflight = errors.New("adapter: preflight failed")
 
+	// ErrLoginRequired is a vendor authentication failure, including one discovered mid-session.
+	ErrLoginRequired = errors.New("adapter: login required")
+
 	// ErrNotPlanAuth — the session would not run, or did not start, on the
 	// developer's plan login. Match with [errors.Is]; the value is a
 	// [*PlanAuthError].

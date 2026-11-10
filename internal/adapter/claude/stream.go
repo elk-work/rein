@@ -75,6 +75,7 @@ type streamLine struct {
 	RateLimitInfo *rateLimitInfo `json:"rate_limit_info"`
 
 	// result
+	Errors            []string              `json:"errors"`
 	IsError           bool                  `json:"is_error"`
 	Result            string                `json:"result"`
 	NumTurns          int                   `json:"num_turns"`
@@ -705,6 +706,9 @@ func (d *decoder) decodeResult(sl streamLine, raw json.RawMessage) ([]adapter.Ev
 	status := adapter.StatusSucceeded
 	if sl.IsError || sl.Subtype != "success" {
 		status = adapter.StatusFailed
+		if sl.Result == "" {
+			sl.Result = strings.Join(sl.Errors, "; ")
+		}
 	}
 
 	model := d.model

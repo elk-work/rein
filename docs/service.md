@@ -545,3 +545,8 @@ change. Entries a person wrote under any other keychain service are left
 alone. Values never pass through Elk: the Elk app on the worker's own computer
 stores them with `rein secret set NAME` (value on stdin) under keychain
 service `elk-secret`.
+
+On Linux without a systemd user manager (including containers without a user
+bus), `rein service status` reports **service manager unavailable** and exits
+successfully. This is distinct from **not installed**. Unexpected errors such
+as permission denied still exit unsuccessfully.

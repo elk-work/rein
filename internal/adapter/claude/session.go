@@ -27,6 +27,8 @@ const maxStreamLine = 16 << 20
 
 // Session is one Claude conversation, with at most one idle-recovery child.
 type Session struct {
+	loginFailed func()
+
 	spec         adapter.RunSpec
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
@@ -573,6 +575,13 @@ func (s *Session) terminalEvent(result *adapter.Result, scanErr, waitErr error) 
 		err = nil
 	}
 
+	if err != nil && expiredLogin(err.Error()) {
+		err = fmt.Errorf("%w: Claude sign-in expired and could not refresh; run `claude auth login`", adapter.ErrLoginRequired)
+		final.Summary = err.Error()
+		if s.loginFailed != nil {
+			s.loginFailed()
+		}
+	}
 	s.mu.Lock()
 	s.result = final
 	s.err = err

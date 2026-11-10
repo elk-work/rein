@@ -550,3 +550,23 @@ other queue, keeps the ordinary prompt and its rule against touching production.
 On a scoped queue (`scoped_secrets` or a `secrets` map) a Wrangler cycle gets
 both the rule and the scoped secrets paragraph; a scoped run that is not a cycle
 gets only the paragraph.
+
+### Expired sign-in
+
+When Claude reports that its OAuth session expired and could not refresh,
+Rein reports **Agent authentication required**, shows `claude auth login`, and
+pauses further claims on that queue. Failed result events and startup stderr
+both take this path. An unreadable `auth status` response also fails preflight.
+
+A stored login is not proof that a known failure has recovered. After a runtime
+authentication failure, the adapter remembers it for the daemon's lifetime.
+At startup, and when `auth status` reports a login again after a failure,
+preflight runs one
+isolated, ten-second request asking Claude to reply OK. It disables tools,
+hooks, MCP servers, settings sources and conversation persistence. Only a
+successful result clears the failure. This may consume a small amount of the
+subscription at startup or on recovery; subsequent healthy preflight checks do
+not make model requests.
+A failed recovery remains blocked and retries on the normal setup interval.
+Failure history does not survive daemon restarts, but startup verifies the
+login again before reporting ready.
