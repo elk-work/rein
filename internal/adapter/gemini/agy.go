@@ -76,10 +76,14 @@ const AgyName = "Antigravity"
 // ~/.local/bin/agy and needs no developer tools.
 const AgyInstallCommand = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
 
+// AgyInstallCommandWindows is Google's installer for Windows, in PowerShell;
+// it puts agy at %LOCALAPPDATA%\agy\bin.
+const AgyInstallCommandWindows = "irm https://antigravity.google/cli/install.ps1 | iex"
+
 func agyNotInstalled() error {
 	how := "Install it with: " + AgyInstallCommand
 	if runtime.GOOS == "windows" {
-		how = "Install it from antigravity.google"
+		how = "Install it in PowerShell with: " + AgyInstallCommandWindows
 	}
 	return fmt.Errorf("%w: Antigravity's command-line program (`agy`) is not installed on this computer. %s (%w)",
 		adapter.ErrPreflight, how, exec.ErrNotFound)
@@ -93,15 +97,11 @@ func (a *Adapter) resolveAgy() (string, error) {
 	if path, err := exec.LookPath(bin); err == nil {
 		return path, nil
 	}
-	// Google's installer uses ~/.local/bin, which a service started outside a
-	// login shell may not have on PATH.
+	// Google's installer puts it in ~/.local/bin on a Mac or Linux and in
+	// %LOCALAPPDATA%\agy\bin on Windows (antigravity.google/docs/getting-started),
+	// which a service started outside a login shell may not have on PATH.
 	if bin == AgyBinary {
-		if home, err := os.UserHomeDir(); err == nil {
-			name := AgyBinary
-			if runtime.GOOS == "windows" {
-				name += ".exe"
-			}
-			p := filepath.Join(home, ".local", "bin", name)
+		if p := agyInstalledPath(); p != "" {
 			if info, err := os.Stat(p); err == nil && !info.IsDir() {
 				return p, nil
 			}
@@ -161,6 +161,26 @@ func versionAtLeast(v string, min [3]int) bool {
 		}
 	}
 	return true
+}
+
+// agyInstalledPath is where Google's installer puts agy on this platform.
+func agyInstalledPath() string {
+	if runtime.GOOS == "windows" {
+		local := os.Getenv("LOCALAPPDATA")
+		if local == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return ""
+			}
+			local = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(local, "agy", "bin", AgyBinary+".exe")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "bin", AgyBinary)
 }
 
 // agyStripped are variables an Antigravity session never inherits, whatever a

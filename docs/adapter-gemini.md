@@ -264,7 +264,10 @@ write. (`--mode plan` has no effect alongside `--disable-slash-commands`.)
 
 - **Windows** needs Windows 11 24H2 (build 26100) or later, where the terminal
   sandbox runs; on older Windows, Gemini CLI runs instead, never Antigravity
-  with the sandbox off. Rules are given with forward slashes; how agy matches
+  with the sandbox off. Google's installer (`irm
+  https://antigravity.google/cli/install.ps1 | iex` in PowerShell) puts agy in
+  `%LOCALAPPDATA%\agy\bin`, where Rein looks when it is not on PATH (on a Mac
+  or Linux, `~/.local/bin`). Rules are given with forward slashes; how agy matches
   a Windows path against them, drive letter included, has not been measured.
 - **resume** is `yes`, by conversation id (`--conversation`); conversations are
   kept in the person's own Antigravity folder.

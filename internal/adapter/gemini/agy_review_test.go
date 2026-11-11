@@ -2,6 +2,9 @@ package gemini
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -160,5 +163,28 @@ func TestAModelThatIsNotAPlainNameIsRefused(t *testing.T) {
 	spec.Model = "models/gemini-3.1-pro-preview"
 	if _, _, err := runToEnd(t, a, spec); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Google's installer's folder is where Rein looks when agy is not on PATH:
+// ~/.local/bin on a Mac or Linux, %LOCALAPPDATA%\agy\bin on Windows.
+func TestAntigravityIsFoundWhereGooglesInstallerPutsIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	t.Setenv("PATH", t.TempDir())
+	want := filepath.Join(home, ".local", "bin", AgyBinary)
+	if runtime.GOOS == "windows" {
+		want = filepath.Join(home, "AppData", "Local", "agy", "bin", AgyBinary+".exe")
+	}
+	if got := agyInstalledPath(); got != want {
+		t.Fatalf("looks in %q, want %q", got, want)
+	}
+	must(t, os.MkdirAll(filepath.Dir(want), 0o700))
+	must(t, os.WriteFile(want, []byte("x"), 0o755))
+	got, err := (&Adapter{}).resolveAgy()
+	if err != nil || got != want {
+		t.Fatalf("resolveAgy = %q, %v", got, err)
 	}
 }
