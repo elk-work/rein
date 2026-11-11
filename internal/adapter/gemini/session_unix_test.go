@@ -241,6 +241,43 @@ func TestAPersonalGoogleSignInNeverRuns(t *testing.T) {
 	}
 }
 
+// A person set to the Gemini API key whose key has gone missing gets the
+// not-set-up line, and Elk hears agent_login, not an unexplained failure.
+func TestAMissingKeyIsNotSetUp(t *testing.T) {
+	bin, _ := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	a.RealHome = personsHome(t, "gemini-api-key", false)
+	a.Items = items{}
+	spec := baseSpec(t)
+	spec.ProviderKey = ""
+	s, err := a.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+	res, err := s.Wait()
+	if res.Status != adapter.StatusFailed || !errors.Is(err, adapter.ErrLoginRequired) || !strings.Contains(err.Error(), NotSetUpLine) {
+		t.Fatalf("res=%+v err=%v, want the not-set-up line", res, err)
+	}
+}
+
+// A computer whose Gemini CLI system settings choose a sign-in is refused
+// before anything starts.
+func TestSystemSettingsThatChooseASignInAreRefused(t *testing.T) {
+	bin, rec := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	old := systemSettingsPath
+	t.Cleanup(func() { systemSettingsPath = old })
+	systemSettingsPath = filepath.Join(t.TempDir(), "settings.json")
+	must(t, os.WriteFile(systemSettingsPath, []byte(`{"security":{"auth":{"enforcedType":"oauth-personal"}}}`), 0o600))
+	if _, err := a.Start(context.Background(), baseSpec(t)); !errors.Is(err, adapter.ErrNotPlanAuth) {
+		t.Fatalf("err = %v, want a sign-in refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "argv")); err == nil {
+		t.Error("Gemini CLI was started")
+	}
+}
+
 // A repository whose own Gemini settings choose a Google sign-in is refused
 // before anything starts: the workspace layer outranks the private home's.
 func TestARepositoryThatChoosesASignInIsRefused(t *testing.T) {

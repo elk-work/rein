@@ -60,6 +60,8 @@ func hidePersonsSetUp() error {
 		os.Setenv(k, home)
 	}
 	os.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	// Nor this machine's Gemini CLI system settings.
+	systemSettingsPath = filepath.Join(home, "no-system-settings.json")
 	return nil
 }
 

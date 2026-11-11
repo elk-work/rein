@@ -338,8 +338,15 @@ func (s *session) run(stdout io.Reader) {
 	s.emit(adapter.Event{Kind: adapter.EventDone, Result: &rr})
 }
 
+// noKeyMarker is Gemini CLI's words when it is set to the Gemini API key and
+// finds none: the person's key setup went missing. Elk hears agent_login.
+const noKeyMarker = "must specify the GEMINI_API_KEY"
+
 func (s *session) noResult(scanErr, waitErr error) error {
 	tail := strings.TrimSpace(s.red.String(s.stderr.String()))
+	if strings.Contains(strings.ToLower(tail), strings.ToLower(noKeyMarker)) {
+		return notSetUp("Gemini CLI found no Gemini API key on this computer")
+	}
 	why := s.program + " exited without a result"
 	if waitErr != nil {
 		why += " (" + waitErr.Error() + ")"

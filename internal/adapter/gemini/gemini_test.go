@@ -380,6 +380,67 @@ func TestCheckWorkspaceAuth(t *testing.T) {
 	}
 }
 
+// This computer's Gemini CLI system settings outrank the private home's, so
+// they are held to the repository's rule, and a run is refused before
+// anything starts when they choose a sign-in.
+func TestTheSystemSettingsAreCheckedLikeARepositorys(t *testing.T) {
+	old := systemSettingsPath
+	t.Cleanup(func() { systemSettingsPath = old })
+	cases := []struct {
+		settings string
+		refused  bool
+	}{
+		{`{"security":{"auth":{"enforcedType":"oauth-personal"}}}`, true},
+		{`{"selectedAuthType":"cloud-shell"}`, true},
+		{`not json`, true},
+		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
+		{`{"general":{"vimMode":true}}`, false},
+	}
+	for _, c := range cases {
+		systemSettingsPath = filepath.Join(t.TempDir(), "settings.json")
+		must(t, os.WriteFile(systemSettingsPath, []byte(c.settings), 0o600))
+		err := checkSystemAuth()
+		if (err != nil) != c.refused {
+			t.Errorf("%s: err = %v, want refused %v", c.settings, err, c.refused)
+		}
+		if err != nil && (!errors.Is(err, adapter.ErrNotPlanAuth) || !strings.Contains(err.Error(), "system settings")) {
+			t.Errorf("%s: not a system-settings sign-in refusal: %v", c.settings, err)
+		}
+	}
+	systemSettingsPath = filepath.Join(t.TempDir(), "absent.json")
+	if err := checkSystemAuth(); err != nil {
+		t.Errorf("a computer with no system settings was refused: %v", err)
+	}
+	for goos, want := range map[string]string{
+		"darwin":  "/Library/Application Support/GeminiCli/settings.json",
+		"linux":   "/etc/gemini-cli/settings.json",
+		"windows": `C:\ProgramData\gemini-cli\settings.json`,
+	} {
+		if got := defaultSystemSettingsPath(goos); got != want {
+			t.Errorf("%s: system settings at %q, want %q", goos, got, want)
+		}
+	}
+}
+
+// The variables that would point Gemini CLI at settings or a sign-in Rein
+// never checked do not reach a run.
+func TestTheSettingsAndAuthOverridesNeverReachARun(t *testing.T) {
+	h := &home{dir: "/rein/gemini/runs/run-1-x"}
+	names := []string{"GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "GEMINI_CLI_AUTH_OVERRIDE"}
+	var base []string
+	over := map[string]string{}
+	for _, n := range names {
+		base = append(base, n+"=/somewhere")
+		over[strings.ToLower(n)] = "/elsewhere"
+	}
+	env := h.childEnv(base, over, testKey)
+	for _, n := range names {
+		if _, c := envValue(env, n); c != 0 {
+			t.Errorf("%s reached the run: %v", n, env)
+		}
+	}
+}
+
 // GOOGLE_GENAI_USE_GCA would choose a Google sign-in from the environment, so
 // no inherited or queued value reaches a run.
 func TestTheGoogleSignInVariableNeverReachesARun(t *testing.T) {

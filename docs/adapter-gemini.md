@@ -36,17 +36,29 @@ read 2026-11-11). Rein looks only at whether `.env` exists, never inside it.
 The refusal matches
 `adapter.ErrLoginRequired` and `adapter.ErrPreflight`, so Elk hears
 `agent_login`, as for an expired Claude Code sign-in; Preflight says the same.
-Not installed is the same line.
+Not installed is the same line, and so is a run Gemini CLI ends because the
+key it was set to use has gone missing ("you must specify the GEMINI_API_KEY").
 
-Three more guards keep a run off a Google sign-in:
+Four more guards keep a run off a Google sign-in:
 
 - **A repository's own settings.** Gemini CLI layers a worktree's
   `.gemini/settings.json` over the user's (measured: a checked-in
   `enforcedType: oauth-personal` opened Google's sign-in page). A repository
   whose settings choose anything but the Gemini API key, or that Rein cannot
   read, is refused before anything starts (`checkWorkspaceAuth`, `ErrNotPlanAuth`).
+  A repository's `.env` can still set `GOOGLE_GENAI_USE_GCA`; that is harmless,
+  because the enforced choice outranks the environment (measured on the lab
+  Mac with it in the person's own `.env`: the run stayed on the key).
+- **This computer's system settings.** Gemini CLI applies its system settings
+  over every other layer (macOS `/Library/Application Support/GeminiCli/settings.json`,
+  Linux `/etc/gemini-cli/settings.json`, Windows
+  `C:\ProgramData\gemini-cli\settings.json`). They are held to the
+  repository's rule (`checkSystemAuth`).
 - **The environment.** `GOOGLE_GENAI_USE_GCA`, which picks a Google sign-in,
-  never reaches a run, whatever the daemon or a queue says.
+  never reaches a run, whatever the daemon or a queue says; nor do
+  `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` and
+  `GEMINI_CLI_AUTH_OVERRIDE`, which would point it at settings Rein never
+  checked.
 - **A sign-in prompt.** A session that prints Gemini CLI's sign-in prompt
   ("Opening authentication page", "Please visit the following URL to
   authorize") is stopped at once and fails as not set up, rather than wait for
@@ -89,7 +101,7 @@ their key setup and nothing else:
 
 `HOME` is left alone, so git, gh and SSH are the person's own as for every
 other adapter. The child's environment is the scoped inheritance and the
-queue's variables as they are, minus `GOOGLE_GENAI_USE_GCA`, plus the private
+queue's variables as they are, minus the names above, plus the private
 home, trust and a stored key, which nothing can shadow.
 
 ## Trusted folders (`ark:rein#119`)

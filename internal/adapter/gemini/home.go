@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/elk-work/rein/internal/adapter"
@@ -213,9 +214,12 @@ func (h *home) remove() {
 }
 
 // ownNames are the variables Rein sets on a Gemini CLI session itself, and
-// GOOGLE_GENAI_USE_GCA, which would choose a Google sign-in; nothing inherited
-// or from a queue may set them.
-var ownNames = []string{"GEMINI_CLI_HOME", "GEMINI_CLI_TRUST_WORKSPACE", KeyName, "GOOGLE_GENAI_USE_GCA"}
+// those that could move a run off the key it checked: GOOGLE_GENAI_USE_GCA
+// chooses a Google sign-in, and the system settings paths and the auth
+// override would let a run read settings Rein never looked at. Nothing
+// inherited or from a queue may set them.
+var ownNames = []string{"GEMINI_CLI_HOME", "GEMINI_CLI_TRUST_WORKSPACE", KeyName, "GOOGLE_GENAI_USE_GCA",
+	"GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "GEMINI_CLI_AUTH_OVERRIDE"}
 
 func ownName(name string) bool {
 	for _, n := range ownNames {
@@ -265,13 +269,42 @@ func (h *home) childEnv(base []string, over map[string]string, key string) []str
 // never drives. A file Rein cannot read is refused too: failing closed is the
 // point.
 func checkWorkspaceAuth(worktree string) error {
-	path := filepath.Join(worktree, ".gemini", "settings.json")
+	return checkAuthFile(filepath.Join(worktree, ".gemini", "settings.json"),
+		"this repository would choose Gemini CLI's sign-in", "its .gemini/settings.json")
+}
+
+// systemSettingsPath is where Gemini CLI reads this computer's system
+// settings, which it applies over every other layer. Rein never passes
+// GEMINI_CLI_SYSTEM_SETTINGS_PATH to a run (see ownNames), so this default is
+// the file a run sees. A variable so tests can point it elsewhere.
+var systemSettingsPath = defaultSystemSettingsPath(runtime.GOOS)
+
+func defaultSystemSettingsPath(goos string) string {
+	switch goos {
+	case "darwin":
+		return "/Library/Application Support/GeminiCli/settings.json"
+	case "windows":
+		return `C:\ProgramData\gemini-cli\settings.json`
+	default:
+		return "/etc/gemini-cli/settings.json"
+	}
+}
+
+// checkSystemAuth refuses a run when this computer's Gemini CLI system
+// settings choose anything but the Gemini API key: they outrank the private
+// home's, as a repository's do.
+func checkSystemAuth() error {
+	return checkAuthFile(systemSettingsPath,
+		"this computer's Gemini CLI system settings would choose its sign-in", "the file "+systemSettingsPath)
+}
+
+func checkAuthFile(path, who, what string) error {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
-		return refusal("its .gemini/settings.json could not be read: " + err.Error())
+		return refusal(who, what+" could not be read: "+err.Error())
 	}
 	var s struct {
 		Security struct {
@@ -280,20 +313,20 @@ func checkWorkspaceAuth(worktree string) error {
 		Legacy any `json:"selectedAuthType"`
 	}
 	if err := json.Unmarshal(stripJSONComments(raw), &s); err != nil {
-		return refusal("its .gemini/settings.json is not JSON Rein can read, so its sign-in cannot be checked")
+		return refusal(who, what+" is not JSON Rein can read, so its sign-in cannot be checked")
 	}
 	for _, k := range []string{"selectedType", "enforcedType"} {
 		if v, ok := s.Security.Auth[k]; ok {
 			if v != apiKeyAuth {
-				return refusal(fmt.Sprintf("its .gemini/settings.json sets security.auth.%s to %v", k, v))
+				return refusal(who, fmt.Sprintf("%s sets security.auth.%s to %v", what, k, v))
 			}
 		}
 	}
 	if s.Legacy != nil && s.Legacy != apiKeyAuth {
-		return refusal(fmt.Sprintf("its .gemini/settings.json sets selectedAuthType to %v", s.Legacy))
+		return refusal(who, fmt.Sprintf("%s sets selectedAuthType to %v", what, s.Legacy))
 	}
 	if v, ok := s.Security.Auth["useExternal"]; ok && v != false {
-		return refusal("its .gemini/settings.json sets security.auth.useExternal")
+		return refusal(who, what+" sets security.auth.useExternal")
 	}
 	return nil
 }
@@ -309,8 +342,8 @@ func (e *signInError) Error() string {
 
 func (e *signInError) Is(target error) bool { return target == adapter.ErrNotPlanAuth }
 
-func refusal(why string) error {
-	return &signInError{why: "this repository would choose Gemini CLI's sign-in: " + why}
+func refusal(who, why string) error {
+	return &signInError{why: who + ": " + why}
 }
 
 // notSetUpError is a run or preflight that found Gemini CLI not set up on a

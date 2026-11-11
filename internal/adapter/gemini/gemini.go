@@ -325,6 +325,10 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if err := checkWorkspaceAuth(spec.WorktreeDir); err != nil {
 		return nil, err
 	}
+	// So do this computer's system settings.
+	if err := checkSystemAuth(); err != nil {
+		return nil, err
+	}
 	args, err := buildArgs(spec)
 	if err != nil {
 		return nil, err
