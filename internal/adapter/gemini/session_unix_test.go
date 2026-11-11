@@ -40,7 +40,7 @@ cat "$GEMINI_CLI_HOME/.gemini/oauth_creds.json" > "$rec/creds" 2>/dev/null
 if [ "$GEMINI_API_KEY" = "` + testKey + `" ]; then echo yes > "$rec/key"; fi
 if [ -n "$GOOGLE_API_KEY" ]; then echo leaked > "$rec/google"; fi
 if grep -q '"selectedType": "gemini-api-key"' "$s" 2>/dev/null; then
-  if [ -z "$GEMINI_API_KEY" ]; then
+  if [ -z "$GEMINI_API_KEY" ] && [ ! -e "$GEMINI_CLI_HOME/.gemini/.env" ]; then
     echo 'When using Gemini API, you must specify the GEMINI_API_KEY environment variable.' >&2
     exit 41
   fi
@@ -62,14 +62,18 @@ exit 0
 	return bin, rec
 }
 
-// signedInHome is a person's own Gemini CLI home, signed in with Google.
-func signedInHome(t *testing.T) string {
+// personsHome is a person's own Gemini CLI home whose settings choose auth,
+// signed in with Google too (oauth_creds.json), with a .env when env is set.
+func personsHome(t *testing.T, auth string, env bool) string {
 	t.Helper()
 	real := t.TempDir()
 	conf := filepath.Join(real, ".gemini")
 	must(t, os.MkdirAll(conf, 0o700))
-	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`{"security":{"auth":{"selectedType":"oauth-personal"}}}`), 0o600))
+	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`{"security":{"auth":{"selectedType":"`+auth+`"}}}`), 0o600))
 	must(t, os.WriteFile(filepath.Join(conf, "oauth_creds.json"), []byte("their-sign-in"), 0o600))
+	if env {
+		must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte("# not read by Rein\n"), 0o600))
+	}
 	return real
 }
 
@@ -98,11 +102,14 @@ func drain(t *testing.T, s adapter.Session) []adapter.Event {
 // A person signed in to Gemini CLI with Google, no key anywhere: the run goes
 // on that sign-in under a private home. On the old code it was refused before
 // starting ("Add your Google key in Elk to use Gemini.").
-func TestASessionRunsOnThePersonsSignInUnderAPrivateHome(t *testing.T) {
+// A person whose Gemini CLI is on their own key (here Vertex AI, which needs
+// no key from Rein) runs under a private home that carries that choice and
+// never their Google sign-in. On the old code the sign-in file was linked.
+func TestASessionRunsOnThePersonsKeySetUpUnderAPrivateHome(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", testKey) // in the daemon's environment; metered, must not pass
 	bin, rec := fakeGemini(t, "tool.jsonl")
 	a := testAdapter(t, bin)
-	a.RealHome = signedInHome(t)
+	a.RealHome = personsHome(t, "vertex-ai", false)
 	a.Items = items{}
 	spec := baseSpec(t)
 	spec.ProviderKey = ""
@@ -153,8 +160,8 @@ func TestASessionRunsOnThePersonsSignInUnderAPrivateHome(t *testing.T) {
 	if read("google") != "" {
 		t.Error("GOOGLE_API_KEY reached the child")
 	}
-	if read("creds") != "their-sign-in" {
-		t.Error("the person's sign-in file is not reachable from the private home")
+	if read("creds") != "" {
+		t.Error("the person's Google sign-in reached the private home")
 	}
 	home := read("home")
 	if !strings.HasPrefix(home, filepath.Join(a.Root, "runs", "run-1-")) {
@@ -163,7 +170,7 @@ func TestASessionRunsOnThePersonsSignInUnderAPrivateHome(t *testing.T) {
 	if _, err := os.Stat(home); !os.IsNotExist(err) {
 		t.Error("the private home outlived the session")
 	}
-	if set := read("settings.json"); !strings.Contains(set, `"selectedType": "oauth-personal"`) || strings.Contains(set, "enforcedType") {
+	if set := read("settings.json"); !strings.Contains(set, `"selectedType": "vertex-ai"`) || strings.Contains(set, "enforcedType") {
 		t.Errorf("settings = %s", set)
 	}
 	if argv := read("argv"); strings.Contains(argv, "do the thing") || !strings.Contains(argv, "--skip-trust") {
@@ -198,23 +205,56 @@ func TestAStoredKeyRunsGeminiCLIOnTheKey(t *testing.T) {
 	}
 }
 
-// A repository whose own Gemini settings choose a Google sign-in runs: the
-// sign-in is the person's business. On the old code it was refused.
-func TestARepositoryThatChoosesASignInStillRuns(t *testing.T) {
-	bin, _ := fakeGemini(t, "text.jsonl")
+// A person signed in to Gemini CLI with their personal Google account and no
+// key: nothing starts, and the run says to set Gemini CLI up on a key.
+// A .env beside the same sign-in puts the run on the key instead.
+func TestAPersonalGoogleSignInNeverRuns(t *testing.T) {
+	bin, rec := fakeGemini(t, "text.jsonl")
 	a := testAdapter(t, bin)
-	a.RealHome = signedInHome(t)
+	a.RealHome = personsHome(t, "oauth-personal", false)
+	a.Items = items{}
 	spec := baseSpec(t)
-	must(t, os.MkdirAll(filepath.Join(spec.WorktreeDir, ".gemini"), 0o700))
-	must(t, os.WriteFile(filepath.Join(spec.WorktreeDir, ".gemini", "settings.json"),
-		[]byte(`{"security":{"auth":{"selectedType":"oauth-personal","enforcedType":"oauth-personal"}}}`), 0o600))
+	spec.ProviderKey = ""
+	_, err := a.Start(context.Background(), spec)
+	if !errors.Is(err, adapter.ErrLoginRequired) || !strings.Contains(err.Error(), NotSetUpLine) {
+		t.Fatalf("err = %v, want the not-set-up refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "argv")); err == nil {
+		t.Error("Gemini CLI was started")
+	}
+
+	a.RealHome = personsHome(t, "oauth-personal", true)
 	s, err := a.Start(context.Background(), spec)
 	if err != nil {
-		t.Fatalf("refused: %v", err)
+		t.Fatal(err)
 	}
 	drain(t, s)
 	if res, err := s.Wait(); err != nil || res.Status != adapter.StatusSucceeded {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(rec, "settings.json"))
+	if !strings.Contains(string(b), `"selectedType": "gemini-api-key"`) {
+		t.Errorf("settings = %s", b)
+	}
+	if c, _ := os.ReadFile(filepath.Join(rec, "creds")); len(c) != 0 {
+		t.Error("the person's Google sign-in reached the private home")
+	}
+}
+
+// A repository whose own Gemini settings choose a Google sign-in is refused
+// before anything starts: the workspace layer outranks the private home's.
+func TestARepositoryThatChoosesASignInIsRefused(t *testing.T) {
+	bin, rec := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	spec := baseSpec(t)
+	must(t, os.MkdirAll(filepath.Join(spec.WorktreeDir, ".gemini"), 0o700))
+	must(t, os.WriteFile(filepath.Join(spec.WorktreeDir, ".gemini", "settings.json"),
+		[]byte(`{"security":{"auth":{"selectedType":"oauth-personal","enforcedType":"oauth-personal"}}}`), 0o600))
+	if _, err := a.Start(context.Background(), spec); !errors.Is(err, adapter.ErrNotPlanAuth) {
+		t.Fatalf("err = %v, want a sign-in refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "argv")); err == nil {
+		t.Error("Gemini CLI was started")
 	}
 }
 
@@ -250,7 +290,7 @@ func TestAGeminiCLIThatIsNotSignedInFailsAsNotSetUp(t *testing.T) {
 	drain(t, s)
 	_, err = s.Wait()
 	if !errors.Is(err, adapter.ErrLoginRequired) || errors.Is(err, adapter.ErrNotPlanAuth) ||
-		!strings.Contains(err.Error(), NotSetUpLine(GeminiCLIName)) {
+		!strings.Contains(err.Error(), NotSetUpLine) {
 		t.Fatalf("err = %v", err)
 	}
 	if time.Since(start) > 15*time.Second {
@@ -260,12 +300,22 @@ func TestAGeminiCLIThatIsNotSignedInFailsAsNotSetUp(t *testing.T) {
 
 func TestPreflight(t *testing.T) {
 	bin, _ := fakeGemini(t, "text.jsonl")
-	t.Run("signed in, no key", func(t *testing.T) {
+	t.Run("Vertex AI, no key", func(t *testing.T) {
 		a := testAdapter(t, bin)
-		a.RealHome = signedInHome(t)
+		a.RealHome = personsHome(t, "vertex-ai", false)
 		a.Items = items{}
 		if err := a.Preflight(context.Background()); err != nil {
 			t.Fatalf("Preflight: %v", err)
+		}
+	})
+	t.Run("a personal Google sign-in, no key", func(t *testing.T) {
+		a := testAdapter(t, bin)
+		a.RealHome = personsHome(t, "oauth-personal", false)
+		a.Items = items{}
+		err := a.Preflight(context.Background())
+		if !errors.Is(err, adapter.ErrLoginRequired) || !errors.Is(err, adapter.ErrPreflight) ||
+			!strings.HasPrefix(err.Error(), NotSetUpLine) {
+			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("a stored key, no sign-in chosen", func(t *testing.T) {
@@ -289,14 +339,14 @@ func TestPreflight(t *testing.T) {
 		a.Items = items{}
 		err := a.Preflight(context.Background())
 		if !errors.Is(err, adapter.ErrLoginRequired) || !errors.Is(err, adapter.ErrPreflight) ||
-			!strings.Contains(err.Error(), NotSetUpLine(GeminiCLIName)) {
+			!strings.Contains(err.Error(), NotSetUpLine) {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("not installed", func(t *testing.T) {
 		err := testAdapter(t, filepath.Join(t.TempDir(), "gemini-missing")).Preflight(context.Background())
 		if !errors.Is(err, exec.ErrNotFound) || !errors.Is(err, adapter.ErrPreflight) ||
-			!strings.Contains(err.Error(), NotSetUpLine(GeminiCLIName)) {
+			!strings.Contains(err.Error(), NotSetUpLine) {
 			t.Fatalf("err = %v", err)
 		}
 	})

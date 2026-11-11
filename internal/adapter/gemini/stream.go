@@ -75,7 +75,6 @@ type turnResult struct {
 	ok       bool
 	error    string
 	usage    []adapter.Usage // one per model
-	denied   []string        // actions the program refused (Antigravity)
 	response string          // the final answer, when the program sends one whole
 }
 

@@ -49,7 +49,6 @@ func TestRegisteredAsGemini(t *testing.T) {
 	if err := a.Manifest().Validate(); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
-	// TestMain hides any Antigravity on this machine, so Gemini CLI is the one.
 	if a.Manifest().Binary != "gemini" {
 		t.Errorf("binary = %q, want gemini", a.Manifest().Binary)
 	}
@@ -127,8 +126,8 @@ func TestStartRefuses(t *testing.T) {
 		{"accept edits", func(s *adapter.RunSpec) { s.PermissionMode = adapter.PermissionAcceptEdits }, adapter.ErrCapability, "approvals"},
 		{"resume", func(s *adapter.RunSpec) { s.ResumeID = "abc" }, adapter.ErrCapability, "resume"},
 		{"a tool list", func(s *adapter.RunSpec) { s.DeniedTools = []string{"run_shell_command"} }, adapter.ErrNotSupported, "tool"},
-		{"program missing", func(*adapter.RunSpec) {}, exec.ErrNotFound, NotSetUpLine(GeminiCLIName)},
-		{"program missing, no key", func(s *adapter.RunSpec) { s.ProviderKey = "" }, exec.ErrNotFound, NotSetUpLine(GeminiCLIName)},
+		{"program missing", func(*adapter.RunSpec) {}, exec.ErrNotFound, NotSetUpLine},
+		{"program missing, no key", func(s *adapter.RunSpec) { s.ProviderKey = "" }, exec.ErrNotFound, NotSetUpLine},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -210,17 +209,17 @@ func TestGoogleKeysNeverReachAnotherAdapter(t *testing.T) {
 	}
 }
 
-// The private home carries the person's sign-in choice and links the files
-// that can hold it, and nothing else of theirs: not their MCP servers (the Elk
-// connector acts as them, ark:rein#21). On the old code it forced the key
-// sign-in and linked nothing.
-func TestTheHomeCarriesThePersonsSignInAndTheRunsServers(t *testing.T) {
+// The private home carries the person's key setup and nothing else of theirs:
+// not their MCP servers (the Elk connector acts as them, ark:rein#21), and
+// never the files that hold a Google sign-in. Only .env is linked.
+func TestTheHomeCarriesThePersonsKeySetUpAndTheRunsServers(t *testing.T) {
 	real := t.TempDir()
 	conf := filepath.Join(real, ".gemini")
 	must(t, os.MkdirAll(conf, 0o700))
 	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`// theirs
-{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"elk":{"httpUrl":"https://elk.example/mcp"}}}`), 0o600))
-	for _, f := range []string{"oauth_creds.json", "google_accounts.json", "gemini-credentials.json"} {
+{"security":{"auth":{"selectedType":"vertex-ai"}},"mcpServers":{"elk":{"httpUrl":"https://elk.example/mcp"}}}`), 0o600))
+	must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte(".env"), 0o600))
+	for _, f := range signInFiles {
 		must(t, os.WriteFile(filepath.Join(conf, f), []byte(f), 0o600))
 	}
 	must(t, os.WriteFile(filepath.Join(conf, "GEMINI.md"), []byte("their instructions"), 0o600))
@@ -243,8 +242,8 @@ func TestTheHomeCarriesThePersonsSignInAndTheRunsServers(t *testing.T) {
 		MCPServers map[string]map[string]any `json:"mcpServers"`
 	}
 	must(t, json.Unmarshal(blob, &s))
-	if s.Security.Auth["selectedType"] != "oauth-personal" || s.Security.Auth["enforcedType"] != "" {
-		t.Errorf("auth = %v, want the person's own choice and nothing added", s.Security.Auth)
+	if s.Security.Auth["selectedType"] != "vertex-ai" || s.Security.Auth["enforcedType"] != "" {
+		t.Errorf("auth = %v, want the person's own key choice and nothing added", s.Security.Auth)
 	}
 	if s.General["enableAutoUpdate"] {
 		t.Error("the run may update Gemini CLI")
@@ -259,47 +258,134 @@ func TestTheHomeCarriesThePersonsSignInAndTheRunsServers(t *testing.T) {
 		!strings.Contains(string(blob), `"FIGMA_TOKEN": "${FIGMA_TOKEN}"`) {
 		t.Errorf("a server's secret is not a name for Gemini CLI to expand:\n%s", blob)
 	}
-	for _, f := range []string{"oauth_creds.json", "google_accounts.json", "gemini-credentials.json"} {
-		b, err := os.ReadFile(filepath.Join(h.dir, ".gemini", f))
-		if err != nil || string(b) != f {
-			t.Errorf("%s is not reachable from the private home: %q %v", f, b, err)
-		}
+	if b, err := os.ReadFile(filepath.Join(h.dir, ".gemini", ".env")); err != nil || string(b) != ".env" {
+		t.Errorf(".env is not reachable from the private home: %q %v", b, err)
 	}
-	if _, err := os.Stat(filepath.Join(h.dir, ".gemini", "GEMINI.md")); err == nil {
-		t.Error("the person's GEMINI.md reached the run")
+	for _, f := range append([]string{"GEMINI.md"}, signInFiles...) {
+		if _, err := os.Lstat(filepath.Join(h.dir, ".gemini", f)); err == nil {
+			t.Errorf("the person's %s reached the run", f)
+		}
 	}
 	h.remove()
 	if _, err := os.Stat(h.dir); !os.IsNotExist(err) {
 		t.Error("the private home was not removed")
 	}
-	if _, err := os.Stat(filepath.Join(conf, "oauth_creds.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(conf, ".env")); err != nil {
 		t.Error("removing the private home removed the person's own file")
 	}
+}
 
-	// No sign-in chosen: a stored key chooses the key sign-in; with neither,
-	// nothing is chosen for them.
+// signInFiles hold a Google sign-in in Gemini CLI 0.64's home.
+var signInFiles = []string{"oauth_creds.json", "google_accounts.json", "gemini-credentials.json"}
+
+// A run goes only on a key: the person's own key choice is kept, a Google
+// sign-in choice is replaced by the key sign-in when a key is stored or their
+// .env is there, and with no key at all the run is refused as not set up
+// (agent_login). On the old code a Google sign-in was carried and its files
+// linked, so a run could act on the person's personal Google account.
+func TestARunGoesOnlyOnAKey(t *testing.T) {
 	for _, c := range []struct {
-		key  string
-		want string
-	}{{testKey, apiKeyAuth}, {"", ""}} {
-		b := &Adapter{Root: t.TempDir(), RealHome: t.TempDir()}
-		h, err := b.newHome(baseSpec(t), c.key)
-		must(t, err)
-		blob, err := os.ReadFile(filepath.Join(h.dir, ".gemini", "settings.json"))
-		must(t, err)
-		var got struct {
-			Security struct {
-				Auth map[string]string `json:"auth"`
-			} `json:"security"`
+		name     string
+		settings string // "" writes none
+		env      bool   // a .env is there
+		key      string // stored for Rein
+		want     string // the run's selectedType; "" means refused
+	}{
+		{"Google sign-in, no key", `{"security":{"auth":{"selectedType":"oauth-personal"}}}`, false, "", ""},
+		{"older Google sign-in, no key", `{"selectedAuthType":"oauth-personal"}`, false, "", ""},
+		{"Google sign-in, a stored key", `{"security":{"auth":{"selectedType":"oauth-personal"}}}`, false, testKey, apiKeyAuth},
+		{"Google sign-in, a .env", `{"security":{"auth":{"selectedType":"oauth-personal"}}}`, true, "", apiKeyAuth},
+		{"Google Cloud sign-in, no key", `{"security":{"auth":{"selectedType":"cloud-shell"}}}`, false, "", ""},
+		{"Gemini API key", `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, true, "", apiKeyAuth},
+		{"Vertex AI", `{"selectedAuthType":"vertex-ai"}`, false, "", "vertex-ai"},
+		{"nothing chosen, a stored key", "", false, testKey, apiKeyAuth},
+		{"nothing chosen, a .env", "", true, "", apiKeyAuth},
+		{"nothing at all", "", false, "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			real := t.TempDir()
+			conf := filepath.Join(real, ".gemini")
+			must(t, os.MkdirAll(conf, 0o700))
+			if c.settings != "" {
+				must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(c.settings), 0o600))
+			}
+			if c.env {
+				must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte("x"), 0o600))
+			}
+			root := t.TempDir()
+			a := &Adapter{Root: root, RealHome: real}
+			h, err := a.newHome(baseSpec(t), c.key)
+			if c.want == "" {
+				if !errors.Is(err, adapter.ErrLoginRequired) || !strings.HasPrefix(fmt.Sprint(err), NotSetUpLine) {
+					t.Fatalf("err = %v, want the not-set-up refusal", err)
+				}
+				if left, _ := os.ReadDir(filepath.Join(root, "runs")); len(left) != 0 {
+					t.Errorf("a refused run left its home behind: %v", left)
+				}
+				return
+			}
+			must(t, err)
+			defer h.remove()
+			blob, err := os.ReadFile(filepath.Join(h.dir, ".gemini", "settings.json"))
+			must(t, err)
+			var got struct {
+				Security struct {
+					Auth map[string]string `json:"auth"`
+				} `json:"security"`
+			}
+			must(t, json.Unmarshal(blob, &got))
+			if got.Security.Auth["selectedType"] != c.want {
+				t.Errorf("auth %v, want %q", got.Security.Auth, c.want)
+			}
+			if strings.Contains(string(blob), testKey) {
+				t.Error("the key was written into the settings")
+			}
+		})
+	}
+}
+
+// A repository's checked-in settings may choose only a key; anything else,
+// or a file Rein cannot read, is refused.
+func TestCheckWorkspaceAuth(t *testing.T) {
+	cases := []struct {
+		settings string
+		refused  bool
+	}{
+		{`{"security":{"auth":{"selectedType":"oauth-personal","enforcedType":"oauth-personal"}}}`, true},
+		{`{"security":{"auth":{"selectedType":"oauth-personal"}}}`, true},
+		{`{"security":{"auth":{"enforcedType":"cloud-shell"}}}`, true},
+		{`{"selectedAuthType":"oauth-personal"}`, true},
+		{`{"security":{"auth":{"useExternal":true}}}`, true},
+		{`not json`, true},
+		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
+		{`{"security":{"auth":{"selectedType":"vertex-ai","enforcedType":"vertex-ai"}}}`, false},
+		{"// a comment\n{\"general\":{\"vimMode\":true}}", false},
+		{`{"mcpServers":{}}`, false},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		must(t, os.MkdirAll(filepath.Join(dir, ".gemini"), 0o700))
+		must(t, os.WriteFile(filepath.Join(dir, ".gemini", "settings.json"), []byte(c.settings), 0o600))
+		err := checkWorkspaceAuth(dir)
+		if (err != nil) != c.refused {
+			t.Errorf("%s: err = %v, want refused %v", c.settings, err, c.refused)
 		}
-		must(t, json.Unmarshal(blob, &got))
-		if got.Security.Auth["selectedType"] != c.want {
-			t.Errorf("key %v: auth %v, want %q", c.key != "", got.Security.Auth, c.want)
+		if err != nil && !errors.Is(err, adapter.ErrNotPlanAuth) {
+			t.Errorf("%s: the refusal is not a sign-in refusal: %v", c.settings, err)
 		}
-		if strings.Contains(string(blob), testKey) {
-			t.Error("the key was written into the settings")
-		}
-		h.remove()
+	}
+	if err := checkWorkspaceAuth(t.TempDir()); err != nil {
+		t.Errorf("a repository with no Gemini settings was refused: %v", err)
+	}
+}
+
+// GOOGLE_GENAI_USE_GCA would choose a Google sign-in from the environment, so
+// no inherited or queued value reaches a run.
+func TestTheGoogleSignInVariableNeverReachesARun(t *testing.T) {
+	h := &home{dir: "/rein/gemini/runs/run-1-x"}
+	env := h.childEnv([]string{"PATH=/usr/bin", "GOOGLE_GENAI_USE_GCA=true"}, map[string]string{"google_genai_use_gca": "true"}, testKey)
+	if _, n := envValue(env, "GOOGLE_GENAI_USE_GCA"); n != 0 {
+		t.Errorf("GOOGLE_GENAI_USE_GCA reached the run: %v", env)
 	}
 }
 

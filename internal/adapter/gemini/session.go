@@ -15,20 +15,19 @@ import (
 	"github.com/elk-work/rein/internal/secretenv"
 )
 
-// session is one process of either Google program running one turn: the
+// session is one Gemini CLI process running one turn: the
 // prompt is written to stdin and stdin closed, and the program exits once it
 // has answered.
 type session struct {
 	spec    adapter.RunSpec
 	cmd     *exec.Cmd
-	program string                        // "Gemini CLI" or "Antigravity", for what a person reads
+	program string                        // "Gemini CLI", for what a person reads
 	decode  func([]byte) (decoded, error) // the program's stream-json
 	cleanup func()                        // removes what the session left on disk; may be nil
 	started time.Time
 	grace   time.Duration
 	red     *secretenv.Redactor
 	stderr  *stderrWatch
-	authErr []string
 
 	events chan adapter.Event
 	done   chan struct{}
@@ -50,7 +49,7 @@ type session struct {
 var signInMarkers = []string{"Opening authentication page", "Waiting for auth", "Code Assist login required",
 	"Please visit the following URL to authorize"}
 
-// launch is what differs between the two programs.
+// launch is one session's program, command line and environment.
 type launch struct {
 	program string
 	bin     string
@@ -60,8 +59,7 @@ type launch struct {
 	key     string
 	decode  func([]byte) (decoded, error)
 	signIn  []string
-	fold    bool     // match signIn without regard to case
-	authErr []string // the program's turn error when it is not signed in
+	fold    bool // match signIn without regard to case
 	cleanup func()
 }
 
@@ -95,7 +93,6 @@ func (a *Adapter) launch(spec adapter.RunSpec, l launch) (adapter.Session, error
 		program: l.program,
 		decode:  l.decode,
 		cleanup: l.cleanup,
-		authErr: l.authErr,
 		started: time.Now(),
 		grace:   a.InterruptGrace,
 		red:     secretenv.NewRedactor(keyValues(l.key)),
@@ -313,7 +310,7 @@ func (s *session) run(stdout io.Reader) {
 	switch {
 	case signIn:
 		r.Status = adapter.StatusFailed
-		err = notSetUp(s.program, "it is not signed in on this computer and asked for a Google sign-in, which nobody is there to finish")
+		err = notSetUp("it asked for a Google sign-in, which Rein never drives and nobody is there to finish")
 	case timedOut:
 		r.Status = adapter.StatusTimedOut
 		err = fmt.Errorf("gemini: the session ran past its %s limit and was stopped", s.spec.Timeouts.Total)
@@ -325,9 +322,6 @@ func (s *session) run(stdout io.Reader) {
 		err = s.noResult(scanErr, waitErr)
 	case res.ok:
 		r.Status = adapter.StatusSucceeded
-	case s.isAuthErr(res.error):
-		r.Status = adapter.StatusFailed
-		err = notSetUp(s.program, "it is not signed in on this computer: "+s.red.String(res.error))
 	default:
 		r.Status = adapter.StatusFailed
 		err = fmt.Errorf("gemini: %s ended the turn with an error: %s", s.program, s.red.String(res.error))
@@ -432,16 +426,4 @@ func keyValues(key string) map[string]string {
 		return nil
 	}
 	return map[string]string{KeyName: key}
-}
-
-// isAuthErr reports whether a turn's error is the program saying it is not
-// signed in.
-func (s *session) isAuthErr(msg string) bool {
-	msg = strings.ToLower(msg)
-	for _, m := range s.authErr {
-		if strings.Contains(msg, strings.ToLower(m)) {
-			return true
-		}
-	}
-	return false
 }

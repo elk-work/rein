@@ -143,3 +143,42 @@ func TestLiveGeminiCLIRealKeyFinishesATask(t *testing.T) {
 const realKeyTask = "Create a file named hello.txt in the current folder containing exactly the word hi, " +
 	"then commit it by running: git add hello.txt && git -c user.name=lab -c user.email=lab@example.invalid " +
 	"commit -m hello . Do nothing else."
+
+// linkedWorktree is a repository and a linked worktree of it, as Rein gives a
+// run.
+func linkedWorktree(t *testing.T) (repo, wt string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	repo, wt = filepath.Join(root, "repo"), filepath.Join(root, "wt")
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"},
+		{"-C", repo, "worktree", "add", "-q", "-b", "task", wt},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	return repo, wt
+}
+
+func liveSpec(t *testing.T, wt string) adapter.RunSpec {
+	return adapter.RunSpec{RunID: "live-1", WorktreeDir: wt, Prompt: "do the task",
+		PermissionMode: adapter.PermissionFull, ProviderKey: "AIza_FAKE_not_a_real_key_for_rein_tests_000",
+		Timeouts: adapter.Timeouts{Total: 3 * time.Minute}}
+}
+
+func liveRun(t *testing.T, a *Adapter, spec adapter.RunSpec) (adapter.Result, error) {
+	t.Helper()
+	s, err := a.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for ev := range s.Events() {
+		if ev.Kind == adapter.EventToolUse {
+			t.Logf("tool: %s %s", ev.Tool.Name, string(ev.Tool.Input))
+		}
+	}
+	return s.Wait()
+}

@@ -11,9 +11,9 @@ import (
 
 // storedGeminiKey reads a Google key the person may have stored for Rein
 // (`rein secret set GEMINI_API_KEY`, the Elk app's managed secret), for one
-// gemini run. It is optional: Antigravity and Gemini CLI run on whatever setup
-// the person already has (Casey's ruling, 2026-11-11), and a key is only one
-// such setup. A Rein service has no other way to hold one, since the daemon's
+// gemini run. It is optional: Gemini CLI runs on the key setup the person
+// already has (Casey's ruling, 2026-11-11), and a key stored for Rein is only
+// one such setup. A Rein service has no other way to hold one, since the daemon's
 // own environment never passes GEMINI_API_KEY down (internal/secretenv), so a
 // stored key is handed over when there is one and nothing is asked for when
 // there is not.

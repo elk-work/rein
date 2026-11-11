@@ -22,16 +22,17 @@ import (
 // MCP servers, the Elk connector among them, must not reach a run, because
 // they act as the person.
 //
-// What comes in from the person's own home is their sign-in and nothing else:
+// What comes in from the person's own home is their key setup and nothing
+// else (keyAuth):
 //
-//   - settings.json carries only their `security.auth` (or the older
-//     top-level `selectedAuthType`): which sign-in Gemini CLI uses. With none
-//     and a stored key, the key sign-in is chosen.
-//   - The files that can hold a sign-in are linked, not copied (signInFiles).
-//     On a Mac Gemini CLI keeps its Google sign-in in the keychain, which a
-//     private home does not hide; the files are its fallback and older
-//     storage. Rein never reads them: a link means Gemini CLI opens its own
-//     file at a different path, as with Codex's auth.json.
+//   - settings.json carries their `security.auth` (or the older top-level
+//     `selectedAuthType`) only when it chooses a key: the Gemini API key
+//     sign-in or Vertex AI. A choice of a Google sign-in is never carried: the
+//     run is put on the key sign-in instead when there is a key, and refused
+//     when there is none. Rein never drives a personal Google sign-in.
+//   - Their `.env`, where Gemini CLI reads a key, is linked, not copied
+//     (keyFiles). Rein never opens it. The files that hold a Google sign-in
+//     are never linked.
 //
 // HOME itself is left alone, so git, gh and SSH inside the run are the
 // person's own as with every other adapter. The home is removed when the
@@ -41,11 +42,15 @@ type home struct {
 	dir string // GEMINI_CLI_HOME
 }
 
-// signInFiles are the files in a Gemini CLI home that can hold a sign-in or
-// key, from Gemini CLI 0.64's own code: its encrypted-file fallback for the
-// keychain, the older file it migrates from, the signed-in account, and the
-// .env it reads a key from.
-var signInFiles = []string{"gemini-credentials.json", "oauth_creds.json", "google_accounts.json", ".env"}
+// keyFiles are the files in a person's Gemini CLI home a run may use: the
+// .env Gemini CLI reads a key from (Gemini CLI 0.64). Never
+// gemini-credentials.json, oauth_creds.json or google_accounts.json, which
+// hold a Google sign-in.
+var keyFiles = []string{".env"}
+
+// keyAuthTypes are Gemini CLI's sign-in choices that run on the person's own
+// key: Google AI Studio's Gemini API key and Google Cloud's Vertex AI.
+var keyAuthTypes = map[string]bool{apiKeyAuth: true, "vertex-ai": true}
 
 // realGeminiDir is the person's own `.gemini` folder.
 func (a *Adapter) realGeminiDir() string {
@@ -93,14 +98,25 @@ func personAuth(geminiDir string) map[string]any {
 	return nil
 }
 
-// personSetUp is whether the person's own Gemini CLI is set up to run: their
-// settings choose a sign-in, or their `.env` there can give it a key (Gemini
-// CLI reads one from it, and the run's home links it). Only the file's
-// presence is looked at; Rein never opens it.
-func personSetUp(geminiDir string) bool {
-	if personAuth(geminiDir) != nil {
-		return true
+// keyAuth is the sign-in choice a run's settings carry: the person's own when
+// it is a key (keyAuthTypes); otherwise the Gemini API key sign-in, when a key
+// is stored for Rein or their `.env` can give one (only its presence is looked
+// at; Rein never opens it). With neither it is the not-set-up refusal.
+func keyAuth(geminiDir string, storedKey bool) (map[string]any, error) {
+	auth := personAuth(geminiDir)
+	if t, _ := auth["selectedType"].(string); keyAuthTypes[t] {
+		return auth, nil
 	}
+	if storedKey || hasEnvFile(geminiDir) {
+		return map[string]any{"selectedType": apiKeyAuth}, nil
+	}
+	if auth != nil {
+		return nil, notSetUp("its settings choose a Google sign-in, which Rein never drives, and it has no key")
+	}
+	return nil, notSetUp("it has no Google AI Studio or Google Cloud key")
+}
+
+func hasEnvFile(geminiDir string) bool {
 	if geminiDir == "" {
 		return false
 	}
@@ -124,7 +140,12 @@ func (a *Adapter) newHome(spec adapter.RunSpec, key string) (*home, error) {
 	}
 	h := &home{dir: dir}
 	real := a.realGeminiDir()
-	blob, err := settingsFor(spec, personAuth(real), key != "")
+	auth, err := keyAuth(real, key != "")
+	if err != nil {
+		h.remove()
+		return nil, err
+	}
+	blob, err := settingsFor(spec, auth)
 	if err != nil {
 		h.remove()
 		return nil, err
@@ -139,13 +160,13 @@ func (a *Adapter) newHome(spec adapter.RunSpec, key string) (*home, error) {
 		return nil, fmt.Errorf("writing the private Gemini CLI settings: %w", err)
 	}
 	if real != "" {
-		for _, f := range signInFiles {
+		for _, f := range keyFiles {
 			src := filepath.Join(real, f)
 			if _, err := os.Stat(src); err != nil {
 				continue
 			}
 			// A symbolic link needs a privilege on Windows that a hard link
-			// does not; a file neither can link is left out, and a sign-in
+			// does not; a file neither can link is left out, and a key
 			// held only there surfaces as the run's own error.
 			dst := filepath.Join(conf, f)
 			if os.Symlink(src, dst) != nil {
@@ -156,19 +177,13 @@ func (a *Adapter) newHome(spec adapter.RunSpec, key string) (*home, error) {
 	return h, nil
 }
 
-// settingsFor is the run's settings.json: the person's sign-in choice, or the
-// key sign-in when they made none and a key is stored, and the run's MCP
-// servers.
-func settingsFor(spec adapter.RunSpec, auth map[string]any, haveKey bool) ([]byte, error) {
+// settingsFor is the run's settings.json: the key sign-in choice keyAuth
+// made, and the run's MCP servers.
+func settingsFor(spec adapter.RunSpec, auth map[string]any) ([]byte, error) {
 	settings := map[string]any{
 		// A run must not update the program under the person, nor nag.
-		"general": map[string]any{"enableAutoUpdate": false, "enableAutoUpdateNotification": false},
-	}
-	switch {
-	case auth != nil:
-		settings["security"] = map[string]any{"auth": auth}
-	case haveKey:
-		settings["security"] = map[string]any{"auth": map[string]any{"selectedType": apiKeyAuth}}
+		"general":  map[string]any{"enableAutoUpdate": false, "enableAutoUpdateNotification": false},
+		"security": map[string]any{"auth": auth},
 	}
 	if len(spec.MCPServers) > 0 {
 		servers := map[string]any{}
@@ -193,9 +208,10 @@ func (h *home) remove() {
 	}
 }
 
-// ownNames are the variables Rein sets on a Gemini CLI session itself; nothing
-// inherited or from a queue may shadow them.
-var ownNames = []string{"GEMINI_CLI_HOME", "GEMINI_CLI_TRUST_WORKSPACE", KeyName}
+// ownNames are the variables Rein sets on a Gemini CLI session itself, and
+// GOOGLE_GENAI_USE_GCA, which would choose a Google sign-in; nothing inherited
+// or from a queue may set them.
+var ownNames = []string{"GEMINI_CLI_HOME", "GEMINI_CLI_TRUST_WORKSPACE", KeyName, "GOOGLE_GENAI_USE_GCA"}
 
 func ownName(name string) bool {
 	for _, n := range ownNames {
@@ -237,21 +253,77 @@ func (h *home) childEnv(base []string, over map[string]string, key string) []str
 	return out
 }
 
-// notSetUpError is a run or preflight that found the program not installed or
-// not signed in on this computer. It matches [adapter.ErrLoginRequired] and
+// checkWorkspaceAuth refuses a worktree whose checked-in Gemini settings
+// choose anything but a key. Gemini CLI layers the workspace's
+// .gemini/settings.json over the private home's (measured: a checked-in
+// `enforcedType: oauth-personal` opened Google's sign-in page), so a
+// repository could otherwise move a run onto a Google sign-in, which Rein
+// never drives. A file Rein cannot read is refused too: failing closed is the
+// point.
+func checkWorkspaceAuth(worktree string) error {
+	path := filepath.Join(worktree, ".gemini", "settings.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return refusal("its .gemini/settings.json could not be read: " + err.Error())
+	}
+	var s struct {
+		Security struct {
+			Auth map[string]any `json:"auth"`
+		} `json:"security"`
+		Legacy any `json:"selectedAuthType"`
+	}
+	if err := json.Unmarshal(stripJSONComments(raw), &s); err != nil {
+		return refusal("its .gemini/settings.json is not JSON Rein can read, so its sign-in cannot be checked")
+	}
+	for _, k := range []string{"selectedType", "enforcedType"} {
+		if v, ok := s.Security.Auth[k]; ok {
+			if t, _ := v.(string); !keyAuthTypes[t] {
+				return refusal(fmt.Sprintf("its .gemini/settings.json sets security.auth.%s to %v", k, v))
+			}
+		}
+	}
+	if s.Legacy != nil {
+		if t, _ := s.Legacy.(string); !keyAuthTypes[t] {
+			return refusal(fmt.Sprintf("its .gemini/settings.json sets selectedAuthType to %v", s.Legacy))
+		}
+	}
+	if v, ok := s.Security.Auth["useExternal"]; ok && v != false {
+		return refusal("its .gemini/settings.json sets security.auth.useExternal")
+	}
+	return nil
+}
+
+// signInError is a refusal to let a repository move a run onto a Google
+// sign-in. It matches [adapter.ErrNotPlanAuth], so the run loop reports it as
+// a session that was not on the auth Rein requires.
+type signInError struct{ why string }
+
+func (e *signInError) Error() string {
+	return "Gemini runs on the person's own Google AI Studio or Google Cloud key only, and " + e.why + "; nothing was started"
+}
+
+func (e *signInError) Is(target error) bool { return target == adapter.ErrNotPlanAuth }
+
+func refusal(why string) error {
+	return &signInError{why: "this repository would choose Gemini CLI's sign-in: " + why}
+}
+
+// notSetUpError is a run or preflight that found Gemini CLI not set up on a
+// key on this computer. It matches [adapter.ErrLoginRequired] and
 // [adapter.ErrPreflight], so Elk hears agent_login, as for an expired Claude
 // Code sign-in.
-type notSetUpError struct{ program, why string }
+type notSetUpError struct{ why string }
 
-func (e *notSetUpError) Error() string {
-	return NotSetUpLine(e.program) + " (" + e.why + ")"
-}
+func (e *notSetUpError) Error() string { return NotSetUpLine + " (" + e.why + ")" }
 
 func (e *notSetUpError) Is(target error) bool {
 	return target == adapter.ErrLoginRequired || target == adapter.ErrPreflight
 }
 
-func notSetUp(program, why string) error { return &notSetUpError{program: program, why: why} }
+func notSetUp(why string) error { return &notSetUpError{why: why} }
 
 var lineComment = regexp.MustCompile(`(?m)^\s*//.*$`)
 

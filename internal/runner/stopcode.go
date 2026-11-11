@@ -24,7 +24,8 @@ func stopCode(err error) (code, line string) {
 		return "other", ""
 	case errors.Is(err, adapter.ErrNoProviderKey), errors.Is(err, adapter.ErrLoginRequired):
 		// A missing provider key, or an agent that says it needs signing in
-		// (the gemini adapter's "Set up Antigravity on this computer first."),
+		// (the gemini adapter's "Set up Gemini CLI on this computer with your own
+		// Google AI Studio or Google Cloud key first."),
 		// whatever its words.
 		return "agent_login", ""
 	}

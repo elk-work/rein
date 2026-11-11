@@ -37,7 +37,7 @@ func TestStopCode(t *testing.T) {
 type notSignedIn struct{}
 
 func (notSignedIn) Error() string {
-	return "Set up Antigravity on this computer first. (it is not signed in)"
+	return "Set up Gemini CLI on this computer with your own Google AI Studio or Google Cloud key first. (it has no Google AI Studio or Google Cloud key)"
 }
 func (notSignedIn) Is(target error) bool {
 	return target == adapter.ErrLoginRequired || target == adapter.ErrPreflight
