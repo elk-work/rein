@@ -18,6 +18,7 @@ const (
 	ToolClaimRun          = "claim_run"
 	ToolReportProgress    = "report_progress"
 	ToolAskElk            = "ask_elk"
+	ToolRunInbox          = "run_inbox"
 	ToolSubmitDeliverable = "submit_deliverable"
 	ToolHeartbeatExecutor = "heartbeat_executor"
 	// ToolReconnectOwnCredential replaces the calling queue's credential, with
@@ -460,6 +461,10 @@ type WorkOrder struct {
 	// what was ASKED FOR; [SubmitResult.ReviewPending] is what the server
 	// decided, and that is the one to act on.
 	AutoReview bool
+	// Model is the model a person chose for this run alone (scout 0710),
+	// from the claim's structured content, or "". Unchecked: the caller
+	// applies the shape check.
+	Model string
 }
 
 var (
@@ -508,6 +513,12 @@ func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, er
 	}
 	wo.RequiredCapabilities = parseRequiredCapabilities(res.Text)
 	wo.AutoReview = strings.Contains(res.Text, AutoReviewLine)
+	var structured struct {
+		Model *string `json:"model"`
+	}
+	if json.Unmarshal(res.Structured, &structured) == nil && structured.Model != nil {
+		wo.Model = strings.TrimSpace(*structured.Model)
+	}
 	return wo, nil
 }
 
@@ -643,6 +654,51 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 		return res, nr
 	}
 	return res, res.Err()
+}
+
+// Inbox is one answer from `run_inbox`, Elk's long poll for a running run.
+type Inbox struct {
+	// Comments is the comment block Elk delivered, its cursor already moved
+	// past them, or "".
+	Comments string
+	// Cursor is where the next poll starts.
+	Cursor int
+	// Status is the run's status, or "" when Elk did not say.
+	Status string
+	// Model is the model a person chose for this run, or "" for none.
+	Model string
+}
+
+// RunInbox waits up to about 25 seconds for something to change on a run Rein
+// holds: a comment, its status, or the model a person chose for it. It renews
+// the run's lease. An Elk without the tool answers [IsUnknownTool]; a reply
+// with no structured content is an empty inbox with the cursor kept.
+func (c *Client) RunInbox(ctx context.Context, runID string, cursor int) (*Inbox, error) {
+	res, err := c.call(ctx, ToolRunInbox, map[string]any{"run_id": runID, "cursor": cursor})
+	if err != nil {
+		return nil, err
+	}
+	if err := res.Err(); err != nil {
+		return nil, err
+	}
+	var body struct {
+		Comments string  `json:"comments"`
+		Cursor   *int    `json:"cursor"`
+		Status   string  `json:"status"`
+		Model    *string `json:"model"`
+	}
+	in := &Inbox{Cursor: cursor}
+	if len(res.Structured) == 0 || json.Unmarshal(res.Structured, &body) != nil {
+		return in, nil
+	}
+	in.Comments, in.Status = strings.TrimSpace(body.Comments), strings.TrimSpace(body.Status)
+	if body.Cursor != nil {
+		in.Cursor = *body.Cursor
+	}
+	if body.Model != nil {
+		in.Model = strings.TrimSpace(*body.Model)
+	}
+	return in, nil
 }
 
 // CommentsIn returns the task comments Elk delivered in a reply, from the

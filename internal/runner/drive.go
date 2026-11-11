@@ -1270,6 +1270,22 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			sayTimer.Stop()
 		}
 	}()
+	// Elk's inbox, for a session that can take a message mid-run: comments
+	// go in as they are posted rather than with the next report's reply.
+	var news chan elk.Inbox
+	if live != nil && live.manifest.Has(adapter.CapSteer) {
+		news = make(chan elk.Inbox)
+		inboxCtx, stopInbox := context.WithCancel(ctx)
+		polling := make(chan struct{})
+		go func() {
+			defer close(polling)
+			qr.pollInbox(inboxCtx, wo.RunID, news)
+		}()
+		defer func() {
+			stopInbox()
+			<-polling
+		}()
+	}
 
 	// post reports and folds a cancellation into the outcome, so every call
 	// site is one line and none of them can forget the check.
@@ -1347,6 +1363,18 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		case <-ctx.Done():
 			out.text = text.String()
 			return out
+
+		case in := <-news:
+			if in.Status != "" && in.Status != "running" {
+				qr.logf("run %s: Elk says the run is %s", wo.RunID, in.Status)
+				out.cancelled = true
+				out.text = text.String()
+				return out
+			}
+			if in.Comments != "" && !deliver() {
+				out.text = text.String()
+				return out
+			}
 
 		case <-sayC:
 			sayC = nil

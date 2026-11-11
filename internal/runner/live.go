@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -108,4 +109,59 @@ func todoPlan(t *adapter.ToolUse) ([]elk.PlanItem, bool) {
 		plan = append(plan, item)
 	}
 	return plan, true
+}
+
+// The inbox loop's pacing. inboxFloor is the least time between two polls,
+// so an Elk that answers at once (or a fake) is not hammered; inboxBackoff is
+// the wait after a failure, the first and then every later one in a row.
+var (
+	inboxFloor   = time.Second
+	inboxBackoff = [2]time.Duration{5 * time.Second, 30 * time.Second}
+)
+
+// pollInbox long-polls `run_inbox` until ctx ends, handing every answer that
+// says something to news. Comments are held on qr before anything else, so a
+// reply that lands as the session ends is not lost: the next session, the
+// revision or the run's end takes them. An Elk without the tool, or a
+// failure, is retried after inboxBackoff.
+//
+// ponytail: a poll in flight when ctx ends is abandoned; if Elk had already
+// taken a comment off its cursor, that comment reaches no session. Waiting
+// for the poll would hold the session's end up to 25 seconds.
+func (qr *queueRunner) pollInbox(ctx context.Context, runID string, news chan<- elk.Inbox) {
+	cursor, fails := 0, 0
+	for {
+		start := time.Now()
+		in, err := qr.elk.RunInbox(ctx, runID, cursor)
+		pause := time.Until(start.Add(inboxFloor))
+		switch {
+		case ctx.Err() != nil:
+			if err == nil {
+				qr.holdComments(in.Comments)
+			}
+			return
+		case err != nil:
+			if fails == 0 {
+				qr.logf("run %s: run_inbox: %v; trying again shortly", runID, err)
+			}
+			pause = inboxBackoff[min(fails, len(inboxBackoff)-1)]
+			fails++
+		default:
+			fails = 0
+			cursor = in.Cursor
+			qr.holdComments(in.Comments)
+			if in.Comments != "" || in.Status != "" || in.Model != "" {
+				select {
+				case news <- *in:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			return
+		}
+	}
 }

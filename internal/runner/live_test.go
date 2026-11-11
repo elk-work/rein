@@ -189,3 +189,113 @@ func TestTodoWriteSendsThePlan(t *testing.T) {
 		}
 	}
 }
+
+// inbox answers run_inbox with reply once, after a wait as a long poll would,
+// then with an empty inbox.
+func (h *harness) inbox(after time.Duration, reply map[string]any) {
+	var mu sync.Mutex
+	sent := false
+	h.elk.Handle("run_inbox", func(args map[string]any) elktest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		if !sent {
+			sent = true
+			time.Sleep(after)
+			return elktest.Reply{Structured: reply}
+		}
+		return elktest.Reply{Structured: map[string]any{"comments": "", "cursor": 9, "status": "running", "model": nil}}
+	})
+}
+
+// idleFor keeps a session alive for about n×100 ms with nothing to report.
+func idleFor(n int) []adapter.Event {
+	evs := make([]adapter.Event, n)
+	for i := range evs {
+		evs[i] = adapter.Event{Kind: adapter.EventIdle}
+	}
+	return evs
+}
+
+// A comment from the inbox goes into the session at once, without waiting
+// for a report's reply to carry it.
+func TestInboxCommentsGoInAtOnce(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Script = idleFor(10)
+	h.inbox(0, map[string]any{"comments": commentBlock, "cursor": 9, "status": "running", "model": nil})
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if sent := h.agent.Sessions()[0].Sent(); len(sent) != 1 || sent[0] != commentBlock {
+		t.Errorf("sent = %q, want the inbox's comment block once", sent)
+	}
+	calls := h.elk.CallsTo("run_inbox")
+	if len(calls) < 2 || calls[0].Args["cursor"] != float64(0) || calls[1].Args["cursor"] != float64(9) {
+		t.Errorf("the poll did not carry the cursor forward: %#v", calls)
+	}
+}
+
+// The held-while-a-question-is-open rule holds for the inbox too.
+func TestInboxCommentsWaitForAnOpenQuestion(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Script = append([]adapter.Event{{Kind: adapter.EventQuestion, Text: "Which target framework?"}}, idleFor(8)...)
+	h.inbox(400*time.Millisecond, map[string]any{"comments": commentBlock, "cursor": 9, "status": "running"})
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if sent := h.agent.Sessions()[0].Sent(); len(sent) != 0 {
+		t.Errorf("a comment went in while the question was open: %q", sent)
+	}
+}
+
+// A run the inbox says is no longer running is stopped like a cancelled
+// report: the session interrupted and nothing submitted.
+func TestInboxCancellationStopsTheRun(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Script = idleFor(30)
+	h.inbox(0, map[string]any{"comments": "", "cursor": 0, "status": "cancelled"})
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if calls := h.elk.CallsTo("submit_deliverable"); len(calls) != 0 {
+		t.Fatalf("a cancelled run was submitted: %#v", calls[0].Args)
+	}
+	if s := h.agent.Sessions(); len(s) != 1 || s[0].Interrupts() == 0 {
+		t.Error("the session was not interrupted")
+	}
+}
+
+// A Rein newer than its Elk keeps working: an unknown run_inbox is retried
+// after a pause, not in a tight loop, and the run finishes as before.
+func TestAnElkWithoutRunInboxStillRuns(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Script = idleFor(10)
+	h.elk.Reply("run_inbox", elktest.UnknownTool("run_inbox"))
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if n := len(h.elk.CallsTo("run_inbox")); n != 1 {
+		t.Errorf("run_inbox called %d times in about a second, want 1", n)
+	}
+	h.submitted()
+}
+
+// An adapter that cannot take input mid-run gets no inbox loop.
+func TestNoInboxWithoutSteer(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Capabilities.Capabilities[adapter.CapSteer] = adapter.SupportNo
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if n := len(h.elk.CallsTo("run_inbox")); n != 0 {
+		t.Errorf("run_inbox called %d times for a session that takes no input", n)
+	}
+}
