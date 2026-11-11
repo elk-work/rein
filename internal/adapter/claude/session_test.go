@@ -563,6 +563,10 @@ sleep 60`
 	if len(lines) != 2 {
 		t.Fatalf("invocations = %q", lines)
 	}
+	if first := " " + lines[0] + " "; !strings.Contains(first, " --model claude-sonnet-5-5 ") ||
+		!strings.Contains(first, " --resume old-session ") {
+		t.Errorf("the switch started %q", lines[0])
+	}
 	resume := " " + lines[1] + " "
 	if !strings.Contains(resume, " --model claude-sonnet-5-5 ") || !strings.Contains(resume, " --resume silent-session ") ||
 		strings.Contains(resume, "old-session") {

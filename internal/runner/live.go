@@ -141,8 +141,11 @@ func (qr *queueRunner) pollInbox(ctx context.Context, runID string, news chan<- 
 			}
 			return
 		case err != nil:
-			if fails == 0 {
-				qr.logf("run %s: run_inbox: %v; trying again shortly", runID, err)
+			// Elk advances its cursor before it answers, so a reply lost in
+			// transit is comments nobody will resend: every such failure is
+			// logged. An Elk without the tool is said once.
+			if fails == 0 || !elk.IsUnknownTool(err) {
+				qr.logf("run %s: run_inbox: %v; any comment in a lost reply is not resent; trying again shortly", runID, err)
 			}
 			pause = inboxBackoff[min(fails, len(inboxBackoff)-1)]
 			fails++

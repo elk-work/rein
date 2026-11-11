@@ -387,3 +387,28 @@ func TestTheClaimsModelWinsOverTheQueues(t *testing.T) {
 		adapter.Unregister(kind)
 	}
 }
+
+// A comment that arrives with a model change goes in with the resume, not
+// into the session being stopped.
+func TestACommentWithAModelChangeRidesTheResume(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Rounds = []fake.Round{{Script: progressFor(30)}, {Script: progressFor(3)}}
+	var once sync.Once
+	h.elk.Handle("run_inbox", func(map[string]any) elktest.Reply {
+		comments := ""
+		once.Do(func() { comments = commentBlock })
+		return elktest.Reply{Structured: map[string]any{"comments": comments, "cursor": 9, "status": "running", "model": "claude-sonnet-5-5"}}
+	})
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if sent := h.agent.Sessions()[0].Sent(); len(sent) != 0 {
+		t.Errorf("the comment went into the session being stopped: %q", sent)
+	}
+	specs := h.agent.Specs()
+	if len(specs) != 2 || !strings.Contains(specs[1].Prompt, commentBlock) {
+		t.Errorf("the resume did not carry the comment: %d sessions\nlog:\n%s", len(specs), h.log)
+	}
+}

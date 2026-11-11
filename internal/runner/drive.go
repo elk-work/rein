@@ -41,6 +41,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		}
 	}
 	qr.redact.Store(secretenv.NewRedactor(qr.withOwnToken(fetchSecrets)))
+	qr.replyOpened = time.Time{} // a window is one run's
 	qr.openLog(wo)
 	// Cleanup is a stack rather than defers so a review wait can take it with
 	// it (review_detach.go). The serve loop then claims the queue's next run
@@ -1407,10 +1408,8 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				out.text = text.String()
 				return out
 			}
-			if in.Comments != "" && !deliver() {
-				out.text = text.String()
-				return out
-			}
+			// A switch first: comments in the same answer are held on qr and
+			// go in with the resume prompt, not into a session about to stop.
 			if m := in.Model; m != "" && m != spec.Model && qr.canSwitchModel(sess) {
 				if config.ValidModel(m) {
 					out.switchModel = m
@@ -1421,6 +1420,10 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					refusedModel = m
 					qr.logf("run %s: not switching to %q: it is not a model id", wo.RunID, m)
 				}
+			}
+			if in.Comments != "" && !deliver() {
+				out.text = text.String()
+				return out
 			}
 
 		case <-sayC:
