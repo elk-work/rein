@@ -15,10 +15,13 @@ import (
 	"github.com/elk-work/rein/internal/adapter"
 )
 
-// fakeGemini writes a stand-in for Gemini CLI that behaves as the real one was
-// measured to: it refuses to start without GEMINI_API_KEY when its settings
-// enforce the key, exits 55 in an untrusted folder, and otherwise replays a
-// fixture. It records argv, its home, stdin and whether the key arrived.
+// fakeGemini writes a stand-in for Gemini CLI that behaves as the real one
+// does with each sign-in choice: on the key it refuses to start without
+// GEMINI_API_KEY; on a Google sign-in it runs (the sign-in is in the
+// keychain); with no choice and no key it asks for one; in an untrusted folder
+// it exits 55; otherwise it replays a fixture. It records argv, its home,
+// settings, stdin, whether the key arrived and whether the person's sign-in
+// file is reachable.
 func fakeGemini(t *testing.T, fixture string) (bin, rec string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,15 +34,18 @@ rec="` + rec + `"
 if [ "$1" = "--version" ]; then echo 0.64.0; exit 0; fi
 printf '%s\n' "$@" > "$rec/argv"
 printf '%s' "$GEMINI_CLI_HOME" > "$rec/home"
-cp "$GEMINI_CLI_HOME/.gemini/settings.json" "$rec/settings.json" 2>/dev/null
+s="$GEMINI_CLI_HOME/.gemini/settings.json"
+cp "$s" "$rec/settings.json" 2>/dev/null
+cat "$GEMINI_CLI_HOME/.gemini/oauth_creds.json" > "$rec/creds" 2>/dev/null
 if [ "$GEMINI_API_KEY" = "` + testKey + `" ]; then echo yes > "$rec/key"; fi
 if [ -n "$GOOGLE_API_KEY" ]; then echo leaked > "$rec/google"; fi
-if ! grep -q '"enforcedType": "gemini-api-key"' "$GEMINI_CLI_HOME/.gemini/settings.json" 2>/dev/null; then
-  echo 'Opening authentication page in your browser. Do you want to continue? [Y/n]:' >&2
-  sleep 30
-fi
-if [ -z "$GEMINI_API_KEY" ]; then
-  echo 'When using Gemini API, you must specify the GEMINI_API_KEY environment variable.' >&2
+if grep -q '"selectedType": "gemini-api-key"' "$s" 2>/dev/null; then
+  if [ -z "$GEMINI_API_KEY" ] && [ ! -e "$GEMINI_CLI_HOME/.gemini/.env" ]; then
+    echo 'When using Gemini API, you must specify the GEMINI_API_KEY environment variable.' >&2
+    exit 41
+  fi
+elif ! grep -q '"selectedType"' "$s" 2>/dev/null; then
+  echo 'Please set an Auth method in your settings.json.' >&2
   exit 41
 fi
 if [ "$GEMINI_CLI_TRUST_WORKSPACE" != "true" ]; then
@@ -56,8 +62,23 @@ exit 0
 	return bin, rec
 }
 
+// personsHome is a person's own Gemini CLI home whose settings choose auth,
+// signed in with Google too (oauth_creds.json), with a .env when env is set.
+func personsHome(t *testing.T, auth string, env bool) string {
+	t.Helper()
+	real := t.TempDir()
+	conf := filepath.Join(real, ".gemini")
+	must(t, os.MkdirAll(conf, 0o700))
+	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`{"security":{"auth":{"selectedType":"`+auth+`"}}}`), 0o600))
+	must(t, os.WriteFile(filepath.Join(conf, "oauth_creds.json"), []byte("their-sign-in"), 0o600))
+	if env {
+		must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte("# not read by Rein\n"), 0o600))
+	}
+	return real
+}
+
 func testAdapter(t *testing.T, bin string) *Adapter {
-	return &Adapter{binary: bin, Root: filepath.Join(t.TempDir(), "gemini"),
+	return &Adapter{binary: bin, Root: filepath.Join(t.TempDir(), "gemini"), RealHome: t.TempDir(),
 		Items: items{KeyService + "/" + KeyName: testKey}, InterruptGrace: time.Second}
 }
 
@@ -78,11 +99,20 @@ func drain(t *testing.T, s adapter.Session) []adapter.Event {
 	}
 }
 
-func TestASessionRunsOnTheKeyUnderAPrivateHome(t *testing.T) {
-	t.Setenv("GOOGLE_API_KEY", testKey) // in the daemon's environment; must not pass
+// A person signed in to Gemini CLI with Google, no key anywhere: the run goes
+// on that sign-in under a private home. On the old code it was refused before
+// starting ("Add your Google key in Elk to use Gemini.").
+// A person whose Gemini CLI is on their own key (here Vertex AI, which needs
+// no key from Rein) runs under a private home that carries that choice and
+// never their Google sign-in. On the old code the sign-in file was linked.
+func TestASessionRunsOnThePersonsKeySetUpUnderAPrivateHome(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", testKey) // in the daemon's environment; metered, must not pass
 	bin, rec := fakeGemini(t, "tool.jsonl")
 	a := testAdapter(t, bin)
+	a.RealHome = personsHome(t, "vertex-ai", false)
+	a.Items = items{}
 	spec := baseSpec(t)
+	spec.ProviderKey = ""
 	spec.SystemPrompt = "standing rules"
 	spec.Effort = "high"
 	spec.PassEnv = []string{"GOOGLE_API_KEY"}
@@ -115,17 +145,23 @@ func TestASessionRunsOnTheKeyUnderAPrivateHome(t *testing.T) {
 		}
 		sawTool = sawTool || ev.Kind == adapter.EventToolUse && ev.Tool.Name == "write_file"
 		sawEffort = sawEffort || strings.Contains(ev.Text, "effort high was not applied")
+		if strings.Contains(ev.Text, "Google key") {
+			t.Errorf("the run says it is on a key: %q", ev.Text)
+		}
 	}
 	if !sawTool || !sawEffort {
 		t.Errorf("tool_use seen %v, effort note seen %v", sawTool, sawEffort)
 	}
 
 	read := func(name string) string { b, _ := os.ReadFile(filepath.Join(rec, name)); return string(b) }
-	if read("key") != "yes\n" {
-		t.Error("the child did not get the key in GEMINI_API_KEY")
+	if read("key") != "" {
+		t.Error("a key reached the child though none is stored")
 	}
 	if read("google") != "" {
 		t.Error("GOOGLE_API_KEY reached the child")
+	}
+	if read("creds") != "" {
+		t.Error("the person's Google sign-in reached the private home")
 	}
 	home := read("home")
 	if !strings.HasPrefix(home, filepath.Join(a.Root, "runs", "run-1-")) {
@@ -134,15 +170,128 @@ func TestASessionRunsOnTheKeyUnderAPrivateHome(t *testing.T) {
 	if _, err := os.Stat(home); !os.IsNotExist(err) {
 		t.Error("the private home outlived the session")
 	}
-	if !strings.Contains(read("settings.json"), `"enforcedType": "gemini-api-key"`) {
-		t.Errorf("settings = %s", read("settings.json"))
+	if set := read("settings.json"); !strings.Contains(set, `"selectedType": "vertex-ai"`) || !strings.Contains(set, `"enforcedType": "vertex-ai"`) {
+		t.Errorf("settings = %s", set)
 	}
-	if argv := read("argv"); strings.Contains(argv, testKey) || strings.Contains(argv, "do the thing") ||
-		!strings.Contains(argv, "--skip-trust") {
+	if argv := read("argv"); strings.Contains(argv, "do the thing") || !strings.Contains(argv, "--skip-trust") {
 		t.Errorf("argv:\n%s", argv)
 	}
 	if stdin := read("stdin"); !strings.HasPrefix(stdin, "standing rules") || !strings.HasSuffix(stdin, "do the thing") {
 		t.Errorf("stdin = %q", stdin)
+	}
+}
+
+// A person with no sign-in chosen and a key stored for Rein: the run goes on
+// that key, given once in the environment and never on the command line.
+func TestAStoredKeyRunsGeminiCLIOnTheKey(t *testing.T) {
+	bin, rec := fakeGemini(t, "tool.jsonl")
+	s, err := testAdapter(t, bin).Start(context.Background(), baseSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+	if res, err := s.Wait(); err != nil || res.Status != adapter.StatusSucceeded {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	read := func(name string) string { b, _ := os.ReadFile(filepath.Join(rec, name)); return string(b) }
+	if read("key") != "yes\n" {
+		t.Error("the child did not get the key in GEMINI_API_KEY")
+	}
+	if !strings.Contains(read("settings.json"), `"selectedType": "gemini-api-key"`) {
+		t.Errorf("settings = %s", read("settings.json"))
+	}
+	if strings.Contains(read("argv"), testKey) {
+		t.Error("the key is on the command line")
+	}
+}
+
+// A person signed in to Gemini CLI with their personal Google account and no
+// key: nothing starts, and the run says to set Gemini CLI up on a key.
+// A .env beside the same sign-in puts the run on the key instead.
+func TestAPersonalGoogleSignInNeverRuns(t *testing.T) {
+	bin, rec := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	a.RealHome = personsHome(t, "oauth-personal", false)
+	a.Items = items{}
+	spec := baseSpec(t)
+	spec.ProviderKey = ""
+	_, err := a.Start(context.Background(), spec)
+	if !errors.Is(err, adapter.ErrLoginRequired) || !strings.Contains(err.Error(), NotSetUpLine) {
+		t.Fatalf("err = %v, want the not-set-up refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "argv")); err == nil {
+		t.Error("Gemini CLI was started")
+	}
+
+	a.RealHome = personsHome(t, "oauth-personal", true)
+	s, err := a.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+	if res, err := s.Wait(); err != nil || res.Status != adapter.StatusSucceeded {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(rec, "settings.json"))
+	if !strings.Contains(string(b), `"selectedType": "gemini-api-key"`) {
+		t.Errorf("settings = %s", b)
+	}
+	if c, _ := os.ReadFile(filepath.Join(rec, "creds")); len(c) != 0 {
+		t.Error("the person's Google sign-in reached the private home")
+	}
+}
+
+// A person set to the Gemini API key whose key has gone missing gets the
+// not-set-up line, and Elk hears agent_login, not an unexplained failure.
+func TestAMissingKeyIsNotSetUp(t *testing.T) {
+	bin, _ := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	a.RealHome = personsHome(t, "gemini-api-key", false)
+	a.Items = items{}
+	spec := baseSpec(t)
+	spec.ProviderKey = ""
+	s, err := a.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, s)
+	res, err := s.Wait()
+	if res.Status != adapter.StatusFailed || !errors.Is(err, adapter.ErrLoginRequired) || !strings.Contains(err.Error(), NotSetUpLine) {
+		t.Fatalf("res=%+v err=%v, want the not-set-up line", res, err)
+	}
+}
+
+// A computer whose Gemini CLI system settings choose a sign-in is refused
+// before anything starts.
+func TestSystemSettingsThatChooseASignInAreRefused(t *testing.T) {
+	bin, rec := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	old := systemSettingsPath
+	t.Cleanup(func() { systemSettingsPath = old })
+	systemSettingsPath = filepath.Join(t.TempDir(), "settings.json")
+	must(t, os.WriteFile(systemSettingsPath, []byte(`{"security":{"auth":{"enforcedType":"oauth-personal"}}}`), 0o600))
+	if _, err := a.Start(context.Background(), baseSpec(t)); !errors.Is(err, adapter.ErrNotPlanAuth) {
+		t.Fatalf("err = %v, want a sign-in refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "argv")); err == nil {
+		t.Error("Gemini CLI was started")
+	}
+}
+
+// A repository whose own Gemini settings choose a Google sign-in is refused
+// before anything starts: the workspace layer outranks the private home's.
+func TestARepositoryThatChoosesASignInIsRefused(t *testing.T) {
+	bin, rec := fakeGemini(t, "text.jsonl")
+	a := testAdapter(t, bin)
+	spec := baseSpec(t)
+	must(t, os.MkdirAll(filepath.Join(spec.WorktreeDir, ".gemini"), 0o700))
+	must(t, os.WriteFile(filepath.Join(spec.WorktreeDir, ".gemini", "settings.json"),
+		[]byte(`{"security":{"auth":{"selectedType":"oauth-personal","enforcedType":"oauth-personal"}}}`), 0o600))
+	if _, err := a.Start(context.Background(), spec); !errors.Is(err, adapter.ErrNotPlanAuth) {
+		t.Fatalf("err = %v, want a sign-in refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "argv")); err == nil {
+		t.Error("Gemini CLI was started")
 	}
 }
 
@@ -162,9 +311,11 @@ func TestABadKeyEndsTheRunWithGooglesWords(t *testing.T) {
 	}
 }
 
-// A Gemini CLI that starts a Google sign-in anyway is stopped at once, and
-// the run fails as not on the key.
-func TestASignInAttemptIsStopped(t *testing.T) {
+// A Gemini CLI that is not signed in starts a Google sign-in nobody is there
+// to finish: it is stopped at once and the run fails as "set up Gemini CLI
+// first", a login failure (agent_login), not a refusal of the person's
+// sign-in.
+func TestAGeminiCLIThatIsNotSignedInFailsAsNotSetUp(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "gemini")
 	must(t, os.WriteFile(bin, []byte("#!/bin/sh\necho 'Opening authentication page in your browser.' >&2\nsleep 30\n"), 0o755))
@@ -175,32 +326,64 @@ func TestASignInAttemptIsStopped(t *testing.T) {
 	}
 	drain(t, s)
 	_, err = s.Wait()
-	if !errors.Is(err, adapter.ErrNotPlanAuth) || !strings.Contains(err.Error(), "Google sign-in") {
+	if !errors.Is(err, adapter.ErrLoginRequired) || errors.Is(err, adapter.ErrNotPlanAuth) ||
+		!strings.Contains(err.Error(), NotSetUpLine) {
 		t.Fatalf("err = %v", err)
 	}
 	if time.Since(start) > 15*time.Second {
-		t.Error("the sign-in was not stopped promptly")
+		t.Error("the run waited for the sign-in")
 	}
 }
 
 func TestPreflight(t *testing.T) {
 	bin, _ := fakeGemini(t, "text.jsonl")
-	t.Run("ready", func(t *testing.T) {
+	t.Run("Vertex AI, no key", func(t *testing.T) {
+		a := testAdapter(t, bin)
+		a.RealHome = personsHome(t, "vertex-ai", false)
+		a.Items = items{}
+		if err := a.Preflight(context.Background()); err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+	})
+	t.Run("a personal Google sign-in, no key", func(t *testing.T) {
+		a := testAdapter(t, bin)
+		a.RealHome = personsHome(t, "oauth-personal", false)
+		a.Items = items{}
+		err := a.Preflight(context.Background())
+		if !errors.Is(err, adapter.ErrLoginRequired) || !errors.Is(err, adapter.ErrPreflight) ||
+			!strings.HasPrefix(err.Error(), NotSetUpLine) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("a stored key, no sign-in chosen", func(t *testing.T) {
 		if err := testAdapter(t, bin).Preflight(context.Background()); err != nil {
 			t.Fatalf("Preflight: %v", err)
 		}
 	})
-	t.Run("no key", func(t *testing.T) {
+	t.Run("a key in its own .env, no sign-in chosen", func(t *testing.T) {
+		home := t.TempDir()
+		must(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o700))
+		must(t, os.WriteFile(filepath.Join(home, ".gemini", ".env"), []byte("# not read by Rein\n"), 0o600))
+		a := testAdapter(t, bin)
+		a.RealHome = home
+		a.Items = items{}
+		if err := a.Preflight(context.Background()); err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+	})
+	t.Run("not set up", func(t *testing.T) {
 		a := testAdapter(t, bin)
 		a.Items = items{}
 		err := a.Preflight(context.Background())
-		if !errors.Is(err, adapter.ErrNoProviderKey) || !errors.Is(err, adapter.ErrPreflight) || err.Error() != MissingKeyLine {
+		if !errors.Is(err, adapter.ErrLoginRequired) || !errors.Is(err, adapter.ErrPreflight) ||
+			!strings.Contains(err.Error(), NotSetUpLine) {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("not installed", func(t *testing.T) {
 		err := testAdapter(t, filepath.Join(t.TempDir(), "gemini-missing")).Preflight(context.Background())
-		if !errors.Is(err, exec.ErrNotFound) || !errors.Is(err, adapter.ErrPreflight) || !strings.Contains(err.Error(), InstallCommand) {
+		if !errors.Is(err, exec.ErrNotFound) || !errors.Is(err, adapter.ErrPreflight) ||
+			!strings.Contains(err.Error(), NotSetUpLine) {
 			t.Fatalf("err = %v", err)
 		}
 	})

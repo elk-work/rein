@@ -15,13 +15,13 @@ import (
 	"github.com/elk-work/rein/internal/secretenv"
 )
 
-// session is one process of either Google program running one turn: the
+// session is one Gemini CLI process running one turn: the
 // prompt is written to stdin and stdin closed, and the program exits once it
 // has answered.
 type session struct {
 	spec    adapter.RunSpec
 	cmd     *exec.Cmd
-	program string                        // "Gemini CLI" or "Antigravity", for what a person reads
+	program string                        // "Gemini CLI", for what a person reads
 	decode  func([]byte) (decoded, error) // the program's stream-json
 	cleanup func()                        // removes what the session left on disk; may be nil
 	started time.Time
@@ -43,13 +43,13 @@ type session struct {
 	err         error
 }
 
-// signInMarkers are Gemini CLI's words when it is about to start a Google
-// sign-in. Rein's settings make that unreachable; seeing one anyway stops the
-// session at once rather than let a sign-in proceed.
+// signInMarkers are Gemini CLI's words when it is not signed in and starts a
+// Google sign-in. Headless, nobody is there to finish it, so seeing one stops
+// the session at once and the run fails as "set up Gemini CLI first".
 var signInMarkers = []string{"Opening authentication page", "Waiting for auth", "Code Assist login required",
 	"Please visit the following URL to authorize"}
 
-// launch is what differs between the two programs.
+// launch is one session's program, command line and environment.
 type launch struct {
 	program string
 	bin     string
@@ -66,7 +66,7 @@ type launch struct {
 // startProcess launches Gemini CLI.
 func (a *Adapter) startProcess(spec adapter.RunSpec, bin string, args []string, h *home, key string) (adapter.Session, error) {
 	return a.launch(spec, launch{
-		program: "Gemini CLI", bin: bin, args: args, env: h.childEnv(spec.InheritedEnv(), spec.Env, key),
+		program: GeminiCLIName, bin: bin, args: args, env: h.childEnv(spec.InheritedEnv(), spec.Env, key),
 		stdin: []byte(promptText(spec)), key: key, decode: decode, signIn: signInMarkers, fold: true, cleanup: h.remove,
 	})
 }
@@ -95,7 +95,7 @@ func (a *Adapter) launch(spec adapter.RunSpec, l launch) (adapter.Session, error
 		cleanup: l.cleanup,
 		started: time.Now(),
 		grace:   a.InterruptGrace,
-		red:     secretenv.NewRedactor(map[string]string{KeyName: l.key}),
+		red:     secretenv.NewRedactor(keyValues(l.key)),
 		events:  make(chan adapter.Event),
 		done:    make(chan struct{}),
 		model:   spec.Model,
@@ -209,7 +209,8 @@ func (s *session) kill() error {
 
 const killRepeat = 250 * time.Millisecond
 
-// stopSignIn kills the session the moment Gemini CLI starts a Google sign-in.
+// stopSignIn kills the session the moment the program starts a Google sign-in
+// that nobody is there to finish.
 func (s *session) stopSignIn() {
 	s.mu.Lock()
 	already := s.signIn
@@ -245,8 +246,8 @@ func (s *session) run(stdout io.Reader) {
 	defer close(s.done)
 	defer close(s.events)
 
-	s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "Running " + s.program + " on the person's own Google key"})
-	if s.spec.Effort != "" && s.program == "Gemini CLI" {
+	s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "Running " + s.program + " on this computer's own " + s.program + " setup"})
+	if s.spec.Effort != "" && s.program == GeminiCLIName {
 		s.emit(adapter.Event{Kind: adapter.EventProgress,
 			Text: "Gemini CLI has no reasoning-effort setting, so the queue's effort " + s.spec.Effort + " was not applied"})
 	}
@@ -309,7 +310,7 @@ func (s *session) run(stdout io.Reader) {
 	switch {
 	case signIn:
 		r.Status = adapter.StatusFailed
-		err = &signInError{why: s.program + " began a Google sign-in, so Rein stopped it"}
+		err = notSetUp("it asked for a Google sign-in, which Rein never drives and nobody is there to finish")
 	case timedOut:
 		r.Status = adapter.StatusTimedOut
 		err = fmt.Errorf("gemini: the session ran past its %s limit and was stopped", s.spec.Timeouts.Total)
@@ -337,8 +338,15 @@ func (s *session) run(stdout io.Reader) {
 	s.emit(adapter.Event{Kind: adapter.EventDone, Result: &rr})
 }
 
+// noKeyMarker is Gemini CLI's words when it is set to the Gemini API key and
+// finds none: the person's key setup went missing. Elk hears agent_login.
+const noKeyMarker = "must specify the GEMINI_API_KEY"
+
 func (s *session) noResult(scanErr, waitErr error) error {
 	tail := strings.TrimSpace(s.red.String(s.stderr.String()))
+	if strings.Contains(strings.ToLower(tail), strings.ToLower(noKeyMarker)) {
+		return notSetUp("Gemini CLI found no Gemini API key on this computer")
+	}
 	why := s.program + " exited without a result"
 	if waitErr != nil {
 		why += " (" + waitErr.Error() + ")"
@@ -416,4 +424,13 @@ func (w *stderrWatch) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return string(w.buf)
+}
+
+// keyValues is what a session's redactor hides: a stored key, when there is
+// one.
+func keyValues(key string) map[string]string {
+	if key == "" {
+		return nil
+	}
+	return map[string]string{KeyName: key}
 }

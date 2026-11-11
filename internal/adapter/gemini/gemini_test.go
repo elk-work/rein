@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -120,8 +119,6 @@ func TestStartRefuses(t *testing.T) {
 		is   error
 		text string
 	}{
-		{"no key", func(s *adapter.RunSpec) { s.ProviderKey = "" }, adapter.ErrNoProviderKey, MissingKeyLine},
-		{"a key too short to redact", func(s *adapter.RunSpec) { s.ProviderKey = "short" }, adapter.ErrNoProviderKey, MissingKeyLine},
 		{"the key in Env", func(s *adapter.RunSpec) { s.Env = map[string]string{"GEMINI_API_KEY": testKey} }, adapter.ErrNotPlanAuth, "GEMINI_API_KEY"},
 		{"GOOGLE_API_KEY in Env", func(s *adapter.RunSpec) { s.Env = map[string]string{"GOOGLE_API_KEY": testKey} }, adapter.ErrNotPlanAuth, "GOOGLE_API_KEY"},
 		{"hosted", func(s *adapter.RunSpec) { s.Hosted = true }, adapter.ErrNotAPIAuth, "Claude Code or Codex"},
@@ -129,7 +126,8 @@ func TestStartRefuses(t *testing.T) {
 		{"accept edits", func(s *adapter.RunSpec) { s.PermissionMode = adapter.PermissionAcceptEdits }, adapter.ErrCapability, "approvals"},
 		{"resume", func(s *adapter.RunSpec) { s.ResumeID = "abc" }, adapter.ErrCapability, "resume"},
 		{"a tool list", func(s *adapter.RunSpec) { s.DeniedTools = []string{"run_shell_command"} }, adapter.ErrNotSupported, "tool"},
-		{"program missing", func(*adapter.RunSpec) {}, exec.ErrNotFound, installLine()},
+		{"program missing", func(*adapter.RunSpec) {}, exec.ErrNotFound, NotSetUpLine},
+		{"program missing, no key", func(s *adapter.RunSpec) { s.ProviderKey = "" }, exec.ErrNotFound, NotSetUpLine},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -147,61 +145,25 @@ func TestStartRefuses(t *testing.T) {
 			}
 		})
 	}
-	// The missing-key line is exactly the one sentence, nothing around it.
-	spec := baseSpec(t)
-	spec.ProviderKey = ""
-	if _, err := a.Start(context.Background(), spec); err.Error() != "Add your Google key in Elk to use Gemini." {
-		t.Errorf("missing-key message = %q", err)
-	}
 }
 
-func TestARepositoryCannotChooseTheSignIn(t *testing.T) {
-	cases := []struct {
-		settings string
-		refused  bool
-	}{
-		{`{"security":{"auth":{"selectedType":"oauth-personal","enforcedType":"oauth-personal"}}}`, true},
-		{`{"security":{"auth":{"selectedType":"oauth-personal"}}}`, true},
-		{`{"security":{"auth":{"selectedType":"vertex-ai"}}}`, true},
-		{`{"security":{"auth":{"useExternal":true}}}`, true},
-		{`not json`, true},
-		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
-		{"// a comment\n{\"general\":{\"vimMode\":true}}", false},
-		{`{"mcpServers":{}}`, false},
-	}
-	for _, c := range cases {
-		dir := t.TempDir()
-		must(t, os.MkdirAll(filepath.Join(dir, ".gemini"), 0o700))
-		must(t, os.WriteFile(filepath.Join(dir, ".gemini", "settings.json"), []byte(c.settings), 0o600))
-		err := checkWorkspaceAuth(dir)
-		if (err != nil) != c.refused {
-			t.Errorf("%s: err = %v, want refused %v", c.settings, err, c.refused)
-		}
-		if err != nil && !errors.Is(err, adapter.ErrNotPlanAuth) {
-			t.Errorf("%s: the refusal is not a sign-in refusal: %v", c.settings, err)
-		}
-	}
-	if err := checkWorkspaceAuth(t.TempDir()); err != nil {
-		t.Errorf("a repository with no Gemini settings was refused: %v", err)
-	}
-}
-
-func TestChildEnvCarriesTheKeyOnceAndNothingThatMovesIt(t *testing.T) {
+// The person's own variables reach Gemini CLI — a Vertex AI project, a
+// gateway — as they reach Codex and Claude Code; only the names Rein sets
+// itself are Rein's, and a key appears once and only when one is stored. On
+// the old code every GEMINI_ and GOOGLE_ variable was stripped.
+func TestChildEnvKeepsThePersonsVariables(t *testing.T) {
 	h := &home{dir: "/rein/gemini/runs/run-1-x"}
 	base := []string{
 		"PATH=/usr/bin", "HOME=/Users/person",
-		"GEMINI_API_KEY=inherited-should-not-survive",
-		"GEMINI_DEFAULT_AUTH_TYPE=oauth-personal", "GEMINI_CLI_HOME=/Users/person",
-		"GEMINI_CLI_SYSTEM_SETTINGS_PATH=/x", "GEMINI_RESTRICTED_MODE=true",
-		"GOOGLE_GEMINI_BASE_URL=https://elsewhere.example", "GOOGLE_GENAI_USE_VERTEXAI=true",
-		"GOOGLE_CLOUD_PROJECT=p", "GOOGLE_API_KEY=x", "GOOGLE_APPLICATION_CREDENTIALS=/creds.json",
+		"GEMINI_API_KEY=inherited-is-replaced", "GEMINI_CLI_HOME=/Users/person",
+		"GOOGLE_CLOUD_PROJECT=p", "GOOGLE_GENAI_USE_VERTEXAI=true",
 	}
-	over := map[string]string{"POSTHOG_API_KEY": "phc", "GEMINI_CLI_HOME": "/spec"}
+	over := map[string]string{"POSTHOG_API_KEY": "phc", "gemini_cli_home": "/spec"}
 	env := h.childEnv(base, over, testKey)
 	got := map[string][]string{}
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
-		got[k] = append(got[k], v)
+		got[strings.ToUpper(k)] = append(got[strings.ToUpper(k)], v)
 	}
 	want := map[string]string{
 		"GEMINI_API_KEY":             testKey,
@@ -210,18 +172,16 @@ func TestChildEnvCarriesTheKeyOnceAndNothingThatMovesIt(t *testing.T) {
 		"HOME":                       "/Users/person", // git, gh and SSH stay the person's
 		"PATH":                       "/usr/bin",
 		"POSTHOG_API_KEY":            "phc",
+		"GOOGLE_CLOUD_PROJECT":       "p",
+		"GOOGLE_GENAI_USE_VERTEXAI":  "true",
 	}
 	for k, v := range want {
 		if len(got[k]) != 1 || got[k][0] != v {
 			t.Errorf("%s = %v, want exactly %q", k, got[k], v)
 		}
 	}
-	for _, k := range []string{"GEMINI_DEFAULT_AUTH_TYPE", "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_RESTRICTED_MODE",
-		"GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_API_KEY",
-		"GOOGLE_APPLICATION_CREDENTIALS"} {
-		if _, ok := got[k]; ok {
-			t.Errorf("%s reached the child", k)
-		}
+	if _, n := envValue(h.childEnv([]string{"PATH=/usr/bin"}, nil, ""), KeyName); n != 0 {
+		t.Error("a key appeared though none is stored")
 	}
 }
 
@@ -249,15 +209,28 @@ func TestGoogleKeysNeverReachAnotherAdapter(t *testing.T) {
 	}
 }
 
-func TestTheHomeEnforcesTheKeyAndCarriesTheRunsServers(t *testing.T) {
-	a := &Adapter{Root: t.TempDir()}
+// The private home carries the person's key setup and nothing else of theirs:
+// not their MCP servers (the Elk connector acts as them, ark:rein#21), and
+// never the files that hold a Google sign-in. Only .env is linked.
+func TestTheHomeCarriesThePersonsKeySetUpAndTheRunsServers(t *testing.T) {
+	real := t.TempDir()
+	conf := filepath.Join(real, ".gemini")
+	must(t, os.MkdirAll(conf, 0o700))
+	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`// theirs
+{"security":{"auth":{"selectedType":"vertex-ai","useExternal":true}},"mcpServers":{"elk":{"httpUrl":"https://elk.example/mcp"}}}`), 0o600))
+	must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte(".env"), 0o600))
+	for _, f := range signInFiles {
+		must(t, os.WriteFile(filepath.Join(conf, f), []byte(f), 0o600))
+	}
+	must(t, os.WriteFile(filepath.Join(conf, "GEMINI.md"), []byte("their instructions"), 0o600))
+	a := &Adapter{Root: t.TempDir(), RealHome: real}
 	spec := baseSpec(t)
 	srv, err := a.MCPServerConfig(adapter.MCPServerSpec{Name: "posthog", URL: "https://mcp.posthog.com/mcp", BearerTokenEnvVar: "POSTHOG_API_KEY"})
 	must(t, err)
 	local, err := a.MCPServerConfig(adapter.MCPServerSpec{Name: "figma", Command: "figma-mcp", Args: []string{"--stdio"}, EnvVars: []string{"FIGMA_TOKEN"}})
 	must(t, err)
 	spec.MCPServers = map[string]any{"posthog": srv, "figma": local}
-	h, err := a.newHome(spec)
+	h, err := a.newHome(spec, "")
 	must(t, err)
 	blob, err := os.ReadFile(filepath.Join(h.dir, ".gemini", "settings.json"))
 	must(t, err)
@@ -269,11 +242,14 @@ func TestTheHomeEnforcesTheKeyAndCarriesTheRunsServers(t *testing.T) {
 		MCPServers map[string]map[string]any `json:"mcpServers"`
 	}
 	must(t, json.Unmarshal(blob, &s))
-	if s.Security.Auth["selectedType"] != "gemini-api-key" || s.Security.Auth["enforcedType"] != "gemini-api-key" {
-		t.Errorf("auth = %v", s.Security.Auth)
+	if s.Security.Auth["selectedType"] != "vertex-ai" || s.Security.Auth["enforcedType"] != "vertex-ai" || len(s.Security.Auth) != 2 {
+		t.Errorf("auth = %v, want the person's own key choice, enforced, and nothing else of theirs", s.Security.Auth)
 	}
 	if s.General["enableAutoUpdate"] {
 		t.Error("the run may update Gemini CLI")
+	}
+	if _, ok := s.MCPServers["elk"]; ok {
+		t.Error("the person's own MCP server reached the run")
 	}
 	if s.MCPServers["posthog"]["httpUrl"] != "https://mcp.posthog.com/mcp" {
 		t.Errorf("posthog = %v", s.MCPServers["posthog"])
@@ -282,12 +258,209 @@ func TestTheHomeEnforcesTheKeyAndCarriesTheRunsServers(t *testing.T) {
 		!strings.Contains(string(blob), `"FIGMA_TOKEN": "${FIGMA_TOKEN}"`) {
 		t.Errorf("a server's secret is not a name for Gemini CLI to expand:\n%s", blob)
 	}
-	if strings.Contains(string(blob), testKey) {
-		t.Error("the key was written into the settings")
+	if b, err := os.ReadFile(filepath.Join(h.dir, ".gemini", ".env")); err != nil || string(b) != ".env" {
+		t.Errorf(".env is not reachable from the private home: %q %v", b, err)
+	}
+	for _, f := range append([]string{"GEMINI.md"}, signInFiles...) {
+		if _, err := os.Lstat(filepath.Join(h.dir, ".gemini", f)); err == nil {
+			t.Errorf("the person's %s reached the run", f)
+		}
 	}
 	h.remove()
 	if _, err := os.Stat(h.dir); !os.IsNotExist(err) {
 		t.Error("the private home was not removed")
+	}
+	if _, err := os.Stat(filepath.Join(conf, ".env")); err != nil {
+		t.Error("removing the private home removed the person's own file")
+	}
+}
+
+// signInFiles hold a Google sign-in in Gemini CLI 0.64's home.
+var signInFiles = []string{"oauth_creds.json", "google_accounts.json", "gemini-credentials.json"}
+
+// A run goes only on a key: the person's own key choice is kept, a Google
+// sign-in choice is replaced by the key sign-in when a key is stored or their
+// .env is there, and with no key at all the run is refused as not set up
+// (agent_login). On the old code a Google sign-in was carried and its files
+// linked, so a run could act on the person's personal Google account.
+func TestARunGoesOnlyOnAKey(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		settings string // "" writes none
+		env      bool   // a .env is there
+		key      string // stored for Rein
+		want     string // the run's selectedType; "" means refused
+	}{
+		{"Google sign-in, no key", `{"security":{"auth":{"selectedType":"oauth-personal"}}}`, false, "", ""},
+		{"older Google sign-in, no key", `{"selectedAuthType":"oauth-personal"}`, false, "", ""},
+		{"Google sign-in, a stored key", `{"security":{"auth":{"selectedType":"oauth-personal"}}}`, false, testKey, apiKeyAuth},
+		{"Google sign-in, a .env", `{"security":{"auth":{"selectedType":"oauth-personal"}}}`, true, "", apiKeyAuth},
+		{"Google Cloud sign-in, no key", `{"security":{"auth":{"selectedType":"cloud-shell"}}}`, false, "", ""},
+		{"Gemini API key", `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, true, "", apiKeyAuth},
+		{"Vertex AI", `{"selectedAuthType":"vertex-ai"}`, false, "", "vertex-ai"},
+		{"nothing chosen, a stored key", "", false, testKey, apiKeyAuth},
+		{"nothing chosen, a .env", "", true, "", apiKeyAuth},
+		{"nothing at all", "", false, "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			real := t.TempDir()
+			conf := filepath.Join(real, ".gemini")
+			must(t, os.MkdirAll(conf, 0o700))
+			if c.settings != "" {
+				must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(c.settings), 0o600))
+			}
+			if c.env {
+				must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte("x"), 0o600))
+			}
+			root := t.TempDir()
+			a := &Adapter{Root: root, RealHome: real}
+			h, err := a.newHome(baseSpec(t), c.key)
+			if c.want == "" {
+				if !errors.Is(err, adapter.ErrLoginRequired) || !strings.HasPrefix(fmt.Sprint(err), NotSetUpLine) {
+					t.Fatalf("err = %v, want the not-set-up refusal", err)
+				}
+				if left, _ := os.ReadDir(filepath.Join(root, "runs")); len(left) != 0 {
+					t.Errorf("a refused run left its home behind: %v", left)
+				}
+				return
+			}
+			must(t, err)
+			defer h.remove()
+			blob, err := os.ReadFile(filepath.Join(h.dir, ".gemini", "settings.json"))
+			must(t, err)
+			var got struct {
+				Security struct {
+					Auth map[string]string `json:"auth"`
+				} `json:"security"`
+			}
+			must(t, json.Unmarshal(blob, &got))
+			if got.Security.Auth["selectedType"] != c.want || got.Security.Auth["enforcedType"] != c.want {
+				t.Errorf("auth %v, want %q chosen and enforced", got.Security.Auth, c.want)
+			}
+			if strings.Contains(string(blob), testKey) {
+				t.Error("the key was written into the settings")
+			}
+		})
+	}
+}
+
+// A repository's checked-in settings may choose only a key; anything else,
+// or a file Rein cannot read, is refused.
+func TestCheckWorkspaceAuth(t *testing.T) {
+	cases := []struct {
+		settings string
+		refused  bool
+	}{
+		{`{"security":{"auth":{"selectedType":"oauth-personal","enforcedType":"oauth-personal"}}}`, true},
+		{`{"security":{"auth":{"selectedType":"oauth-personal"}}}`, true},
+		{`{"security":{"auth":{"enforcedType":"cloud-shell"}}}`, true},
+		{`{"selectedAuthType":"oauth-personal"}`, true},
+		{`{"security":{"auth":{"useExternal":true}}}`, true},
+		{`not json`, true},
+		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
+		{`{"security":{"auth":{"selectedType":"vertex-ai"}}}`, true},
+		{`{"selectedAuthType":"gemini-api-key"}`, false},
+		{"// a comment\n{\"general\":{\"vimMode\":true}}", false},
+		{`{"mcpServers":{}}`, false},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		must(t, os.MkdirAll(filepath.Join(dir, ".gemini"), 0o700))
+		must(t, os.WriteFile(filepath.Join(dir, ".gemini", "settings.json"), []byte(c.settings), 0o600))
+		err := checkWorkspaceAuth(dir)
+		if (err != nil) != c.refused {
+			t.Errorf("%s: err = %v, want refused %v", c.settings, err, c.refused)
+		}
+		if err != nil && !errors.Is(err, adapter.ErrNotPlanAuth) {
+			t.Errorf("%s: the refusal is not a sign-in refusal: %v", c.settings, err)
+		}
+	}
+	if err := checkWorkspaceAuth(t.TempDir()); err != nil {
+		t.Errorf("a repository with no Gemini settings was refused: %v", err)
+	}
+}
+
+// This computer's Gemini CLI system settings outrank the private home's, so
+// they are held to the repository's rule, and a run is refused before
+// anything starts when they choose a sign-in.
+func TestTheSystemSettingsAreCheckedLikeARepositorys(t *testing.T) {
+	old := systemSettingsPath
+	t.Cleanup(func() { systemSettingsPath = old })
+	cases := []struct {
+		settings string
+		refused  bool
+	}{
+		{`{"security":{"auth":{"enforcedType":"oauth-personal"}}}`, true},
+		{`{"selectedAuthType":"cloud-shell"}`, true},
+		{`not json`, true},
+		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
+		{`{"security":{"auth":{"enforcedType":"vertex-ai"}}}`, false},
+		{`{"general":{"vimMode":true}}`, false},
+	}
+	for _, c := range cases {
+		systemSettingsPath = filepath.Join(t.TempDir(), "settings.json")
+		must(t, os.WriteFile(systemSettingsPath, []byte(c.settings), 0o600))
+		err := checkSystemAuth()
+		if (err != nil) != c.refused {
+			t.Errorf("%s: err = %v, want refused %v", c.settings, err, c.refused)
+		}
+		if err != nil && (!errors.Is(err, adapter.ErrNotPlanAuth) || !strings.Contains(err.Error(), "system settings")) {
+			t.Errorf("%s: not a system-settings sign-in refusal: %v", c.settings, err)
+		}
+	}
+	systemSettingsPath = filepath.Join(t.TempDir(), "absent.json")
+	if err := checkSystemAuth(); err != nil {
+		t.Errorf("a computer with no system settings was refused: %v", err)
+	}
+	for goos, want := range map[string]string{
+		"darwin":  "/Library/Application Support/GeminiCli/settings.json",
+		"linux":   "/etc/gemini-cli/settings.json",
+		"windows": `C:\ProgramData\gemini-cli\settings.json`,
+	} {
+		if got := defaultSystemSettingsPath(goos); got != want {
+			t.Errorf("%s: system settings at %q, want %q", goos, got, want)
+		}
+	}
+}
+
+// The variables that would point Gemini CLI at settings or a sign-in Rein
+// never checked do not reach a run.
+func TestTheSettingsAndAuthOverridesNeverReachARun(t *testing.T) {
+	h := &home{dir: "/rein/gemini/runs/run-1-x"}
+	names := []string{"GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "GEMINI_CLI_AUTH_OVERRIDE"}
+	var base []string
+	over := map[string]string{}
+	for _, n := range names {
+		base = append(base, n+"=/somewhere")
+		over[strings.ToLower(n)] = "/elsewhere"
+	}
+	env := h.childEnv(base, over, testKey)
+	for _, n := range names {
+		if _, c := envValue(env, n); c != 0 {
+			t.Errorf("%s reached the run: %v", n, env)
+		}
+	}
+}
+
+// GOOGLE_GENAI_USE_GCA would choose a Google sign-in from the environment, so
+// no inherited or queued value reaches a run.
+func TestTheGoogleSignInVariableNeverReachesARun(t *testing.T) {
+	h := &home{dir: "/rein/gemini/runs/run-1-x"}
+	env := h.childEnv([]string{"PATH=/usr/bin", "GOOGLE_GENAI_USE_GCA=true"}, map[string]string{"google_genai_use_gca": "true"}, testKey)
+	if _, n := envValue(env, "GOOGLE_GENAI_USE_GCA"); n != 0 {
+		t.Errorf("GOOGLE_GENAI_USE_GCA reached the run: %v", env)
+	}
+}
+
+// The older top-level choice is read too.
+func TestThePersonsOlderSignInSettingIsRead(t *testing.T) {
+	real := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(real, "settings.json"), []byte(`{"selectedAuthType":"vertex-ai"}`), 0o600))
+	if got := personAuth(real); got["selectedType"] != "vertex-ai" {
+		t.Fatalf("auth = %v", got)
+	}
+	if personAuth(t.TempDir()) != nil {
+		t.Fatal("a home with no settings chose a sign-in")
 	}
 }
 
@@ -392,12 +565,4 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-// installLine is the install command a missing Gemini CLI names here.
-func installLine() string {
-	if runtime.GOOS == "windows" {
-		return InstallCommandWindows
-	}
-	return InstallCommand
 }

@@ -15,6 +15,7 @@ func TestAgentSetupFailureDoesNotForwardOutput(t *testing.T) {
 		{fmt.Errorf("missing: %w", exec.ErrNotFound), "Missing agent capability"},
 		{errors.New("auth failed: sensitive vendor output"), "Agent authentication required"},
 		{errors.New("unexpected output: sensitive vendor output"), "The agent is not ready on this machine"},
+		{notSignedIn{}, "Agent authentication required"},
 	} {
 		if got := agentSetupFailure(tc.err); got != tc.want {
 			t.Errorf("got %q, want %q", got, tc.want)

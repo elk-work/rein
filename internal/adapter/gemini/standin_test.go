@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// A stand-in for both Google programs that runs on every platform Rein's CI
+// A stand-in for Gemini CLI that runs on every platform Rein's CI
 // covers, Windows included: the test binary itself, copied into a folder
 // under the program's name. TestMain sees the name and plays the program
 // instead of running the tests. What it does is in standin.json beside it, and
@@ -22,11 +22,10 @@ import (
 type standinConfig struct {
 	Fixture string `json:"fixture"` // a file of stream-json lines to print
 	Exit    int    `json:"exit"`
-	Stderr  string `json:"stderr"`   // printed before the fixture
-	Hang    bool   `json:"hang"`     // after stderr, wait to be killed
-	Version string `json:"version"`  // what --version prints
-	Rec     string `json:"rec"`      // where to record what it saw
-	WantKey string `json:"want_key"` // the key it expects in GEMINI_API_KEY
+	Stderr  string `json:"stderr"`  // printed before the fixture
+	Hang    bool   `json:"hang"`    // after stderr, wait to be killed
+	Version string `json:"version"` // what --version prints
+	Rec     string `json:"rec"`     // where to record what it saw
 }
 
 // standinRecord is what the stand-in saw.
@@ -39,10 +38,31 @@ type standinRecord struct {
 
 func TestMain(m *testing.M) {
 	name := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
-	if name == AgyBinary || name == Binary {
+	if name == Binary {
 		os.Exit(runStandin())
 	}
+	if err := hidePersonsSetUp(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	os.Exit(m.Run())
+}
+
+// hidePersonsSetUp keeps the unit tests from ever reading the Gemini CLI set
+// up on the machine running them: HOME (where ~/.gemini and its key live)
+// becomes an empty folder for the whole test binary.
+func hidePersonsSetUp() error {
+	home, err := os.MkdirTemp("", "rein-gemini-test-home-")
+	if err != nil {
+		return err
+	}
+	for _, k := range []string{"HOME", "USERPROFILE"} {
+		os.Setenv(k, home)
+	}
+	os.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	// Nor this machine's Gemini CLI system settings.
+	systemSettingsPath = filepath.Join(home, "no-system-settings.json")
+	return nil
 }
 
 func runStandin() int {
@@ -70,10 +90,6 @@ func runStandin() int {
 	wd, _ := os.Getwd()
 	rec, _ := json.Marshal(standinRecord{Args: os.Args[1:], Env: os.Environ(), Stdin: string(in), Dir: wd})
 	_ = os.WriteFile(filepath.Join(c.Rec, "run.json"), rec, 0o600)
-	if os.Getenv(KeyName) == "" {
-		fmt.Fprintln(os.Stderr, `modelProvider is set to "gemini" in settings.json, but the GEMINI_API_KEY environment variable is not set.`)
-		return 1
-	}
 	if c.Stderr != "" {
 		fmt.Fprintln(os.Stderr, c.Stderr)
 	}
@@ -101,7 +117,7 @@ func appendFile(path, s string) {
 	_, _ = f.WriteString(s)
 }
 
-// standin installs the stand-in as program (AgyBinary or Binary) and returns
+// standin installs the stand-in as program (Binary) and returns
 // its path and the folder it records into.
 func standin(t *testing.T, program string, c standinConfig) (bin, rec string) {
 	t.Helper()
@@ -153,14 +169,6 @@ func envValue(env []string, name string) (string, int) {
 		}
 	}
 	return v, n
-}
-
-// switchOn turns the Antigravity switch on for one test.
-func switchOn(t *testing.T) {
-	t.Helper()
-	SetAntigravity("test", true)
-	agyLinux = true
-	t.Cleanup(func() { ResetAntigravity(); agyLinux = false })
 }
 
 func readRecordErr(rec string) (standinRecord, error) {

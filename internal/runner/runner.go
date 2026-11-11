@@ -1122,7 +1122,6 @@ func (qr *queueRunner) heartbeat(ctx context.Context) (depth int, known bool) {
 		qr.absorbElkModel(hb)
 		qr.applySettings(hb.Settings)
 		qr.noteReconnect(hb)
-		qr.absorbAntigravity(hb)
 		return hb.Waiting, true
 	case ctx.Err() != nil:
 	case errors.As(err, new(*elk.UnknownToolError)):
