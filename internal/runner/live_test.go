@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -112,7 +113,7 @@ func TestAToolReceiptCarriesTheEditedFiles(t *testing.T) {
 	dir := filepath.Join(h.wts.root, "run-1")
 	edit := func(path string) adapter.Event {
 		return adapter.Event{Kind: adapter.EventToolUse,
-			Tool: &adapter.ToolUse{Name: "Edit", Input: []byte(`{"file_path":"` + path + `"}`)}}
+			Tool: &adapter.ToolUse{Name: "Edit", Input: mustJSON(t, map[string]string{"file_path": path})}}
 	}
 	h.agent.Script = []adapter.Event{edit(filepath.Join(dir, "Sources", "Sheet.swift"))}
 	if err := h.run(runner.Options{}); err != nil {
@@ -411,4 +412,13 @@ func TestACommentWithAModelChangeRidesTheResume(t *testing.T) {
 	if len(specs) != 2 || !strings.Contains(specs[1].Prompt, commentBlock) {
 		t.Errorf("the resume did not carry the comment: %d sessions\nlog:\n%s", len(specs), h.log)
 	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

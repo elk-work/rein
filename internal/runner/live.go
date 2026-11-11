@@ -66,6 +66,11 @@ func repoPath(dir, p string) string {
 		return ""
 	}
 	if !filepath.IsAbs(p) {
+		// Rooted but driveless ("/etc/hosts" on Windows) is outside, not
+		// relative to the worktree.
+		if strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+			return ""
+		}
 		p = filepath.Join(dir, p)
 	}
 	dirs := []string{dir}
