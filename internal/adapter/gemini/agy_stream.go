@@ -74,7 +74,9 @@ func decodeAgy(raw []byte) (decoded, error) {
 	var d decoded
 	switch l.Event {
 	case "init":
-		d.sessionID = agyResumePrefix + l.ConversationID
+		if l.ConversationID != "" {
+			d.sessionID = agyResumePrefix + l.ConversationID
+		}
 		d.events = append(d.events, adapter.Event{Kind: adapter.EventProgress, Raw: rawCopy,
 			Text: "Antigravity started conversation " + l.ConversationID + " on the Google key"})
 	case "step_update":

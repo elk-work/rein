@@ -121,7 +121,12 @@ var versionPattern = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
 // so the manifest does not run it on every call.
 var agyVersions struct {
 	sync.Mutex
-	seen map[string]bool
+	seen map[string]versionCheck
+}
+
+type versionCheck struct {
+	ok bool
+	at time.Time
 }
 
 func agyVersionOK(bin string) bool {
@@ -131,19 +136,20 @@ func agyVersionOK(bin string) bool {
 	}
 	key := fmt.Sprintf("%s|%d|%d", bin, info.Size(), info.ModTime().UnixNano())
 	agyVersions.Lock()
-	ok, seen := agyVersions.seen[key]
+	r, seen := agyVersions.seen[key]
 	agyVersions.Unlock()
-	if seen {
-		return ok
+	if seen && (r.ok || time.Since(r.at) < time.Minute) {
+		return r.ok
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ok = versionAtLeast(adapter.ReadProgramVersion(ctx, bin), agyMinVersion)
+	ok := versionAtLeast(adapter.ReadProgramVersion(ctx, bin), agyMinVersion)
 	agyVersions.Lock()
 	if agyVersions.seen == nil {
-		agyVersions.seen = map[string]bool{}
+		agyVersions.seen = map[string]versionCheck{}
 	}
-	agyVersions.seen[key] = ok
+	// A "no" is asked again after a minute: it may have been a slow start.
+	agyVersions.seen[key] = versionCheck{ok: ok, at: time.Now()}
 	agyVersions.Unlock()
 	return ok
 }
@@ -438,6 +444,19 @@ func agyStdin(spec adapter.RunSpec) ([]byte, error) {
 	return append(blob, '\n'), nil
 }
 
+// agyLinux lets Antigravity run on Linux. Off: there its sandbox has not been
+// measured, and the deny rules that keep git's pointer files safe may not
+// hold. Tests turn it on to run the stand-in on Rein's Linux CI.
+var agyLinux = false
+
+func agyPlatforms() []adapter.Platform {
+	p := []adapter.Platform{adapter.AnyArch("darwin"), adapter.AnyArch("windows")}
+	if agyLinux {
+		p = append(p, adapter.AnyArch("linux"))
+	}
+	return p
+}
+
 // agyManifest is the adapter's manifest while Antigravity is switched on.
 func agyManifest() adapter.Manifest {
 	return adapter.Manifest{
@@ -454,7 +473,7 @@ func agyManifest() adapter.Manifest {
 			adapter.CapApprovals:        adapter.SupportNo,
 			adapter.CapSteer:            adapter.SupportNo,
 		},
-		Platforms: []adapter.Platform{adapter.AnyArch("darwin"), adapter.AnyArch("linux"), adapter.AnyArch("windows")},
+		Platforms: agyPlatforms(),
 		Notes: "Antigravity's command-line program on the person's own key, never a Google sign-in; " +
 			"driven only while Elk's server has it switched on. worktree is `yes`: edits and commands " +
 			"stay in the task's folder by Antigravity's own rules (accept-edits, the terminal sandbox, " +
@@ -465,10 +484,7 @@ func agyManifest() adapter.Manifest {
 }
 
 // startAgy starts one Antigravity session.
-//
-// notes are progress lines for the run's log (Start's account of anything it
-// left out).
-func (a *Adapter) startAgy(spec adapter.RunSpec, key string, notes []string) (adapter.Session, error) {
+func (a *Adapter) startAgy(spec adapter.RunSpec, key string) (adapter.Session, error) {
 	if why := sandboxUnsupported(); why != "" {
 		return nil, fmt.Errorf("%w: %s", adapter.ErrPreflight, why)
 	}
@@ -487,7 +503,7 @@ func (a *Adapter) startAgy(spec adapter.RunSpec, key string, notes []string) (ad
 	env := agyEnv(spec.InheritedEnv(), spec.Env, key, a.agyBaseURL)
 	return a.launch(spec, launch{
 		program: AgyName, bin: bin, args: args, env: env, stdin: stdin, key: key,
-		decode: decodeAgy, signIn: agySignInMarkers, fold: true, notes: notes,
+		decode: decodeAgy, signIn: agySignInMarkers, fold: true,
 	})
 }
 

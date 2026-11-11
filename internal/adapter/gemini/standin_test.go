@@ -159,7 +159,8 @@ func envValue(env []string, name string) (string, int) {
 func switchOn(t *testing.T) {
 	t.Helper()
 	SetAntigravity("test", true)
-	t.Cleanup(ResetAntigravity)
+	agyLinux = true
+	t.Cleanup(func() { ResetAntigravity(); agyLinux = false })
 }
 
 func readRecordErr(rec string) (standinRecord, error) {

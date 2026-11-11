@@ -172,8 +172,10 @@ Whether Elk may run it on a person's key is the question put to Google, so:
   reply never touches it. While it is off Rein never executes `agy` — not a
   run, a version probe or a preflight. Google's yes needs a server change, not
   a new Rein.
-- **On, a new run is Antigravity where it can be:** installed, version 1.5.5
-  or later (the one measured), and, on Windows, a build whose sandbox runs.
+- **On, a new run is Antigravity where it can be:** a Mac or Windows
+  computer (not Linux, until its sandbox is measured there), version 1.5.5 or
+  later installed (the one measured), and, on Windows, a build whose sandbox
+  runs.
   Otherwise Gemini CLI runs as before. The program is chosen once when a run
   starts and held for that run. The program version Rein reports says which
   runs, `1.5.5 (Antigravity)` or `0.64.0 (Gemini CLI)`, and is read again at
@@ -225,7 +227,8 @@ one — is never writable. The shared folder's hooks and config are not
 granted, and the files that point git at a folder are denied by rule: the
 worktree's `.git` file and the private folder's `commondir`, `gitdir` and
 `config.worktree` (for a plain repository, its `config` and `hooks`). A deny
-rule beats an allow rule. Measured with agy 1.5.5:
+rule beats an allow rule. Measured with agy 1.5.5 on a Mac (on Windows the lab
+proof below runs the same attempts):
 
 | action | result |
 |---|---|
@@ -235,6 +238,8 @@ rule beats an allow rule. Measured with agy 1.5.5:
 | a command writing in the home, outside the folder | "operation not permitted" |
 | a command writing git's `hooks` | "operation not permitted" |
 | write_file or a command rewriting the worktree's `.git` file, or `commondir` | refused by the deny rule; "operation not permitted" |
+| a command renaming the `.git` file, or deleting or renaming `commondir` | "operation not permitted" |
+| write_file or a command through a symlink in the folder that points outside it | refused: agy follows the link to the real path |
 | `git commit` from the linked worktree | done |
 | `git ls-remote https://github.com/…` | needs `read_url(*)`; done with it |
 | reading `~/.gitconfig`, writing `~/Library/Caches` and `$TMPDIR` | allowed by the sandbox |
@@ -275,10 +280,14 @@ write. (`--mode plan` has no effect alongside `--disable-slash-commands`.)
   program a model or effort that is not a plain name (letters, digits and
   `._:/@+-`) is refused: on Windows, Gemini CLI's npm shim runs through
   `cmd.exe`, which does not escape special characters.
-- **mcp** is `no`: agy takes no server from Rein (no settings key for one).
-  Rein adds the Elk run connector to a queue's runs when it starts, before it
-  has heard the switch, so an Antigravity run goes without it and its log says
-  so; any other server on an Antigravity run is refused (`ark:rein#120`).
+- **mcp** is `no`: agy takes no server from Rein (no settings key for one), so
+  the Elk run connector is not offered, and with the switch on, a run on a
+  queue that names MCP servers is refused rather than run without them
+  (`ark:rein#120`).
+- **Not covered by Antigravity's rules:** Rein's own git commands in a
+  worktree a run has written (removing it, inspecting it) do not yet turn off
+  hooks and fsmonitor or skip submodules the run might have added. That
+  hardening is Rein's worktree code, filed separately.
 - **Not controlled:** agy checks for updates and reports usage per the
   person's own Antigravity settings; `--settings` has no key for either.
 

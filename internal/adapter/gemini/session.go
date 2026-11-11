@@ -24,7 +24,6 @@ type session struct {
 	program string                        // "Gemini CLI" or "Antigravity", for what a person reads
 	decode  func([]byte) (decoded, error) // the program's stream-json
 	cleanup func()                        // removes what the session left on disk; may be nil
-	notes   []string                      // progress lines emitted after the first
 	started time.Time
 	grace   time.Duration
 	red     *secretenv.Redactor
@@ -60,8 +59,7 @@ type launch struct {
 	key     string
 	decode  func([]byte) (decoded, error)
 	signIn  []string
-	fold    bool     // match signIn without regard to case (agy)
-	notes   []string // progress lines a person reads before the program's own
+	fold    bool // match signIn without regard to case
 	cleanup func()
 }
 
@@ -69,7 +67,7 @@ type launch struct {
 func (a *Adapter) startProcess(spec adapter.RunSpec, bin string, args []string, h *home, key string) (adapter.Session, error) {
 	return a.launch(spec, launch{
 		program: "Gemini CLI", bin: bin, args: args, env: h.childEnv(spec.InheritedEnv(), spec.Env, key),
-		stdin: []byte(promptText(spec)), key: key, decode: decode, signIn: signInMarkers, cleanup: h.remove,
+		stdin: []byte(promptText(spec)), key: key, decode: decode, signIn: signInMarkers, fold: true, cleanup: h.remove,
 	})
 }
 
@@ -101,7 +99,6 @@ func (a *Adapter) launch(spec adapter.RunSpec, l launch) (adapter.Session, error
 		events:  make(chan adapter.Event),
 		done:    make(chan struct{}),
 		model:   spec.Model,
-		notes:   l.notes,
 	}
 	if s.grace <= 0 {
 		s.grace = defaultInterruptGrace
@@ -249,9 +246,6 @@ func (s *session) run(stdout io.Reader) {
 	defer close(s.events)
 
 	s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "Running " + s.program + " on the person's own Google key"})
-	for _, n := range s.notes {
-		s.emit(adapter.Event{Kind: adapter.EventProgress, Text: n})
-	}
 	if s.spec.Effort != "" && s.program == "Gemini CLI" {
 		s.emit(adapter.Event{Kind: adapter.EventProgress,
 			Text: "Gemini CLI has no reasoning-effort setting, so the queue's effort " + s.spec.Effort + " was not applied"})

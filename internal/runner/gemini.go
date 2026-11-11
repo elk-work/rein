@@ -50,7 +50,8 @@ func (qr *queueRunner) absorbAntigravity(hb *elk.Heartbeat) {
 		return
 	}
 	was := geminiadapter.AntigravityOn()
-	geminiadapter.SetAntigravity(qr.q.Name, hb.Antigravity)
+	// Keyed by workspace and name: one name may serve two workspaces.
+	geminiadapter.SetAntigravity(qr.workspace+"\x00"+qr.q.Name, hb.Antigravity)
 	now := geminiadapter.AntigravityOn()
 	if was != now {
 		if now {

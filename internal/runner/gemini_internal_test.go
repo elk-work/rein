@@ -53,11 +53,11 @@ func TestAGeminiQueuesProgramVersionFollowsTheSwitch(t *testing.T) {
 	if g.asked != 1 {
 		t.Fatalf("asked %d times within the hour", g.asked)
 	}
-	geminiadapter.SetAntigravity(qr.q.Name, true)
+	geminiadapter.SetAntigravity(qr.workspace+"\x00"+qr.q.Name, true)
 	if v := read(); v != "1.5.5 (Antigravity)" {
 		t.Fatalf("after the switch turned on: %q", v)
 	}
-	geminiadapter.SetAntigravity(qr.q.Name, false)
+	geminiadapter.SetAntigravity(qr.workspace+"\x00"+qr.q.Name, false)
 	if v := read(); v != "0.64.0 (Gemini CLI)" {
 		t.Fatalf("after the switch turned off: %q", v)
 	}

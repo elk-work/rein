@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -61,31 +60,19 @@ func TestTheSwitchNeedsEveryQueueAndLapses(t *testing.T) {
 	}
 }
 
-// The Elk run connector, which the runner adds while the switch is off, is
-// left out of an Antigravity run with a line that says so; it does not refuse
-// the run. Any other server still does.
-func TestAnAntigravityRunGoesWithoutTheRunConnectorAndSaysSo(t *testing.T) {
+// Antigravity takes no MCP server from Rein, so a run that brings one is
+// refused rather than run without it.
+func TestAnAntigravityRunWithAnMCPServerIsRefused(t *testing.T) {
 	switchOn(t)
-	agyBin, _ := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
+	agyBin, agyRec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
 	a := agyAdapter(t, agyBin, "")
 	spec := baseSpec(t)
-	spec.MCPServers = map[string]any{adapter.RunConnectorName: map[string]any{"url": "https://elk.example/mcp"}}
-	evs, res, err := runToEnd(t, a, spec)
-	if err != nil || res.Status != adapter.StatusSucceeded {
-		t.Fatalf("res=%+v err=%v", res, err)
-	}
-	said := false
-	for _, ev := range evs {
-		said = said || strings.Contains(ev.Text, "without Elk's run connector")
-	}
-	if !said {
-		t.Fatal("the run connector was dropped without a word")
-	}
-
-	spec = baseSpec(t)
 	spec.MCPServers = map[string]any{"github": map[string]any{}}
 	if _, err := a.Start(t.Context(), spec); !errors.Is(err, adapter.ErrCapability) {
-		t.Fatalf("another MCP server: err=%v, want a capability refusal", err)
+		t.Fatalf("err=%v, want a capability refusal", err)
+	}
+	if _, err := readRecordErr(agyRec); err == nil {
+		t.Fatal("Antigravity ran")
 	}
 }
 
@@ -107,6 +94,11 @@ func TestAConversationOnlyResumesOnTheProgramThatStartedIt(t *testing.T) {
 	spec.ResumeID = "a-gemini-cli-session"
 	if _, err := a.Start(t.Context(), spec); !errors.Is(err, adapter.ErrNotSupported) {
 		t.Fatalf("Gemini CLI's session on Antigravity: err=%v", err)
+	}
+
+	spec.ResumeID = agyResumePrefix + "conv & calc"
+	if _, err := a.Start(t.Context(), spec); !errors.Is(err, adapter.ErrNotSupported) {
+		t.Fatalf("a conversation id that is not a plain name: err=%v", err)
 	}
 
 	spec.ResumeID = agyResumePrefix + "conv-1"
@@ -186,5 +178,20 @@ func TestAntigravityIsFoundWhereGooglesInstallerPutsIt(t *testing.T) {
 	got, err := (&Adapter{}).resolveAgy()
 	if err != nil || got != want {
 		t.Fatalf("resolveAgy = %q, %v", got, err)
+	}
+}
+
+// Linux is left out until Antigravity's sandbox is measured there.
+func TestAntigravityIsNotDrivenOnLinuxYet(t *testing.T) {
+	switchOn(t)
+	agyLinux = false
+	if slices.Contains(agyPlatforms(), adapter.AnyArch("linux")) {
+		t.Fatal("Antigravity lists Linux")
+	}
+	if runtime.GOOS == "linux" {
+		agyBin, _ := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
+		if m := agyAdapter(t, agyBin, "").Manifest(); m.Binary != Binary {
+			t.Fatalf("Linux drives %q", m.Binary)
+		}
 	}
 }

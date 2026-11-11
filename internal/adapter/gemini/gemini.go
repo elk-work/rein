@@ -132,7 +132,9 @@ func (a *Adapter) Manifest() adapter.Manifest {
 // installed. Otherwise Gemini CLI runs, as before. Off, agy is never looked
 // for. Start asks once and holds the answer for the whole run.
 func (a *Adapter) useAgy() bool {
-	if !AntigravityOn() || sandboxUnsupported() != "" {
+	// Linux is left out until its sandbox is measured: there the deny rules
+	// that keep git's pointer files safe may not hold.
+	if !AntigravityOn() || (runtime.GOOS == "linux" && !agyLinux) || sandboxUnsupported() != "" {
 		return false
 	}
 	bin, err := a.resolveAgy()
@@ -373,13 +375,6 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if err := checkResume(spec.ResumeID, agy); err != nil {
 		return nil, err
 	}
-	var notes []string
-	if agy {
-		// The runner resolved the queue's servers when the switch was off, so
-		// a run can arrive with the Elk run connector Antigravity cannot take.
-		// It goes without it, and says so; any other server still refuses.
-		spec, notes = dropRunConnector(spec)
-	}
 	if err := adapter.CheckSupport(m, spec); err != nil {
 		return nil, err
 	}
@@ -404,7 +399,7 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return a.startAgy(spec, key, notes)
+		return a.startAgy(spec, key)
 	}
 	// A repository's own Gemini settings can choose the sign-in, and the
 	// workspace layer outranks the private home's (measured: a checked-in
@@ -444,7 +439,11 @@ func checkResume(id string, agy bool) error {
 	if id == "" {
 		return nil
 	}
-	switch isAgy := strings.HasPrefix(id, agyResumePrefix); {
+	isAgy := strings.HasPrefix(id, agyResumePrefix)
+	if isAgy && !argPattern.MatchString(strings.TrimPrefix(id, agyResumePrefix)) {
+		return fmt.Errorf("%w: the conversation id %q is not one Antigravity gives", adapter.ErrNotSupported, id)
+	}
+	switch {
 	case isAgy && !agy:
 		return fmt.Errorf("%w: this run's conversation is Antigravity's, and Antigravity is switched off or "+
 			"unavailable on this computer now, so it cannot be continued", adapter.ErrNotSupported)
@@ -453,25 +452,6 @@ func checkResume(id string, agy bool) error {
 			"Antigravity cannot continue one it did not start", adapter.ErrNotSupported)
 	}
 	return nil
-}
-
-// dropRunConnector takes the Elk run connector out of an Antigravity run's
-// servers, with the line that says so.
-func dropRunConnector(spec adapter.RunSpec) (adapter.RunSpec, []string) {
-	if _, ok := spec.MCPServers[adapter.RunConnectorName]; !ok {
-		return spec, nil
-	}
-	servers := make(map[string]any, len(spec.MCPServers))
-	for k, v := range spec.MCPServers {
-		if k != adapter.RunConnectorName {
-			servers[k] = v
-		}
-	}
-	if len(servers) == 0 {
-		servers = nil
-	}
-	spec.MCPServers = servers
-	return spec, []string{"Antigravity takes no MCP server from Rein, so this run goes without Elk's run connector"}
 }
 
 // argPattern is what a model or effort may look like on a command line. On
