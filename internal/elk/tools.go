@@ -563,12 +563,14 @@ const (
 	// ProgressGate needs human approval before continuing — an explicit
 	// human-in-the-loop stop, not a blocker.
 	ProgressGate ProgressKind = "gate"
+	// ProgressSay is the agent's own reply text (scout 0710).
+	ProgressSay ProgressKind = "say"
 )
 
-// Valid reports whether k is one of Elk's four kinds.
+// Valid reports whether k is one of Elk's kinds.
 func (k ProgressKind) Valid() bool {
 	switch k {
-	case ProgressStep, ProgressTool, ProgressQuestion, ProgressGate:
+	case ProgressStep, ProgressTool, ProgressQuestion, ProgressGate, ProgressSay:
 		return true
 	}
 	return false
@@ -599,7 +601,7 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 		return nil, errors.New("elk: report_progress needs a body")
 	}
 	if p.Kind != "" && !p.Kind.Valid() {
-		return nil, fmt.Errorf("elk: progress kind %q: want step, tool, question or gate", p.Kind)
+		return nil, fmt.Errorf("elk: progress kind %q: want step, tool, question, gate or say", p.Kind)
 	}
 	args := map[string]any{"run_id": p.RunID, "body": p.Body}
 	if p.Kind != "" {

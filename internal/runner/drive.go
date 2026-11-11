@@ -1244,6 +1244,11 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		whyFrom int
 		// questionOpen is true from the agent's question until it resumes.
 		questionOpen bool
+		// unsaid is the agent's text not yet sent as a say; sayC fires the
+		// flush inside a reply window.
+		unsaid   strings.Builder
+		sayTimer *time.Timer
+		sayC     <-chan time.Time
 	)
 	var capC <-chan time.Time
 	if qr.r.opts.Hosted {
@@ -1253,11 +1258,17 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 	}
 	defer stall.Stop()
 	defer lease.Stop()
+	defer func() {
+		if sayTimer != nil {
+			sayTimer.Stop()
+		}
+	}()
 
-	// send reports and folds a cancellation into the outcome, so every call
+	// post reports and folds a cancellation into the outcome, so every call
 	// site is one line and none of them can forget the check.
-	send := func(kind elk.ProgressKind, body, why, next string) bool {
-		if err := qr.report(ctx, wo.RunID, kind, body, why, next, pending); err != nil {
+	post := func(p elk.Progress) bool {
+		p.RunID = wo.RunID
+		if err := qr.reportProgress(ctx, p, pending); err != nil {
 			if errors.Is(err, elk.ErrCancelled) {
 				out.cancelled = true
 				return false
@@ -1265,6 +1276,21 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			qr.logf("run %s: %v", wo.RunID, err)
 		}
 		lastRep = time.Now()
+		return true
+	}
+	send := func(kind elk.ProgressKind, body, why, next string) bool {
+		return post(elk.Progress{Kind: kind, Body: body, Why: why, Next: next})
+	}
+	// say sends the agent's text written since the last say, redacted whole
+	// before it is cut so no secret straddles two events.
+	say := func() bool {
+		text := unsaid.String()
+		unsaid.Reset()
+		for _, part := range sayParts(qr.redactString(text)) {
+			if !send(elk.ProgressSay, part, "", "") {
+				return false
+			}
+		}
 		return true
 	}
 	// deliver hands the session the task comments waiting in qr.unsent, the
@@ -1285,10 +1311,13 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 			qr.log.Runner(runlog.KindNote, "task comments that reached no session: %s", c)
 			return send(elk.ProgressStep, "Couldn't pass your message to the session", "", "")
 		}
+		// The person is waiting on an answer: the agent's text goes out as
+		// it comes for a while.
+		qr.replyOpened = time.Now()
 		return true
 	}
 	receipt := func(kind elk.ProgressKind, body, why, next string) bool {
-		return send(kind, body, why, next) && deliver()
+		return say() && send(kind, body, why, next) && deliver()
 	}
 	report := func(kind elk.ProgressKind, body string) bool { return receipt(kind, body, "", "") }
 
@@ -1301,6 +1330,13 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		case <-ctx.Done():
 			out.text = text.String()
 			return out
+
+		case <-sayC:
+			sayC = nil
+			if !say() || !deliver() {
+				out.text = text.String()
+				return out
+			}
 
 		case <-lease.C:
 			why, next := whyNextSince(text.String(), &whyFrom)
@@ -1385,6 +1421,12 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					text.WriteString(ev.Text)
 					text.WriteString("\n")
 					out.notePRs(ev.Text)
+					unsaid.WriteString(ev.Text)
+					unsaid.WriteString("\n")
+					if sayC == nil && inReplyWindow(qr.replyOpened, time.Now()) {
+						sayTimer = time.NewTimer(sayCoalesce)
+						sayC = sayTimer.C
+					}
 				}
 
 			case adapter.EventToolUse:
@@ -1471,6 +1513,13 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				// Recorded by the watchdog above; nothing else to do.
 
 			case adapter.EventDone:
+				// A reply the person is waiting on goes out even when the
+				// turn ends inside the coalesce delay. Otherwise the last
+				// text is the deliverable, which Elk shows on its own.
+				if sayC != nil && !say() {
+					out.text = text.String()
+					return out
+				}
 				out.result = ev.Result
 				if ev.Text != "" {
 					text.WriteString(ev.Text)
@@ -1596,11 +1645,17 @@ func (qr *queueRunner) provider(model string) string {
 // qr.unsent, whoever called: only watch can hand them to a session.
 func (qr *queueRunner) report(ctx context.Context, runID string, kind elk.ProgressKind, body, why, next string,
 	pending *elk.Usage) error {
-	if strings.TrimSpace(body) == "" {
-		body = "Working."
+	return qr.reportProgress(ctx, elk.Progress{RunID: runID, Kind: kind, Body: body, Why: why, Next: next}, pending)
+}
+
+// reportProgress is [queueRunner.report] for a whole [elk.Progress]: it
+// redacts what leaves the machine and carries the pending usage.
+func (qr *queueRunner) reportProgress(ctx context.Context, p elk.Progress, pending *elk.Usage) error {
+	if strings.TrimSpace(p.Body) == "" {
+		p.Body = "Working."
 	}
-	p := elk.Progress{RunID: runID, Kind: kind, Body: truncate(qr.redactString(body), 4000),
-		Why: qr.redactString(why), Next: qr.redactString(next)}
+	p.Body = truncate(qr.redactString(p.Body), 4000)
+	p.Why, p.Next = qr.redactString(p.Why), qr.redactString(p.Next)
 	if pending.Valid() && !pending.Empty() {
 		u := *pending
 		p.Usage = &u
@@ -1610,7 +1665,7 @@ func (qr *queueRunner) report(ctx context.Context, runID string, kind elk.Progre
 		return err
 	}
 	qr.holdComments(res.Text)
-	qr.log.Runner(runlog.KindReport, "report_progress %s: %s", kind, firstLine(p.Body))
+	qr.log.Runner(runlog.KindReport, "report_progress %s: %s", p.Kind, firstLine(p.Body))
 	if p.Usage != nil {
 		*pending = elk.Usage{}
 	}
