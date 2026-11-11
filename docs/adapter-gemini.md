@@ -53,7 +53,8 @@ Four more guards keep a run off a Google sign-in:
   over every other layer (macOS `/Library/Application Support/GeminiCli/settings.json`,
   Linux `/etc/gemini-cli/settings.json`, Windows
   `C:\ProgramData\gemini-cli\settings.json`). They are held to the
-  repository's rule (`checkSystemAuth`).
+  repository's rule (`checkSystemAuth`), except that Vertex AI is allowed there:
+  it is a Google Cloud key, and whoever set it owns the computer.
 - **The environment.** `GOOGLE_GENAI_USE_GCA`, which picks a Google sign-in,
   never reaches a run, whatever the daemon or a queue says; nor do
   `GEMINI_CLI_SYSTEM_SETTINGS_PATH`, `GEMINI_CLI_SYSTEM_DEFAULTS_PATH` and
@@ -190,7 +191,9 @@ Measured on the lab Mac, 2026-11-11, with Gemini CLI 0.68.0 and a key that is
 not a key (`TestLiveTheKeyComesFromItsEnvFileNeverASignIn`): a person whose
 settings choose a Google sign-in and whose `.env` holds the key, even with
 `GOOGLE_GENAI_USE_GCA=true` in it too, runs on the key: Google refused it as
-"API key not valid", and no sign-in was started.
+"API key not valid", and no sign-in was started. A person set to the Gemini
+API key with no key anywhere (`TestLiveAMissingKeyIsNotSetUp`) gets the
+not-set-up line from Gemini CLI's own refusal.
 
 `go test ./internal/adapter/gemini/` runs against a stand-in program, on
 macOS, Linux and Windows in CI; the tests run with an empty HOME so the

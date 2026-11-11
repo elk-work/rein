@@ -4,6 +4,7 @@ package gemini
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -218,5 +219,33 @@ func TestLiveTheKeyComesFromItsEnvFileNeverASignIn(t *testing.T) {
 				t.Fatalf("want Google's own refusal of the key from .env; got %v", err)
 			}
 		})
+	}
+}
+
+// A person set to the Gemini API key with no key anywhere Rein lets through
+// (no .env, nothing stored, and the daemon's own GEMINI_API_KEY never passed
+// on) gets the not-set-up line from the real Gemini CLI's own refusal.
+func TestLiveAMissingKeyIsNotSetUp(t *testing.T) {
+	a := liveAdapter(t)
+	a.Items = items{}
+	conf := filepath.Join(a.RealHome, ".gemini")
+	must(t, os.MkdirAll(conf, 0o700))
+	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`), 0o600))
+	spec := baseSpec(t)
+	spec.ProviderKey = ""
+	spec.PermissionMode = adapter.PermissionReadOnly
+	spec.Model = "gemini-2.5-flash"
+	spec.Prompt = "Reply with the single word: hi"
+	spec.Timeouts.Total = 3 * time.Minute
+	s, err := a.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range s.Events() {
+	}
+	res, err := s.Wait()
+	t.Logf("status %s, exit %d, err %v", res.Status, res.ExitCode, err)
+	if !errors.Is(err, adapter.ErrLoginRequired) || !strings.Contains(err.Error(), NotSetUpLine) {
+		t.Fatalf("want the not-set-up line; got %v", err)
 	}
 }

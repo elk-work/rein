@@ -270,7 +270,7 @@ func (h *home) childEnv(base []string, over map[string]string, key string) []str
 // point.
 func checkWorkspaceAuth(worktree string) error {
 	return checkAuthFile(filepath.Join(worktree, ".gemini", "settings.json"),
-		"this repository would choose Gemini CLI's sign-in", "its .gemini/settings.json")
+		"this repository would choose Gemini CLI's sign-in", "its .gemini/settings.json", apiKeyAuth)
 }
 
 // systemSettingsPath is where Gemini CLI reads this computer's system
@@ -291,14 +291,29 @@ func defaultSystemSettingsPath(goos string) string {
 }
 
 // checkSystemAuth refuses a run when this computer's Gemini CLI system
-// settings choose anything but the Gemini API key: they outrank the private
-// home's, as a repository's do.
+// settings choose anything but a key (the Gemini API key or Vertex AI): they
+// outrank the private home's, as a repository's do. Vertex AI is allowed here,
+// unlike in a repository, because whoever set it up owns the computer and it
+// is a Google Cloud key, never a personal sign-in.
 func checkSystemAuth() error {
 	return checkAuthFile(systemSettingsPath,
-		"this computer's Gemini CLI system settings would choose its sign-in", "the file "+systemSettingsPath)
+		"this computer's Gemini CLI system settings would choose its sign-in", "the file "+systemSettingsPath,
+		apiKeyAuth, vertexAuth)
 }
 
-func checkAuthFile(path, who, what string) error {
+// vertexAuth is Gemini CLI's name for Vertex AI on a Google Cloud key.
+const vertexAuth = "vertex-ai"
+
+func allowedAuth(v any, allowed []string) bool {
+	for _, a := range allowed {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
+
+func checkAuthFile(path, who, what string, allowed ...string) error {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -317,12 +332,12 @@ func checkAuthFile(path, who, what string) error {
 	}
 	for _, k := range []string{"selectedType", "enforcedType"} {
 		if v, ok := s.Security.Auth[k]; ok {
-			if v != apiKeyAuth {
+			if !allowedAuth(v, allowed) {
 				return refusal(who, fmt.Sprintf("%s sets security.auth.%s to %v", what, k, v))
 			}
 		}
 	}
-	if s.Legacy != nil && s.Legacy != apiKeyAuth {
+	if s.Legacy != nil && !allowedAuth(s.Legacy, allowed) {
 		return refusal(who, fmt.Sprintf("%s sets selectedAuthType to %v", what, s.Legacy))
 	}
 	if v, ok := s.Security.Auth["useExternal"]; ok && v != false {

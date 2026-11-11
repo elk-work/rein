@@ -394,6 +394,7 @@ func TestTheSystemSettingsAreCheckedLikeARepositorys(t *testing.T) {
 		{`{"selectedAuthType":"cloud-shell"}`, true},
 		{`not json`, true},
 		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
+		{`{"security":{"auth":{"enforcedType":"vertex-ai"}}}`, false},
 		{`{"general":{"vimMode":true}}`, false},
 	}
 	for _, c := range cases {
