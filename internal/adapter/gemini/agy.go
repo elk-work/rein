@@ -17,28 +17,28 @@ import (
 	"github.com/elk-work/rein/internal/adapter"
 )
 
-// Antigravity's command-line program (`agy`), on the person's own key.
+// Antigravity's command-line program (`agy`), on the person's own setup.
 //
-// Driven only while Elk's server has the switch on (switch.go). Measured
-// against agy 1.5.5 on darwin/arm64, 2026-11-10, against a local stand-in for
-// the Gemini API that logged which credential arrived; no real key was used.
+// Measured against agy 1.5.5 on darwin/arm64, 2026-11-10 and 2026-11-11.
 //
-// # The key, never a Google sign-in
+// # The person's own sign-in or key
 //
-// agy uses a key only when its settings say `"modelProvider": "gemini"`
-// (antigravity.google/docs/install: "Only setting a GEMINI_API_KEY environment
-// variable on its own has no effect"). Rein passes that in `--settings`, which
-// agy applies to the one session and never saves, so the person's own `agy`
-// is never moved onto their key. Measured: with it, the model call carries the
-// key in `x-goog-api-key` and no `Authorization` header; with it and no key,
-// agy refuses to start ("modelProvider is set to \"gemini\" … but the
-// GEMINI_API_KEY environment variable is not set") rather than signing in.
+// Rein starts agy with whatever it already has (Casey, 2026-11-11), as it
+// starts Codex and Claude Code: a saved Google sign-in, which lives in the
+// operating system's keyring, or a key, which agy uses when the person's own
+// settings say `"modelProvider": "gemini"` (antigravity.google/docs/install).
+// The session's `--settings` names no model provider, so the person's own
+// setting stands; a key stored for Rein is set in the session's environment,
+// since a Rein service never sees the person's shell.
 //
-// A saved Google sign-in lives in the operating system's keyring, not in a
-// folder Rein could hide, so the session settings are the guard, not a private
-// home. The child never inherits a variable that could move it onto a Google
-// sign-in, Google Cloud billing or another host (agyStripped), and a session
-// whose output says it is starting a sign-in is killed.
+// Not signed in, headless agy prints a Google sign-in address, "Waiting for
+// authentication (timeout 60s)", then fails with "authentication failed or
+// timed out" (measured on the lab Mac, 2026-11-11). Fed its prompt on stdin as
+// Rein does, it ends the turn at once with that error. `agy models` answers
+// "Please sign in to view available models" and exits 0. Preflight asks that;
+// a turn that ends with the sign-in error, or a session that prints the
+// sign-in prompt, fails as "set up Antigravity first" rather than wait for a
+// person who is not there.
 //
 // # Edits stay in the task's folder, by Antigravity's own rules
 //
@@ -71,22 +71,9 @@ const AgyBinary = "agy"
 // AgyName is what a person reads for it.
 const AgyName = "Antigravity"
 
-// AgyInstallCommand is Google's installer for a Mac or Linux
-// (antigravity.google/docs/getting-started). It puts one program at
-// ~/.local/bin/agy and needs no developer tools.
-const AgyInstallCommand = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
-
-// AgyInstallCommandWindows is Google's installer for Windows, in PowerShell;
-// it puts agy at %LOCALAPPDATA%\agy\bin.
-const AgyInstallCommandWindows = "irm https://antigravity.google/cli/install.ps1 | iex"
-
 func agyNotInstalled() error {
-	how := "Install it with: " + AgyInstallCommand
-	if runtime.GOOS == "windows" {
-		how = "Install it in PowerShell with: " + AgyInstallCommandWindows
-	}
 	return fmt.Errorf("%w: Antigravity's command-line program (`agy`) is not installed on this computer. %s (%w)",
-		adapter.ErrPreflight, how, exec.ErrNotFound)
+		adapter.ErrPreflight, NotSetUpLine(AgyName), exec.ErrNotFound)
 }
 
 func (a *Adapter) resolveAgy() (string, error) {
@@ -189,45 +176,33 @@ func agyInstalledPath() string {
 	return filepath.Join(home, ".local", "bin", AgyBinary)
 }
 
-// agyStripped are variables an Antigravity session never inherits, whatever a
-// queue says. AGY_ADC_AUTH and AGY_ACCOUNT pick a Google sign-in or Google
-// Cloud billing; AGY_LLM_GATEWAY_* and GOOGLE_GEMINI_BASE_URL send the key to
-// another host; ANTIGRAVITY_* and JETSKI_* are its internal switches (the
-// names are from the agy 1.5.5 binary).
-var agyStripped = []string{"AGY_", "ANTIGRAVITY_", "JETSKI_", "GEMINI_", "GOOGLE_GEMINI_", "GOOGLE_GENAI_",
-	"GOOGLE_CLOUD_", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_SHELL"}
-
-func agyStrippedName(name string) bool {
-	up := strings.ToUpper(name) // Windows variable names ignore case
-	for _, p := range agyStripped {
-		if strings.HasPrefix(up, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // agyEnv is the session's environment: base (the scoped inheritance) and the
-// spec's own variables, less agyStripped, then the key. baseURL is a test
+// spec's own variables, then a stored key if there is one. baseURL is a test
 // stand-in's address and empty everywhere else.
 func agyEnv(base []string, over map[string]string, key, baseURL string) []string {
 	out := make([]string, 0, len(base)+len(over)+2)
 	for _, kv := range base {
 		i := strings.IndexByte(kv, '=')
-		if i <= 0 || agyStrippedName(kv[:i]) {
+		if i <= 0 {
 			continue
 		}
 		if _, shadowed := over[kv[:i]]; shadowed {
 			continue
 		}
+		if key != "" && strings.EqualFold(kv[:i], KeyName) {
+			continue
+		}
 		out = append(out, kv)
 	}
 	for k, v := range over {
-		if !agyStrippedName(k) {
-			out = append(out, k+"="+v)
+		if key != "" && strings.EqualFold(k, KeyName) {
+			continue
 		}
+		out = append(out, k+"="+v)
 	}
-	out = append(out, KeyName+"="+key)
+	if key != "" {
+		out = append(out, KeyName+"="+key)
+	}
 	if baseURL != "" {
 		out = append(out, "GOOGLE_GEMINI_BASE_URL="+baseURL)
 	}
@@ -372,12 +347,16 @@ func agyPermissions(spec adapter.RunSpec) (mode string, perms map[string]any, er
 
 // agySettings is the `--settings` JSON. agy refuses a key it does not know
 // (measured: `unknown setting "mcpServers"`), so only documented keys go in.
-func agySettings(perms map[string]any) (string, error) {
-	blob, err := json.Marshal(map[string]any{
-		"modelProvider":  "gemini",
-		"toolPermission": "proceed-in-sandbox",
-		"permissions":    perms,
-	})
+// No model provider: the person's own setting decides between their sign-in
+// and their key.
+func agySettings(perms, extra map[string]any) (string, error) {
+	set := map[string]any{}
+	for k, v := range extra {
+		set[k] = v
+	}
+	set["toolPermission"] = "proceed-in-sandbox"
+	set["permissions"] = perms
+	blob, err := json.Marshal(set)
 	if err != nil {
 		return "", fmt.Errorf("gemini: encoding Antigravity's session settings: %w", err)
 	}
@@ -385,13 +364,13 @@ func agySettings(perms map[string]any) (string, error) {
 }
 
 // buildAgyArgs is the command line. The prompt goes on stdin as one
-// stream-json message, and the key is in the environment; neither is here.
-func buildAgyArgs(spec adapter.RunSpec) ([]string, error) {
+// stream-json message, and a stored key is in the environment; neither is here.
+func buildAgyArgs(spec adapter.RunSpec, extra map[string]any) ([]string, error) {
 	mode, perms, err := agyPermissions(spec)
 	if err != nil {
 		return nil, err
 	}
-	settings, err := agySettings(perms)
+	settings, err := agySettings(perms, extra)
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +436,7 @@ func agyPlatforms() []adapter.Platform {
 	return p
 }
 
-// agyManifest is the adapter's manifest while Antigravity is switched on.
+// agyManifest is the adapter's manifest where Antigravity is installed.
 func agyManifest() adapter.Manifest {
 	return adapter.Manifest{
 		Kind:   Kind,
@@ -474,8 +453,8 @@ func agyManifest() adapter.Manifest {
 			adapter.CapSteer:            adapter.SupportNo,
 		},
 		Platforms: agyPlatforms(),
-		Notes: "Antigravity's command-line program on the person's own key, never a Google sign-in; " +
-			"driven only while Elk's server has it switched on. worktree is `yes`: edits and commands " +
+		Notes: "Antigravity's command-line program on the person's own setup, their Google sign-in " +
+			"or key (Casey, 2026-11-11). worktree is `yes`: edits and commands " +
 			"stay in the task's folder by Antigravity's own rules (accept-edits, the terminal sandbox, " +
 			"allow rules for the folder and git's object store), measured. mcp is `no`: agy takes no " +
 			"server from Rein, and the person's own servers' tools are denied by rule. approvals is " +
@@ -488,7 +467,7 @@ func (a *Adapter) startAgy(spec adapter.RunSpec, key string) (adapter.Session, e
 	if why := sandboxUnsupported(); why != "" {
 		return nil, fmt.Errorf("%w: %s", adapter.ErrPreflight, why)
 	}
-	args, err := buildAgyArgs(spec)
+	args, err := buildAgyArgs(spec, a.agyTestSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -503,27 +482,50 @@ func (a *Adapter) startAgy(spec adapter.RunSpec, key string) (adapter.Session, e
 	env := agyEnv(spec.InheritedEnv(), spec.Env, key, a.agyBaseURL)
 	return a.launch(spec, launch{
 		program: AgyName, bin: bin, args: args, env: env, stdin: stdin, key: key,
-		decode: decodeAgy, signIn: agySignInMarkers, fold: true,
+		decode: decodeAgy, signIn: agySignInMarkers, fold: true, authErr: agyAuthErrors,
 	})
 }
 
-// agySignInMarkers are agy's words when it is about to start a Google
-// sign-in. The session settings make that unreachable; seeing one anyway
-// stops the session.
-// Generic phrases ("Opening browser", a Google sign-in address) are left out:
-// Antigravity has a browser tool, and a task may be about sign-in pages.
-var agySignInMarkers = []string{"authentication required", "Sign in with Google", "paste the displayed code"}
+// agySignInMarkers are agy's words when it is not signed in and starts a
+// Google sign-in (measured, agy 1.5.5). Seeing one stops the session: nobody
+// is there to finish it. Generic phrases ("Opening browser", a Google sign-in
+// address) are left out: Antigravity has a browser tool, and a task may be
+// about sign-in pages.
+var agySignInMarkers = []string{"Authentication required. Please visit the URL to log in",
+	"Waiting for authentication", "paste the authorization code"}
 
-// preflightAgy checks the program answers and the key is stored. Like Gemini
-// CLI's, it cannot tell a good key from a revoked one without spending a
-// task.
-func (a *Adapter) preflightAgy() error {
+// agyAuthErrors are agy's turn error when it is not signed in. Fed its prompt
+// as stream-json on stdin, as Rein does, agy does not wait for a sign-in code:
+// it ends the turn at once with status ERROR and "authentication failed or
+// timed out" (measured on the lab Mac, 2026-11-11, in 0.35 seconds).
+var agyAuthErrors = []string{"authentication failed or timed out"}
+
+// agyNotSignedIn are `agy models`'s words when it is not signed in.
+var agyNotSignedIn = []string{"please sign in", "authentication required"}
+
+// preflightAgy checks agy is installed, this computer can run its sandbox, and
+// agy is set up: `agy models` lists models without spending a task, and says
+// "Please sign in" when it is not signed in (measured). An answer Rein cannot
+// read, or no answer, is not held against it: the run will say.
+func (a *Adapter) preflightAgy(ctx context.Context) error {
 	if why := sandboxUnsupported(); why != "" {
 		return fmt.Errorf("%w: %s", adapter.ErrPreflight, why)
 	}
-	if _, err := a.resolveAgy(); err != nil {
+	bin, err := a.resolveAgy()
+	if err != nil {
 		return err
 	}
-	_, err := a.readKey()
-	return err
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "models")
+	cmd.Dir = os.TempDir()
+	cmd.Env = agyEnv((adapter.RunSpec{}).InheritedEnv(), nil, a.storedKey(), a.agyBaseURL)
+	out, _ := cmd.CombinedOutput()
+	text := strings.ToLower(string(out))
+	for _, m := range agyNotSignedIn {
+		if strings.Contains(text, m) {
+			return notSetUp(AgyName, "it is not signed in")
+		}
+	}
+	return nil
 }

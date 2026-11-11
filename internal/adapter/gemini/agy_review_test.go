@@ -7,63 +7,14 @@ import (
 	"runtime"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
 )
 
-// The switch is each gemini queue's say, and it fails closed: one queue's
-// "off" outvotes another's "on", and a say lapses when its queue stops
-// hearing from Elk.
-func TestTheSwitchNeedsEveryQueueAndLapses(t *testing.T) {
-	ResetAntigravity()
-	t.Cleanup(func() { sw.mu.Lock(); sw.now = nil; sw.mu.Unlock(); ResetAntigravity() })
-	clock := time.Unix(1_800_000_000, 0)
-	sw.mu.Lock()
-	sw.now = func() time.Time { return clock }
-	sw.mu.Unlock()
-
-	if AntigravityOn() {
-		t.Fatal("on with no queue having said anything")
-	}
-	gen := SwitchGeneration()
-	SetAntigravity("a", true)
-	if !AntigravityOn() {
-		t.Fatal("one queue saying on did not turn it on")
-	}
-	if SwitchGeneration() == gen {
-		t.Fatal("turning on did not change the generation")
-	}
-	SetAntigravity("b", false)
-	if AntigravityOn() {
-		t.Fatal("two Elk servers disagree and it is on")
-	}
-	SetAntigravity("b", true)
-	if !AntigravityOn() {
-		t.Fatal("both on and it is off")
-	}
-	// b keeps hearing; a goes quiet past SwitchFresh: a's say lapses, b's stands.
-	clock = clock.Add(SwitchFresh / 2)
-	SetAntigravity("b", true)
-	clock = clock.Add(SwitchFresh/2 + time.Second)
-	if !AntigravityOn() {
-		t.Fatal("a lapsed say from a stopped queue blocked the switch")
-	}
-	// Then b goes quiet too: nothing counts, so it is off.
-	gen = SwitchGeneration()
-	clock = clock.Add(SwitchFresh)
-	if AntigravityOn() {
-		t.Fatal("still on with every heartbeat failing")
-	}
-	if SwitchGeneration() == gen {
-		t.Fatal("lapsing off did not change the generation")
-	}
-}
-
 // Antigravity takes no MCP server from Rein, so a run that brings one is
 // refused rather than run without it.
 func TestAnAntigravityRunWithAnMCPServerIsRefused(t *testing.T) {
-	switchOn(t)
+	agyOn(t)
 	agyBin, agyRec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
 	a := agyAdapter(t, agyBin, "")
 	spec := baseSpec(t)
@@ -76,21 +27,20 @@ func TestAnAntigravityRunWithAnMCPServerIsRefused(t *testing.T) {
 	}
 }
 
-// One program's conversation never reaches the other: the switch can flip
-// between a run's first round and its follow-up.
+// One program's conversation never reaches the other: Antigravity can be
+// installed or removed between a run's first round and its follow-up.
 func TestAConversationOnlyResumesOnTheProgramThatStartedIt(t *testing.T) {
+	agyOn(t)
 	agyBin, agyRec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
 	gemBin, _ := standin(t, Binary, standinConfig{Fixture: "text.jsonl", Version: "0.64.0"})
-	a := agyAdapter(t, agyBin, gemBin)
 
-	ResetAntigravity()
 	spec := baseSpec(t)
 	spec.ResumeID = agyResumePrefix + "conv-1"
-	if _, err := a.Start(t.Context(), spec); !errors.Is(err, adapter.ErrNotSupported) {
-		t.Fatalf("Antigravity's conversation with the switch off: err=%v", err)
+	if _, err := agyAdapter(t, "", gemBin).Start(t.Context(), spec); !errors.Is(err, adapter.ErrNotSupported) {
+		t.Fatalf("Antigravity's conversation without Antigravity: err=%v", err)
 	}
 
-	switchOn(t)
+	a := agyAdapter(t, agyBin, gemBin)
 	spec.ResumeID = "a-gemini-cli-session"
 	if _, err := a.Start(t.Context(), spec); !errors.Is(err, adapter.ErrNotSupported) {
 		t.Fatalf("Gemini CLI's session on Antigravity: err=%v", err)
@@ -114,7 +64,7 @@ func TestAConversationOnlyResumesOnTheProgramThatStartedIt(t *testing.T) {
 // An Antigravity older than the one Rein measured is not driven: Gemini CLI
 // runs instead.
 func TestAnOldAntigravityIsPassedOver(t *testing.T) {
-	switchOn(t)
+	agyOn(t)
 	agyBin, agyRec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl", Version: "1.4.9"})
 	gemBin, gemRec := standin(t, Binary, standinConfig{Fixture: "text.jsonl", Version: "0.64.0"})
 	a := agyAdapter(t, agyBin, gemBin)
@@ -138,7 +88,6 @@ func TestAnOldAntigravityIsPassedOver(t *testing.T) {
 // A model or effort that is not a plain name never reaches a command line:
 // on Windows, Gemini CLI's npm shim goes through cmd.exe.
 func TestAModelThatIsNotAPlainNameIsRefused(t *testing.T) {
-	ResetAntigravity()
 	gemBin, gemRec := standin(t, Binary, standinConfig{Fixture: "text.jsonl", Version: "0.64.0"})
 	a := agyAdapter(t, "", gemBin)
 	for _, m := range []string{"gemini & calc", "x|y", "a\"b", "-rf"} {
@@ -183,7 +132,7 @@ func TestAntigravityIsFoundWhereGooglesInstallerPutsIt(t *testing.T) {
 
 // Linux is left out until Antigravity's sandbox is measured there.
 func TestAntigravityIsNotDrivenOnLinuxYet(t *testing.T) {
-	switchOn(t)
+	agyOn(t)
 	agyLinux = false
 	if slices.Contains(agyPlatforms(), adapter.AnyArch("linux")) {
 		t.Fatal("Antigravity lists Linux")

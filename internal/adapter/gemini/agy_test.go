@@ -25,7 +25,7 @@ func agyAdapter(t *testing.T, agyBin, geminiBin string) *Adapter {
 		agyBin = filepath.Join(t.TempDir(), "no-agy-here")
 	}
 	return &Adapter{binary: geminiBin, agyBinary: agyBin, Root: filepath.Join(t.TempDir(), "gemini"),
-		Items: items{KeyService + "/" + KeyName: testKey}, InterruptGrace: time.Second}
+		RealHome: t.TempDir(), Items: items{KeyService + "/" + KeyName: testKey}, InterruptGrace: time.Second}
 }
 
 func runToEnd(t *testing.T, a *Adapter, spec adapter.RunSpec) ([]adapter.Event, adapter.Result, error) {
@@ -77,45 +77,18 @@ func strs(v any) []string {
 	return out
 }
 
-// Off, Rein never runs Antigravity — not a run, not a version probe, not a
-// preflight — even with it installed. This is the switch's whole promise
-// until Google says yes.
-func TestSwitchedOffAntigravityIsNeverRun(t *testing.T) {
-	ResetAntigravity()
-	agyBin, agyRec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
+// Installed, Antigravity runs — no switch, no key (Casey's ruling,
+// 2026-11-11). The session's settings name no model provider, so the person's
+// own setup stands; no key is set when none is stored; a queue's variables
+// reach it; the folder is confined by Antigravity's rules and never by
+// skipping them; the prompt goes on stdin. On the old code this run was Gemini
+// CLI (the switch was off) and, switched on, carried modelProvider "gemini".
+func TestARunIsAntigravityOnThePersonsOwnSetup(t *testing.T) {
+	agyOn(t)
+	agyBin, rec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
 	gemBin, gemRec := standin(t, Binary, standinConfig{Fixture: "text.jsonl", Version: "0.64.0"})
 	a := agyAdapter(t, agyBin, gemBin)
-
-	if m := a.Manifest(); m.Binary != Binary {
-		t.Fatalf("manifest binary = %q, want Gemini CLI's", m.Binary)
-	}
-	if v := a.ProgramVersion(context.Background()); v != "0.64.0 (Gemini CLI)" {
-		t.Fatalf("program version = %q", v)
-	}
-	_ = a.Preflight(context.Background())
-	_, _, _ = runToEnd(t, a, baseSpec(t))
-	if _, err := os.Stat(filepath.Join(gemRec, "run.json")); err != nil {
-		t.Fatalf("Gemini CLI did not run: %v", err)
-	}
-	for _, f := range []string{"run.json", "versions"} {
-		if _, err := os.Stat(filepath.Join(agyRec, f)); err == nil {
-			t.Fatalf("Antigravity was executed (%s) while switched off", f)
-		}
-	}
-}
-
-// On, and installed, a run is Antigravity on the key: key mode in the
-// session's own settings, the folder confined by Antigravity's rules and
-// never by skipping them, the key in its environment once, the prompt on
-// stdin, and nothing inherited that could move it to a sign-in or another
-// host.
-func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
-	switchOn(t)
-	t.Setenv("GOOGLE_GEMINI_BASE_URL", "http://elsewhere.example")
-	t.Setenv("AGY_ADC_AUTH", "true")
-	t.Setenv("Agy_Account", "someone@example.com")
-	agyBin, rec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
-	a := agyAdapter(t, agyBin, "")
+	a.Items = items{}
 	if m := a.Manifest(); m.Binary != AgyBinary || !m.Has(adapter.CapResume) || !m.Has(adapter.CapWorktree) {
 		t.Fatalf("manifest = %+v", m)
 	}
@@ -123,12 +96,17 @@ func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
 		t.Fatalf("program version = %q", v)
 	}
 	spec := baseSpec(t)
+	spec.ProviderKey = ""
 	spec.SystemPrompt = "standing"
 	spec.Model = "gemini-4-argon"
 	spec.Effort = "high"
+	spec.Env = map[string]string{"AGY_ACCOUNT": "person@example.com", "GOOGLE_CLOUD_PROJECT": "their-project"}
 	evs, res, err := runToEnd(t, a, spec)
 	if err != nil || res.Status != adapter.StatusSucceeded {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if _, err := readRecordErr(gemRec); err == nil {
+		t.Fatal("Gemini CLI ran with Antigravity installed")
 	}
 	if res.SessionID != agyResumePrefix+"11111111-1111-4111-8111-111111111111" || res.Summary != "All done." {
 		t.Fatalf("session id %q summary %q", res.SessionID, res.Summary)
@@ -144,6 +122,9 @@ func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
 		}
 		if ev.Kind == adapter.EventProgress && strings.Contains(ev.Text, "Running Antigravity") {
 			ran = true
+			if strings.Contains(ev.Text, "key") {
+				t.Errorf("the run says it is on a key: %q", ev.Text)
+			}
 		}
 	}
 	if !slices.Equal(tools, []string{"write_file", "run_command"}) || !ran {
@@ -158,11 +139,14 @@ func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
 			t.Fatalf("args lack %q: %q", want, r.Args)
 		}
 	}
-	if strings.Contains(joined, "dangerously") || strings.Contains(joined, testKey) || strings.Contains(joined, "do the thing") {
-		t.Fatalf("args skip permissions or carry the key or prompt: %q", r.Args)
+	if strings.Contains(joined, "dangerously") || strings.Contains(joined, "do the thing") {
+		t.Fatalf("args skip permissions or carry the prompt: %q", r.Args)
 	}
 	set := sessionSettings(t, r.Args)
-	if set["modelProvider"] != "gemini" || set["toolPermission"] != "proceed-in-sandbox" {
+	if _, ok := set["modelProvider"]; ok {
+		t.Fatalf("the session moves Antigravity onto a model provider: %v", set)
+	}
+	if set["toolPermission"] != "proceed-in-sandbox" {
 		t.Fatalf("settings %v", set)
 	}
 	perms := set["permissions"].(map[string]any)
@@ -178,12 +162,12 @@ func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
 			t.Fatalf("a write grant outside the task folder in a folder that is not a repository: %q", rule)
 		}
 	}
-	if v, n := envValue(r.Env, KeyName); v != testKey || n != 1 {
-		t.Fatalf("key in env %d times", n)
+	if _, n := envValue(r.Env, KeyName); n != 0 {
+		t.Fatalf("a key reached Antigravity though none is stored")
 	}
-	for _, name := range []string{"GOOGLE_GEMINI_BASE_URL", "AGY_ADC_AUTH", "AGY_ACCOUNT"} {
-		if _, n := envValue(r.Env, name); n != 0 {
-			t.Fatalf("%s reached Antigravity", name)
+	for name, want := range map[string]string{"AGY_ACCOUNT": "person@example.com", "GOOGLE_CLOUD_PROJECT": "their-project"} {
+		if v, n := envValue(r.Env, name); n != 1 || v != want {
+			t.Fatalf("%s reached Antigravity %d times as %q", name, n, v)
 		}
 	}
 	var msg struct {
@@ -201,6 +185,28 @@ func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
 	}
 }
 
+// A key the person stored for Rein reaches Antigravity once, in its
+// environment and nowhere on the command line, for someone whose own
+// settings put agy on a key.
+func TestAStoredKeyReachesAntigravityOnce(t *testing.T) {
+	agyOn(t)
+	agyBin, rec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl", NeedKey: true})
+	a := agyAdapter(t, agyBin, "")
+	spec := baseSpec(t)
+	spec.Env = map[string]string{"FOO": "bar"}
+	_, res, err := runToEnd(t, a, spec)
+	if err != nil || res.Status != adapter.StatusSucceeded {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	r := readRecord(t, rec)
+	if v, n := envValue(r.Env, KeyName); v != testKey || n != 1 {
+		t.Fatalf("key in env %d times", n)
+	}
+	if strings.Contains(strings.Join(r.Args, " "), testKey) {
+		t.Fatal("the key is on the command line")
+	}
+}
+
 func samePath(a, b string) bool {
 	ea, err1 := filepath.EvalSymlinks(a)
 	eb, err2 := filepath.EvalSymlinks(b)
@@ -210,7 +216,7 @@ func samePath(a, b string) bool {
 // A read-only run grants no writes at all and runs in the default mode, where
 // every edit asks and headless asking is a refusal.
 func TestReadOnlyGrantsNoWrites(t *testing.T) {
-	switchOn(t)
+	agyOn(t)
 	agyBin, rec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
 	a := agyAdapter(t, agyBin, "")
 	spec := baseSpec(t)
@@ -230,7 +236,7 @@ func TestReadOnlyGrantsNoWrites(t *testing.T) {
 // Antigravity ends its turn with status SUCCESS when it refuses an action
 // (measured); Rein must not call that done.
 func TestARefusedActionIsNotDone(t *testing.T) {
-	switchOn(t)
+	agyOn(t)
 	agyBin, _ := standin(t, AgyBinary, standinConfig{Fixture: "agy-denied.jsonl"})
 	a := agyAdapter(t, agyBin, "")
 	_, res, err := runToEnd(t, a, baseSpec(t))
@@ -241,7 +247,7 @@ func TestARefusedActionIsNotDone(t *testing.T) {
 
 // A bad key ends the run in Google's own words, with the key never printed.
 func TestABadKeyComesBackInGooglesWordsFromAntigravity(t *testing.T) {
-	switchOn(t)
+	agyOn(t)
 	agyBin, _ := standin(t, AgyBinary, standinConfig{Fixture: "agy-badkey.jsonl", Exit: 3})
 	a := agyAdapter(t, agyBin, "")
 	_, res, err := runToEnd(t, a, baseSpec(t))
@@ -253,21 +259,73 @@ func TestABadKeyComesBackInGooglesWordsFromAntigravity(t *testing.T) {
 	}
 }
 
-// A session that starts a Google sign-in anyway is stopped and fails as not
-// on the key.
-func TestAnAntigravitySignInIsStopped(t *testing.T) {
-	switchOn(t)
-	agyBin, _ := standin(t, AgyBinary, standinConfig{Stderr: "Error: authentication required. Opening browser to sign in", Hang: true})
+// An Antigravity that is not signed in asks for a Google sign-in and waits
+// for a code (measured on the lab Mac). Nobody is there to give one, so the
+// session is stopped at once and the run fails as "set up Antigravity first",
+// a login failure (agent_login), not a refusal of the person's sign-in.
+func TestAnAntigravityThatIsNotSignedInFailsAsNotSetUp(t *testing.T) {
+	agyOn(t)
+	agyBin, _ := standin(t, AgyBinary, standinConfig{
+		Stderr: "Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=y\n\nWaiting for authentication (timeout 60s)...",
+		Hang:   true})
 	a := agyAdapter(t, agyBin, "")
+	start := time.Now()
 	_, res, err := runToEnd(t, a, baseSpec(t))
-	if res.Status != adapter.StatusFailed || !errors.Is(err, adapter.ErrNotPlanAuth) {
+	if res.Status != adapter.StatusFailed || !errors.Is(err, adapter.ErrLoginRequired) {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if errors.Is(err, adapter.ErrNotPlanAuth) {
+		t.Fatalf("reported as a refused sign-in: %v", err)
+	}
+	if !strings.Contains(err.Error(), NotSetUpLine(AgyName)) {
+		t.Fatalf("err = %q", err)
+	}
+	if time.Since(start) > 15*time.Second {
+		t.Fatal("the run waited for the sign-in")
+	}
+}
+
+// Fed its prompt on stdin as Rein does, an Antigravity that is not signed in
+// ends the turn at once with "authentication failed or timed out" (measured on
+// the lab Mac). That is "set up Antigravity first", not a generic failure.
+func TestAnAntigravityTurnThatFailsToSignInIsNotSetUp(t *testing.T) {
+	agyOn(t)
+	agyBin, _ := standin(t, AgyBinary, standinConfig{Fixture: "agy-notsignedin.jsonl", Exit: 1,
+		Stderr: "Error: authentication timed out.\nerror: authentication failed or timed out"})
+	_, res, err := runToEnd(t, agyAdapter(t, agyBin, ""), baseSpec(t))
+	if res.Status != adapter.StatusFailed || !errors.Is(err, adapter.ErrLoginRequired) ||
+		!strings.Contains(err.Error(), NotSetUpLine(AgyName)) {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 }
 
-// With the switch on but Antigravity not installed, Gemini CLI runs as before.
-func TestSwitchedOnWithoutAntigravityStaysOnGeminiCLI(t *testing.T) {
-	switchOn(t)
+// Preflight asks `agy models`, which says "Please sign in" and exits 0 when
+// agy is not signed in (measured). On the old code Preflight only looked for a
+// stored key.
+func TestPreflightAsksAntigravityWhetherItIsSignedIn(t *testing.T) {
+	agyOn(t)
+	out := "Fetching available models...\nError: Please sign in to view available models. Launch the CLI without arguments to sign in."
+	agyBin, _ := standin(t, AgyBinary, standinConfig{Models: out})
+	a := agyAdapter(t, agyBin, "")
+	a.Items = items{}
+	err := a.Preflight(context.Background())
+	if !errors.Is(err, adapter.ErrLoginRequired) || !errors.Is(err, adapter.ErrPreflight) ||
+		!strings.Contains(err.Error(), NotSetUpLine(AgyName)) {
+		t.Fatalf("err = %v", err)
+	}
+	okBin, okRec := standin(t, AgyBinary, standinConfig{Models: "Fetching available models...\ngemini-4-argon\ngemini-4-carbon"})
+	if err := agyAdapter(t, okBin, "").Preflight(context.Background()); err != nil {
+		t.Fatalf("a signed-in Antigravity failed preflight: %v", err)
+	}
+	// The stored key goes to the question too, for a person on a key.
+	if b, err := os.ReadFile(filepath.Join(okRec, "models")); err != nil || strings.TrimSpace(string(b)) != testKey {
+		t.Fatalf("models was not asked with the stored key: %q %v", b, err)
+	}
+}
+
+// Without Antigravity installed, Gemini CLI runs.
+func TestWithoutAntigravityGeminiCLIRuns(t *testing.T) {
+	agyOn(t)
 	gemBin, _ := standin(t, Binary, standinConfig{Version: "0.64.0"})
 	a := agyAdapter(t, "", gemBin)
 	if m := a.Manifest(); m.Binary != Binary {
@@ -294,18 +352,21 @@ func TestBothProgramsListWindows(t *testing.T) {
 	}
 }
 
-// Every variable that could move a session is stripped, whatever its case.
-func TestAgyEnvStripsWhateverTheCase(t *testing.T) {
-	env := agyEnv([]string{"PATH=/bin", "gemini_api_key=old", "Google_Cloud_Project=p", "ANTIGRAVITY_LS_ADDRESS=x", "JETSKI_USER=x"},
-		map[string]string{"AGY_LLM_GATEWAY_API_KEY": "x", "FOO": "bar"}, testKey, "")
-	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		if k != "PATH" && k != "FOO" && k != KeyName {
-			t.Fatalf("%s survived", kv)
+// The person's and the queue's variables reach Antigravity as they are; a
+// stored key replaces any other GEMINI_API_KEY and appears once.
+func TestAgyEnvKeepsThePersonsVariablesAndTheStoredKeyOnce(t *testing.T) {
+	env := agyEnv([]string{"PATH=/bin", "gemini_api_key=old", "Google_Cloud_Project=p"},
+		map[string]string{"AGY_ACCOUNT": "x", "FOO": "bar"}, testKey, "")
+	for _, name := range []string{"PATH", "Google_Cloud_Project", "AGY_ACCOUNT", "FOO"} {
+		if _, n := envValue(env, name); n != 1 {
+			t.Fatalf("%s reached it %d times", name, n)
 		}
 	}
 	if v, n := envValue(env, KeyName); v != testKey || n != 1 {
 		t.Fatalf("key %d times", n)
+	}
+	if _, n := envValue(agyEnv([]string{"PATH=/bin"}, nil, "", ""), KeyName); n != 0 {
+		t.Fatal("a key appeared from nowhere")
 	}
 }
 
@@ -400,10 +461,9 @@ func TestGrantsDenyAPlainRepositorysHooksAndConfig(t *testing.T) {
 }
 
 // Gemini CLI runs a whole session on every platform, Windows included
-// (ark:rein#151): its private home, trust, the key once, the prompt on stdin,
+// (ark:rein#151): its private home, trust, a stored key once, the prompt on stdin,
 // and a result read from its stream.
 func TestGeminiCLIRunsOnEveryPlatform(t *testing.T) {
-	ResetAntigravity()
 	gemBin, rec := standin(t, Binary, standinConfig{Fixture: "tool.jsonl", Version: "0.64.0"})
 	a := agyAdapter(t, "", gemBin)
 	spec := baseSpec(t)

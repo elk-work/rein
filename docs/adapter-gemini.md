@@ -1,85 +1,105 @@
 # The Gemini adapter
 
-`internal/adapter/gemini` drives Google's **Gemini CLI** (`gemini`) on the
-person's own **Gemini API key**, and, only while Elk's server switches it on,
-**Antigravity**'s command-line program (`agy`) on the same key. Agent kind
-`gemini`. Gemini CLI checked against 0.64 on macOS, 2026-11-04; Antigravity
-against 1.5.5 on macOS, 2026-11-10 (the Antigravity section below).
+`internal/adapter/gemini` drives Google's two coding programs for agent kind
+`gemini`: **Antigravity**'s command-line program (`agy`) where it is
+installed, and **Gemini CLI** (`gemini`) otherwise, each on the person's own
+existing setup. Gemini CLI checked against 0.64 on macOS, 2026-11-04;
+Antigravity against 1.5.5 on macOS, 2026-11-10 and 2026-11-11.
 
-## Why a key, and why only here
+## The person's own setup, like Codex and Claude Code
 
-Every other adapter runs on the developer's own plan login and refuses a
-metered API key. Gemini is the one exception, by Casey's ruling of
-2026-11-04: the person brings their own Google key, it stays on their
-computer, Google bills them, and Elk never sees it. There is no plan-login
-path instead: Google's terms do not allow another program to drive its agent
-on a personal Google sign-in. So Rein never uses a Google sign-in for Gemini.
+Casey's ruling, 2026-11-11: the person already has Antigravity or Gemini CLI
+installed and set up, and Rein starts it with whatever sign-in or key it
+already has. Elk installs nothing, asks for no key and manages no sign-in. He
+accepted, for the person's own account, the risk Google's Antigravity FAQ names
+for driving `agy` from another program on a consumer plan
+(antigravity.google/docs/faq: "not supported under consumer plans" and "can
+result in suspension or termination of your account").
 
-## Why Gemini CLI, and what that leaves out
+This replaces the key-only design of 2026-11-04 to 2026-11-10 (rein#78): no
+key is required, neither program is moved onto a key or off a sign-in, nothing
+that picks a sign-in is stripped from the environment, a repository's own
+Gemini settings are not refused, and Elk's `antigravity` switch is gone (it
+never shipped in a release).
 
-Gemini CLI is what Elk's installer sets up (scout `scripts/connect-agent.mjs`),
-and Google still documents it on a Google AI Studio key for headless use:
+## Which program
 
-> "If you don't want to authenticate using your Google account, you can use an
-> API key from Google AI Studio. … Set the `GEMINI_API_KEY` environment
-> variable to your key." — geminicli.com/docs/get-started/authentication
+A new run is Antigravity where it can be: a Mac or Windows computer (not
+Linux, until its sandbox is measured there), `agy` 1.5.5 or later installed
+(the one measured), and, on Windows, a build whose sandbox runs. Otherwise
+Gemini CLI runs. The program is chosen once when a run starts and held for that
+run. The program version Rein reports says which, `1.5.5 (Antigravity)` or
+`0.64.0 (Gemini CLI)`, and every run's first event says "Running Antigravity on
+this computer's own Antigravity setup". A follow-up round continues a
+conversation only on the program that started it: Antigravity's conversation
+ids are marked `agy:`, and a mismatch is refused rather than started over.
 
-> Gemini CLI "will remain accessible via paid Gemini and Gemini Enterprise
-> Agent Platform API keys." — developers.googleblog.com, "An important update:
-> transitioning Gemini CLI to Antigravity CLI"
+## Not set up
 
-What it leaves out, in Google's words: the Gemini CLI README says "No free
-tier or Google AI plans" (free and Google One accounts "moved to Antigravity
-CLI on June 18, 2026"), lists Gemini CLI for "legacy paid API / Vertex keys",
-and calls it "Not optimized for Gemini 4+"; the authentication page says "To
-use Gemini 4 Argon, please use Antigravity." So a free-tier key, or a Gemini 4
-model, needs Antigravity, which this adapter now drives behind Elk's switch
-(below).
+Headless, neither program can finish a Google sign-in. Measured on the lab
+Mac, 2026-11-11, with `agy` 1.5.5 installed and not signed in:
 
-## The key
+- `agy --print=…` prints "Authentication required. Please visit the URL to log
+  in", a Google sign-in address, "Waiting for authentication (timeout 60s)",
+  and then fails: `authentication failed or timed out`.
+- Fed its prompt on stdin as stream-json, as Rein runs it, it does not wait:
+  the turn ends in about 0.4 seconds with status `ERROR` and
+  `authentication failed or timed out`.
+- `agy models` prints "Please sign in to view available models" and exits 0.
 
-- Stored once: `rein secret set GEMINI_API_KEY` (value on stdin), keychain
-  service `elk-secret`, the same place the Elk app's secrets go.
-- Read by the run loop for a gemini queue alone, at the start of each run,
-  before the worktree. Missing → the run is stuck with *"Add your Google key in
-  Elk to use Gemini."* (stop code `agent_login`), and the queue's setup state
-  reads as needing authentication.
-- Handed to the adapter in `RunSpec.ProviderKey`, never `Env`, and set on the
-  Gemini CLI process as `GEMINI_API_KEY`. Never on a command line, in a log
-  line, or in a file. The run's redactors carry it, so an agent that echoes it
-  has the echo replaced with `[redacted:GEMINI_API_KEY]`.
-- `GEMINI_API_KEY` and `GOOGLE_API_KEY` are metered names in
-  `internal/secretenv`: no run of any kind inherits one, config naming one is
-  refused, and every adapter refuses a spec whose `Env` carries one. A secret
-  of that name chosen in the Elk app is skipped rather than mapped into a
-  queue, since a queue naming it would be refused.
+So Preflight asks `agy models` and fails as **"Set up Antigravity on this
+computer first."** when it says to sign in; a turn that ends with that error
+fails the same way; and a session that prints the sign-in prompt is stopped at
+once, rather than wait for a person who is not there. All three were run live
+on the lab Mac (`TestLiveAgyNotSignedInFailsAsNotSetUp`, 2026-11-11). Both match `adapter.ErrLoginRequired`, so Elk
+hears `agent_login`, as for an expired Claude Code sign-in. Gemini CLI's
+preflight is presence-only (below), and its sign-in prompt ("Opening
+authentication page", "Please visit the following URL to authorize") stops a
+session the same way, as **"Set up Gemini CLI on this computer first."** Not
+installed is the same line, with the program's name.
 
-## Never a Google sign-in
+## A stored key, if there is one
+
+A person whose program runs on a Google key keeps it in their own shell, which
+a Rein service never sees, and no run inherits `GEMINI_API_KEY` or
+`GOOGLE_API_KEY` from the daemon (both are metered names in
+`internal/secretenv`). So a key stored for Rein is used when there is one:
+
+- Stored with `rein secret set GEMINI_API_KEY` (value on stdin), keychain
+  service `elk-secret`. Optional: nothing asks for it, and with none the run
+  goes ahead on the program's own setup.
+- Read by the run loop for a gemini queue alone, handed to the adapter in
+  `RunSpec.ProviderKey`, never `Env`, and set on the program's process as
+  `GEMINI_API_KEY`. Never on a command line, in a log line, or in a file; the
+  run's redactors carry it.
+- Antigravity uses it only when the person's own settings say
+  `"modelProvider": "gemini"`; Gemini CLI uses it when the person's settings
+  choose no sign-in (the key sign-in is then chosen for the run).
+- No other agent, task process or queue environment can carry a Google key:
+  both names stay refused everywhere else.
+
+## Gemini CLI's private home
 
 Each run gets a private Gemini CLI home (`GEMINI_CLI_HOME`, under
-`<rein home>/gemini/runs/`), removed when the session ends. Its
-`settings.json` sets `security.auth.selectedType` and `enforcedType` to
-`gemini-api-key`. Measured: with that and no key, Gemini CLI exits 41 ("you
-must specify the GEMINI_API_KEY environment variable") instead of signing in.
-The private home also means the person's own Gemini settings, cached sign-in,
-extensions and MCP servers — including the Elk connector the installer
-registers at user scope — never reach the run. `HOME` is left alone, so git,
-gh and SSH are the person's own as for every other adapter.
+`<rein home>/gemini/runs/`), removed when the session ends, for the reason
+Codex runs get a private `CODEX_HOME` (`ark:rein#21`): the person's own MCP
+servers, the Elk connector among them, act as the person and must not reach a
+run. What comes in from the person's own home (`$GEMINI_CLI_HOME` or `~`) is
+their sign-in and nothing else:
 
-Two more guards, because a repository's own `.gemini/settings.json` outranks
-the user layer (measured: a checked-in `enforcedType: oauth-personal` opened
-Google's sign-in page):
+- `settings.json` carries only their `security.auth` (or the older top-level
+  `selectedAuthType`), automatic updates off, and the run's own MCP servers.
+- The files that can hold a sign-in are linked, not copied:
+  `gemini-credentials.json`, `oauth_creds.json`, `google_accounts.json` and
+  `.env`. On a Mac Gemini CLI 0.64 keeps a Google sign-in in the keychain, which
+  a private home does not hide; those files are its fallback and older storage
+  (from its own code). Rein never reads them. On Windows a hard link is used
+  where a symbolic link needs a privilege.
 
-- Start refuses a worktree whose `.gemini/settings.json` sets
-  `security.auth.selectedType` or `enforcedType` to anything but
-  `gemini-api-key`, sets `useExternal`, or cannot be read.
-- A session whose stderr says it is opening a Google sign-in is killed at
-  once and fails as not on the key.
-
-The child never inherits `GEMINI_*`, `GOOGLE_GEMINI_*`, `GOOGLE_GENAI_*`,
-`GOOGLE_CLOUD_*`, `GOOGLE_API_KEY` or `GOOGLE_APPLICATION_CREDENTIALS`, any of
-which could change the sign-in, relocate settings or trust, or send the key to
-another host.
+`HOME` is left alone, so git, gh and SSH are the person's own as for every
+other adapter. The child's environment is the scoped inheritance and the
+queue's variables as they are, plus the private home, trust and a stored key,
+which nothing can shadow.
 
 ## Trusted folders (`ark:rein#119`)
 
@@ -113,11 +133,15 @@ per model, prompt tokens split into fresh and cached). Fixtures are in
 
 ## The probe
 
-Preflight checks that `gemini --version` answers and that the key is stored.
-It is presence-only: Gemini CLI has no command that checks a key without
-sending a prompt, and Rein does not call Google's API with the person's key
-itself. A bad key surfaces as the run's own error, in Google's words ("API key
-not valid").
+Gemini CLI: `gemini --version` answers, and it is set up — the person's
+settings choose a sign-in, or a key is stored. Presence-only: Gemini CLI has no
+command that checks a sign-in without sending a prompt, and its Google sign-in
+lives in the keychain, which Rein does not read. A lapsed sign-in or a bad key
+surfaces as the run's own error.
+
+Antigravity: `agy` is installed, its sandbox runs here, and `agy models` does
+not say to sign in (see *Not set up*). An answer Rein cannot read, or none, is
+not held against it; the run will say.
 
 ## Not yet, on Gemini CLI
 
@@ -151,65 +175,25 @@ runs a whole Gemini CLI session. A real Windows run on a real key is a lab step
   `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` and the Vertex AI sign-in
   choice (geminicli.com/docs/get-started/authentication); Antigravity's
   command-line program documents no Vertex key at all, only Google Cloud
-  sign-in (`AGY_ADC_AUTH`), which is a sign-in and so ruled out. Rein strips
-  all of those variables today. Supporting Vertex keys on Gemini CLI needs a
-  project and a location from the person as well as the key, which is new
-  work in the Elk apps as well as here; it is not done.
+  sign-in (`AGY_ADC_AUTH`). A person whose Gemini CLI is set up for Vertex AI
+  in their own settings runs on it, provided those variables reach the
+  service (`inherit_env` on the queue); `GOOGLE_API_KEY` is a metered name and
+  never reaches a run, so Vertex on a key is not covered. Not run with a real
+  company account.
 
-## Antigravity, behind Elk's switch (`ark:rein#121`)
+## Antigravity (`ark:rein#121`)
 
-Google moved free keys and Gemini 4 models to Antigravity. Its help page says
-outside software driving Antigravity breaks its terms on consumer plans, and
-recommends a Google AI Studio or Gemini Enterprise key for third-party agents.
-Whether Elk may run it on a person's key is the question put to Google, so:
+### The person's own sign-in or key
 
-- **The switch is Elk's, and it fails closed.** Each gemini queue's
-  heartbeat reply is that queue's say: `"antigravity": true` is on, anything
-  else is off, and a say counts for 15 minutes (three heartbeats). The switch
-  is on only while at least one say counts and every say that counts is on —
-  so it is off at start-up, two Elk servers that disagree leave it off, and
-  heartbeats that keep failing let it lapse to off. Another kind of queue's
-  reply never touches it. While it is off Rein never executes `agy` — not a
-  run, a version probe or a preflight. Google's yes needs a server change, not
-  a new Rein.
-- **On, a new run is Antigravity where it can be:** a Mac or Windows
-  computer (not Linux, until its sandbox is measured there), version 1.5.5 or
-  later installed (the one measured), and, on Windows, a build whose sandbox
-  runs.
-  Otherwise Gemini CLI runs as before. The program is chosen once when a run
-  starts and held for that run. The program version Rein reports says which
-  runs, `1.5.5 (Antigravity)` or `0.64.0 (Gemini CLI)`, and is read again at
-  the next heartbeat after the switch flips; every run's first event says
-  "Running Antigravity on the person's own Google key".
-- **A run under way when it flips** finishes on its program. Its follow-up
-  rounds (a review, a missing summary, a stall restart) continue the same
-  conversation only on the program that started it: Antigravity's
-  conversation ids are marked `agy:`, and a mismatch is refused rather than
-  started over with only the follow-up's words.
-
-### The key, never a Google sign-in
-
-agy uses a key only when its settings say `"modelProvider": "gemini"`. Rein
-passes that with `--settings`, which applies to the one session and is never
-saved, so the person's own `agy` is never moved onto their key. Measured:
-
-- with it, the model call carries the key in `x-goog-api-key` and no
-  `Authorization` header;
-- with it and no key, agy refuses to start ("modelProvider is set to
-  \"gemini\" … but the GEMINI_API_KEY environment variable is not set");
-- a run behind a logging proxy reached only the stand-in for the model, plus
-  agy's update check and `play.googleapis.com` (its usage reporting) — no
-  Google sign-in endpoint. That was on a machine with no Antigravity sign-in;
-  the same check on a machine signed in to Antigravity is the lab step below.
-
-A saved Google sign-in lives in the operating system's keyring, not in a
-folder, so a private home would not hide it; the session settings are the
-guard. The child never inherits `AGY_*` (`AGY_ADC_AUTH` and `AGY_ACCOUNT` pick
-a sign-in or Google Cloud billing; `AGY_LLM_GATEWAY_*` reroutes the key),
-`ANTIGRAVITY_*`, `JETSKI_*`, `GEMINI_*`, `GOOGLE_GEMINI_*` (the base URL would
-send the key elsewhere), `GOOGLE_GENAI_*`, `GOOGLE_CLOUD_*`, `GOOGLE_API_KEY`
-or `GOOGLE_APPLICATION_CREDENTIALS`, in any case. A session whose stderr says
-it is starting a sign-in is killed and fails as not on the key.
+Rein's session settings name no model provider, so the person's own
+Antigravity settings decide between their saved Google sign-in (kept in the
+operating system's keyring) and their key (`"modelProvider": "gemini"` plus
+`GEMINI_API_KEY`, antigravity.google/docs/install). `--settings` applies to the
+one session and is never saved. Earlier measurements, still true of a person
+on a key: the model call carries the key in `x-goog-api-key` and no
+`Authorization` header; with `modelProvider` set and no key, agy refuses to
+start; a run behind a logging proxy reached only the model, agy's update check
+and `play.googleapis.com` (its usage reporting).
 
 ### Edits stay in the task's folder, by Antigravity's own rules
 
@@ -281,9 +265,10 @@ write. (`--mode plan` has no effect alongside `--disable-slash-commands`.)
   `._:/@+-`) is refused: on Windows, Gemini CLI's npm shim runs through
   `cmd.exe`, which does not escape special characters.
 - **mcp** is `no`: agy takes no server from Rein (no settings key for one), so
-  the Elk run connector is not offered, and with the switch on, a run on a
-  queue that names MCP servers is refused rather than run without them
-  (`ark:rein#120`).
+  the Elk run connector is not offered, and an Antigravity run on a queue that
+  names MCP servers is refused rather than run without them (`ark:rein#120`).
+  The person's own servers load, and their tools are denied by rule
+  (`mcp(*)`).
 - **Not covered by Antigravity's rules:** Rein's own git commands in a
   worktree a run has written (removing it, inspecting it) do not yet turn off
   hooks and fsmonitor or skip submodules the run might have added. That
@@ -294,17 +279,26 @@ write. (`--mode plan` has no effect alongside `--disable-slash-commands`.)
 ## Proof
 
 - `go test ./internal/adapter/gemini/` — stand-ins for both programs, on
-  macOS, Linux and Windows in CI.
+  macOS, Linux and Windows in CI. The tests hide any real `agy` on the machine
+  (an empty HOME, PATH without it) and refuse to run if it is still
+  reachable: Rein runs `agy` wherever it is installed, and the machine's own
+  is signed in to somebody's Google account.
 - `REIN_AGY_LIVE=1 go test -tags integration ./internal/adapter/gemini/ -run
-  LiveAgy -v` — the real `agy` against a stand-in for the Gemini API (no
-  Google call), every request through a logging proxy whose host list is
-  printed: a fake key reaches only the key endpoint; edits and commands stay
+  LiveAgy -v` — the real `agy`, playing a person whose own settings put it on
+  a key, against a stand-in for the Gemini API (no Google call), every request
+  through a logging proxy whose host list is printed: a fake key reaches only the key endpoint; edits and commands stay
   in a linked worktree; a commit lands; a write outside is refused and the run
   is not done. `REIN_AGY_PRIVATE_HOME=1` runs it away from the machine's own
   home; leave it unset on a lab machine signed in to Antigravity, where the
   point is to run beside that sign-in.
 - Add `REIN_AGY_LIVE_KEY_FILE=<file holding a real key>` to send one small task
   to Google on that key and check the file and commit it makes.
+- `REIN_AGY_LIVE_NOT_SIGNED_IN=1`, on a machine where agy is installed and not
+  signed in: Preflight says "Set up Antigravity on this computer first", and a
+  run fails the same way within seconds.
+- `REIN_AGY_LIVE_SIGNED_IN=1`, on a machine a person has signed in to
+  Antigravity: one small task on that sign-in, no key. Signing in is a
+  person's step; an agent never signs in to Google.
 
 ## Checking it
 

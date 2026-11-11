@@ -28,6 +28,7 @@ type session struct {
 	grace   time.Duration
 	red     *secretenv.Redactor
 	stderr  *stderrWatch
+	authErr []string
 
 	events chan adapter.Event
 	done   chan struct{}
@@ -43,9 +44,9 @@ type session struct {
 	err         error
 }
 
-// signInMarkers are Gemini CLI's words when it is about to start a Google
-// sign-in. Rein's settings make that unreachable; seeing one anyway stops the
-// session at once rather than let a sign-in proceed.
+// signInMarkers are Gemini CLI's words when it is not signed in and starts a
+// Google sign-in. Headless, nobody is there to finish it, so seeing one stops
+// the session at once and the run fails as "set up Gemini CLI first".
 var signInMarkers = []string{"Opening authentication page", "Waiting for auth", "Code Assist login required",
 	"Please visit the following URL to authorize"}
 
@@ -59,14 +60,15 @@ type launch struct {
 	key     string
 	decode  func([]byte) (decoded, error)
 	signIn  []string
-	fold    bool // match signIn without regard to case
+	fold    bool     // match signIn without regard to case
+	authErr []string // the program's turn error when it is not signed in
 	cleanup func()
 }
 
 // startProcess launches Gemini CLI.
 func (a *Adapter) startProcess(spec adapter.RunSpec, bin string, args []string, h *home, key string) (adapter.Session, error) {
 	return a.launch(spec, launch{
-		program: "Gemini CLI", bin: bin, args: args, env: h.childEnv(spec.InheritedEnv(), spec.Env, key),
+		program: GeminiCLIName, bin: bin, args: args, env: h.childEnv(spec.InheritedEnv(), spec.Env, key),
 		stdin: []byte(promptText(spec)), key: key, decode: decode, signIn: signInMarkers, fold: true, cleanup: h.remove,
 	})
 }
@@ -93,9 +95,10 @@ func (a *Adapter) launch(spec adapter.RunSpec, l launch) (adapter.Session, error
 		program: l.program,
 		decode:  l.decode,
 		cleanup: l.cleanup,
+		authErr: l.authErr,
 		started: time.Now(),
 		grace:   a.InterruptGrace,
-		red:     secretenv.NewRedactor(map[string]string{KeyName: l.key}),
+		red:     secretenv.NewRedactor(keyValues(l.key)),
 		events:  make(chan adapter.Event),
 		done:    make(chan struct{}),
 		model:   spec.Model,
@@ -209,7 +212,8 @@ func (s *session) kill() error {
 
 const killRepeat = 250 * time.Millisecond
 
-// stopSignIn kills the session the moment Gemini CLI starts a Google sign-in.
+// stopSignIn kills the session the moment the program starts a Google sign-in
+// that nobody is there to finish.
 func (s *session) stopSignIn() {
 	s.mu.Lock()
 	already := s.signIn
@@ -245,8 +249,8 @@ func (s *session) run(stdout io.Reader) {
 	defer close(s.done)
 	defer close(s.events)
 
-	s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "Running " + s.program + " on the person's own Google key"})
-	if s.spec.Effort != "" && s.program == "Gemini CLI" {
+	s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "Running " + s.program + " on this computer's own " + s.program + " setup"})
+	if s.spec.Effort != "" && s.program == GeminiCLIName {
 		s.emit(adapter.Event{Kind: adapter.EventProgress,
 			Text: "Gemini CLI has no reasoning-effort setting, so the queue's effort " + s.spec.Effort + " was not applied"})
 	}
@@ -309,7 +313,7 @@ func (s *session) run(stdout io.Reader) {
 	switch {
 	case signIn:
 		r.Status = adapter.StatusFailed
-		err = &signInError{why: s.program + " began a Google sign-in, so Rein stopped it"}
+		err = notSetUp(s.program, "it is not signed in on this computer and asked for a Google sign-in, which nobody is there to finish")
 	case timedOut:
 		r.Status = adapter.StatusTimedOut
 		err = fmt.Errorf("gemini: the session ran past its %s limit and was stopped", s.spec.Timeouts.Total)
@@ -321,6 +325,9 @@ func (s *session) run(stdout io.Reader) {
 		err = s.noResult(scanErr, waitErr)
 	case res.ok:
 		r.Status = adapter.StatusSucceeded
+	case s.isAuthErr(res.error):
+		r.Status = adapter.StatusFailed
+		err = notSetUp(s.program, "it is not signed in on this computer: "+s.red.String(res.error))
 	default:
 		r.Status = adapter.StatusFailed
 		err = fmt.Errorf("gemini: %s ended the turn with an error: %s", s.program, s.red.String(res.error))
@@ -416,4 +423,25 @@ func (w *stderrWatch) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return string(w.buf)
+}
+
+// keyValues is what a session's redactor hides: a stored key, when there is
+// one.
+func keyValues(key string) map[string]string {
+	if key == "" {
+		return nil
+	}
+	return map[string]string{KeyName: key}
+}
+
+// isAuthErr reports whether a turn's error is the program saying it is not
+// signed in.
+func (s *session) isAuthErr(msg string) bool {
+	msg = strings.ToLower(msg)
+	for _, m := range s.authErr {
+		if strings.Contains(msg, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return false
 }

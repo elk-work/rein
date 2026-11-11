@@ -231,25 +231,17 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 
 	qr.setPreflightState("ready")
 
-	// The person's own Google key, for a gemini queue and no other (Casey's
-	// ruling, 2026-11-04; gemini.go). Read fresh for each run, before the
-	// worktree, and put in every redactor below before the agent can say
-	// anything. It travels in ProviderKey, never Env, so no other adapter and
-	// no task process can be handed it.
+	// A Google key the person stored for Rein, for a gemini queue and no
+	// other (gemini.go). Optional: with none, the program runs on its own
+	// setup. Read fresh for each run and put in every redactor below before
+	// the agent can say anything. It travels in ProviderKey, never Env, so no
+	// other adapter and no task process can be handed it.
 	var providerKey map[string]string
 	if qr.q.AgentKind == geminiadapter.Kind && !qr.r.opts.Hosted {
-		key, err := qr.resolveGeminiKey()
-		if err != nil {
-			qr.setPreflightState(agentSetupFailure(err))
-			code := "other"
-			if errors.Is(err, adapter.ErrNoProviderKey) {
-				code = "agent_login"
-			}
-			return qr.stuckCode(ctx, wo, truncate(firstLine(err.Error()), 200), err.Error()+
-				"\n\nNothing was started and no worktree was created.", code)
+		if key := qr.storedGeminiKey(); key != "" {
+			spec.ProviderKey = key
+			providerKey = map[string]string{geminiadapter.KeyName: key}
 		}
-		spec.ProviderKey = key
-		providerKey = map[string]string{geminiadapter.KeyName: key}
 	}
 
 	// A scoped queue's secrets, read fresh for this run so a rotated item

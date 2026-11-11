@@ -10,8 +10,8 @@ binary installed as a user service (launchd, Windows service,
 queue per agent kind, claims the runs Elk dispatches to those queues, and
 drives a coding-agent session against each one in an isolated git worktree —
 Claude Code, Codex, Grok Build or Gemini CLI, shelled out as the vendor's own
-binary on the developer's own login — or, for Google's programs alone, on the
-person's own Google key (see *Gemini on your own Google key* below). It watches each session through structured events,
+binary on the developer's own login, or Antigravity in place of Gemini CLI
+where it is installed (see *Gemini and Antigravity* below). It watches each session through structured events,
 reports progress and the deliverable back to Elk, and recycles the worktree.
 
 The agents run on your machine, under your logins, against your checkouts.
@@ -800,36 +800,23 @@ onto metered API billing:
   session before its first tool call, and the run is reported `stuck` as
   *"The agent was not on the plan login, so Rein stopped it"* with the reason.
 
-**Gemini on your own Google key.** The one exception to the plan-login rule,
-by Casey's ruling of 2026-11-04: a `gemini` queue drives Google's Gemini CLI
-on the person's own Gemini API key. The key stays on the computer, Google
-bills the person, and Elk never sees it. Store it once —
-`rein secret set GEMINI_API_KEY` (the value is read from stdin), or from the
-Elk app — and every gemini run reads it from the keychain, hands it to Gemini
-CLI alone as `GEMINI_API_KEY`, and redacts it from everything Rein writes. No
-other agent, task process or queue environment can carry it: both Google key
-names stay on the refused list above. Rein never uses a Google sign-in for
-Gemini — Google's terms do not allow another program to drive its agent on
-one — and is built so it cannot: each run gets a private Gemini CLI home whose
-settings enforce the key, a repository whose own `.gemini/settings.json`
-chooses another sign-in is refused, and a session that starts a Google sign-in
-anyway is stopped. With no key stored the run is stuck with *"Add your Google
-key in Elk to use Gemini."* Install Gemini CLI with `brew install gemini-cli`
-(or `npm install -g @google/gemini-cli`, the route on Windows). Gemini runs on
-macOS, Linux and Windows.
-
-**Antigravity, behind Elk's switch.** A gemini queue can also drive
-Antigravity's command-line program (`agy`) on the same key, but only while
-Elk's server switches it on (the heartbeat reply's `antigravity` field). It is
-off by default and stays off until Google confirms in writing that Elk may run
-Antigravity on a person's key; while off, Rein never executes `agy`. It is on
-only while every gemini queue's Elk server says so, and lapses to off when
-heartbeats stop. On, with `agy` 1.5.5 or later installed, a new run uses it: key mode is set in the session's own
-settings, never in the person's file; edits and commands stay in the task's
-folder through Antigravity's own permission rules and terminal sandbox, never
-by skipping its checks; and Elk is told which program ran (`1.5.5
-(Antigravity)` as the program version). On Windows older than 11 24H2,
-Gemini CLI runs instead. docs/adapter-gemini.md has the detail.
+**Gemini and Antigravity.** A `gemini` queue drives Antigravity's
+command-line program (`agy` 1.5.5 or later) where it is installed, and Google's
+Gemini CLI otherwise, each on whatever the person already has set up — their
+Google sign-in or their key — exactly as Codex and Claude Code run on theirs
+(Casey's ruling, 2026-11-11). Elk installs nothing, asks for no key and manages
+no sign-in. A program that is not installed, or not signed in, stops the run
+with *"Set up Antigravity on this computer first."* (or Gemini CLI), stop code
+`agent_login`; Rein does not wait on a sign-in nobody is there to finish. A key
+stored with `rein secret set GEMINI_API_KEY` is optional: when there is one, a
+gemini run alone is handed it as `GEMINI_API_KEY`, and it is redacted from
+everything Rein writes; both Google key names stay refused everywhere else.
+Gemini CLI runs under a private home that carries only the person's sign-in,
+so their own MCP servers never reach a run. Antigravity's edits and commands
+stay in the task's folder through its own permission rules and terminal
+sandbox, never by skipping its checks, and an action it refused is reported as
+failed. Gemini CLI runs on macOS, Linux and Windows; Antigravity on macOS and
+Windows 11 24H2 or later. docs/adapter-gemini.md has the detail.
 
 **Hosted mode.**
 

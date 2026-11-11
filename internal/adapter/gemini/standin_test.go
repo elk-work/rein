@@ -26,7 +26,8 @@ type standinConfig struct {
 	Hang    bool   `json:"hang"`     // after stderr, wait to be killed
 	Version string `json:"version"`  // what --version prints
 	Rec     string `json:"rec"`      // where to record what it saw
-	WantKey string `json:"want_key"` // the key it expects in GEMINI_API_KEY
+	NeedKey bool   `json:"need_key"` // play a person whose settings say modelProvider gemini
+	Models  string `json:"models"`   // what `agy models` prints
 }
 
 // standinRecord is what the stand-in saw.
@@ -42,7 +43,45 @@ func TestMain(m *testing.M) {
 	if name == AgyBinary || name == Binary {
 		os.Exit(runStandin())
 	}
+	if os.Getenv("REIN_AGY_LIVE") != "1" {
+		if err := hideRealAntigravity(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	}
 	os.Exit(m.Run())
+}
+
+// hideRealAntigravity keeps the unit tests from ever finding the Antigravity
+// installed on the machine running them, which is signed in to somebody's
+// Google account: Rein runs agy wherever it is installed, so a test that names
+// no stand-in would otherwise start the real one. HOME (where Google's
+// installer puts agy) becomes an empty folder, and every PATH folder holding
+// an agy is dropped. The live tests (REIN_AGY_LIVE=1) mean to find it.
+func hideRealAntigravity() error {
+	home, err := os.MkdirTemp("", "rein-gemini-test-home-")
+	if err != nil {
+		return err
+	}
+	for _, k := range []string{"HOME", "USERPROFILE"} {
+		os.Setenv(k, home)
+	}
+	os.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	var keep []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if _, err := os.Stat(filepath.Join(dir, AgyBinary)); err == nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, AgyBinary+".exe")); err == nil {
+			continue
+		}
+		keep = append(keep, dir)
+	}
+	os.Setenv("PATH", strings.Join(keep, string(os.PathListSeparator)))
+	if _, err := (&Adapter{}).resolveAgy(); err == nil {
+		return fmt.Errorf("the real Antigravity is still reachable; refusing to run tests that could start it")
+	}
+	return nil
 }
 
 func runStandin() int {
@@ -66,11 +105,17 @@ func runStandin() int {
 		appendFile(filepath.Join(c.Rec, "versions"), "asked\n")
 		return 0
 	}
+	if len(os.Args) > 1 && os.Args[1] == "models" {
+		// agy exits 0 whether or not it is signed in (measured).
+		fmt.Println(c.Models)
+		appendFile(filepath.Join(c.Rec, "models"), os.Getenv(KeyName)+"\n")
+		return 0
+	}
 	in, _ := io.ReadAll(os.Stdin)
 	wd, _ := os.Getwd()
 	rec, _ := json.Marshal(standinRecord{Args: os.Args[1:], Env: os.Environ(), Stdin: string(in), Dir: wd})
 	_ = os.WriteFile(filepath.Join(c.Rec, "run.json"), rec, 0o600)
-	if os.Getenv(KeyName) == "" {
+	if c.NeedKey && os.Getenv(KeyName) == "" {
 		fmt.Fprintln(os.Stderr, `modelProvider is set to "gemini" in settings.json, but the GEMINI_API_KEY environment variable is not set.`)
 		return 1
 	}
@@ -155,12 +200,12 @@ func envValue(env []string, name string) (string, int) {
 	return v, n
 }
 
-// switchOn turns the Antigravity switch on for one test.
-func switchOn(t *testing.T) {
+// agyOn lets a test drive the Antigravity stand-in on Linux too, where Rein
+// does not drive the real one yet.
+func agyOn(t *testing.T) {
 	t.Helper()
-	SetAntigravity("test", true)
 	agyLinux = true
-	t.Cleanup(func() { ResetAntigravity(); agyLinux = false })
+	t.Cleanup(func() { agyLinux = false })
 }
 
 func readRecordErr(rec string) (standinRecord, error) {

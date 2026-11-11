@@ -5,6 +5,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -38,6 +39,14 @@ import (
 //
 // HOME is left as it is unless REIN_AGY_PRIVATE_HOME=1: the point on a lab
 // machine signed in to Antigravity is to run beside that sign-in.
+//
+// The person's own setup, which is how Rein runs it (Casey, 2026-11-11):
+//
+//   - REIN_AGY_LIVE_NOT_SIGNED_IN=1, on a machine where agy is installed and
+//     not signed in: Preflight says "set up Antigravity first", and a run fails
+//     the same way within seconds instead of waiting on a sign-in.
+//   - REIN_AGY_LIVE_SIGNED_IN=1, on a machine a person has signed in to
+//     Antigravity: one small task on that sign-in, no key, sent to Google.
 
 // realHome is the home before any private one replaces it.
 var realHome string
@@ -59,8 +68,20 @@ func liveAgy(t *testing.T) *Adapter {
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
 	}
-	SetAntigravity("test", true)
-	t.Cleanup(ResetAntigravity)
+	// Play a person whose own Antigravity settings put it on a key, so these
+	// talk to the stand-in rather than to Google on whatever sign-in the
+	// machine has. Rein itself names no model provider.
+	a.agyTestSettings = map[string]any{"modelProvider": "gemini"}
+	return a
+}
+
+// liveAgyAsIs is the real Antigravity exactly as Rein runs it: the machine's
+// own setup, no stand-in, no key.
+func liveAgyAsIs(t *testing.T) *Adapter {
+	t.Helper()
+	a := liveAgy(t)
+	a.agyTestSettings = nil
+	a.Items = items{}
 	return a
 }
 
@@ -365,4 +386,57 @@ func TestLiveAgyRealKeyFinishesATask(t *testing.T) {
 	}
 	t.Logf("last commit: %s; usage %+v; summary %q", strings.TrimSpace(string(out)), res.Usage, res.Summary)
 	e.assertNoSignIn(t)
+}
+
+// Not signed in, Antigravity is "not set up": Preflight says so, and a run
+// fails as a login failure within seconds rather than waiting sixty seconds
+// for a sign-in nobody can finish.
+func TestLiveAgyNotSignedInFailsAsNotSetUp(t *testing.T) {
+	if os.Getenv("REIN_AGY_LIVE_NOT_SIGNED_IN") != "1" {
+		t.Skip("set REIN_AGY_LIVE_NOT_SIGNED_IN=1 on a machine where agy is installed and not signed in")
+	}
+	a := liveAgyAsIs(t)
+	err := a.Preflight(context.Background())
+	if !errors.Is(err, adapter.ErrLoginRequired) || !strings.Contains(err.Error(), NotSetUpLine(AgyName)) {
+		t.Fatalf("Preflight: %v", err)
+	}
+	t.Logf("Preflight: %v", err)
+	_, wt := linkedWorktree(t)
+	spec := liveSpec(t, wt)
+	spec.ProviderKey = ""
+	start := time.Now()
+	res, err := liveRun(t, a, spec)
+	took := time.Since(start)
+	if res.Status != adapter.StatusFailed || !errors.Is(err, adapter.ErrLoginRequired) {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if took > 30*time.Second {
+		t.Fatalf("the run took %s: it waited on the sign-in", took)
+	}
+	t.Logf("run: %v (after %s)", err, took.Round(time.Millisecond))
+}
+
+// Signed in, Antigravity finishes a small task on that sign-in with no key.
+func TestLiveAgySignedInFinishesATask(t *testing.T) {
+	if os.Getenv("REIN_AGY_LIVE_SIGNED_IN") != "1" {
+		t.Skip("set REIN_AGY_LIVE_SIGNED_IN=1 on a machine a person has signed in to Antigravity")
+	}
+	a := liveAgyAsIs(t)
+	if err := a.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	_, wt := linkedWorktree(t)
+	spec := liveSpec(t, wt)
+	spec.ProviderKey = ""
+	spec.Model = os.Getenv("REIN_AGY_LIVE_MODEL")
+	spec.Prompt = realKeyTask
+	res, err := liveRun(t, a, spec)
+	if err != nil || res.Status != adapter.StatusSucceeded {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	b, err := os.ReadFile(filepath.Join(wt, "hello.txt"))
+	if err != nil || !strings.Contains(string(b), "hi") {
+		t.Fatalf("hello.txt: %q %v", b, err)
+	}
+	t.Logf("usage %+v; summary %q", res.Usage, res.Summary)
 }

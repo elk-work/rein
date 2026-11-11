@@ -33,7 +33,8 @@ func liveAdapter(t *testing.T) *Adapter {
 	if err != nil {
 		t.Skipf("Gemini CLI is not installed: %v", err)
 	}
-	return &Adapter{binary: bin, Root: t.TempDir(), Items: items{KeyService + "/" + KeyName: testKey}}
+	// A home with no sign-in chosen, so the stored key is the setup.
+	return &Adapter{binary: bin, Root: t.TempDir(), RealHome: t.TempDir(), Items: items{KeyService + "/" + KeyName: testKey}}
 }
 
 // The whole path: the private home puts Gemini CLI on the key, the key reaches
@@ -76,7 +77,7 @@ func TestLiveTheWorktreeIsTrustedSoItsServersConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec.MCPServers = map[string]any{"probe": srv}
-	h, err := a.newHome(spec)
+	h, err := a.newHome(spec, testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,6 @@ func TestLiveGeminiCLIRealKeyFinishesATask(t *testing.T) {
 	if path == "" {
 		t.Skip("set REIN_GEMINI_LIVE_KEY_FILE to a file holding a real paid key")
 	}
-	ResetAntigravity()
 	a := liveAdapter(t)
 	raw, err := os.ReadFile(path)
 	if err != nil {

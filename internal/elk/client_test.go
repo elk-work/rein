@@ -330,24 +330,3 @@ func TestHeartbeatReadsReconnect(t *testing.T) {
 		}
 	}
 }
-
-// Elk's Antigravity switch (Elk #1755) is on only for a reply that says true.
-func TestHeartbeatReadsTheAntigravitySwitch(t *testing.T) {
-	s := elktest.New(t, "tok")
-	c, err := elk.New(s.URL, "tok", elk.WithoutInitialize())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Reply(elk.ToolHeartbeatExecutor, elktest.Reply{Text: "ok", Structured: map[string]any{"antigravity": true}})
-	hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Queue: "q"})
-	if err != nil || !hb.Antigravity {
-		t.Fatalf("hb=%+v err=%v", hb, err)
-	}
-	for _, st := range []map[string]any{nil, {"antigravity": false}, {"antigravity": "true"}, {"antigravity": nil}, {"antigravity": 1}} {
-		s.Reply(elk.ToolHeartbeatExecutor, elktest.Reply{Text: "ok", Structured: st})
-		hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Queue: "q"})
-		if err != nil || hb.Antigravity {
-			t.Fatalf("for %v: hb=%+v err=%v", st, hb, err)
-		}
-	}
-}
