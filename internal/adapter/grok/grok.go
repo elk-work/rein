@@ -181,8 +181,9 @@ func (a *Adapter) Models() []string {
 }
 
 // parseModels reads model ids from `grok models`: after the "logged in" line,
-// a line is a model when it has at most three fields and its first (after an
-// optional bullet) is `grok-` plus [a-z0-9.-]. Collecting stops at the first
+// a line is a model when its first field (after an optional
+// bullet) is `grok-` plus [a-z0-9.-] and it is alone or followed by a tab or two
+// or more spaces (a table column), never a single space. Collecting stops at the first
 // other non-blank line once an id was found, so trailing prose is never read as
 // a model. Anything else gives nil. Nothing here is checked against a real grok
 // capture.
@@ -194,11 +195,17 @@ func parseModels(text string) []string {
 			seen = loggedIn(line)
 			continue
 		}
-		f := strings.Fields(strings.TrimLeft(strings.TrimSpace(line), "-*• "))
+		t := strings.TrimLeft(strings.TrimSpace(line), "-*• ")
+		id, rest, _ := strings.Cut(t, " ")
+		if i := strings.IndexByte(id, '\t'); i >= 0 {
+			id, rest = t[:i], t[i:]
+		} else if rest != "" {
+			rest = " " + rest
+		}
 		switch {
-		case len(f) == 0:
-		case len(f) <= 3 && modelIDRE.MatchString(f[0]):
-			ids = append(ids, f[0])
+		case t == "":
+		case modelIDRE.MatchString(id) && (rest == "" || rest[0] == '\t' || strings.HasPrefix(rest, "  ")):
+			ids = append(ids, id)
 		case len(ids) > 0:
 			return ids
 		}

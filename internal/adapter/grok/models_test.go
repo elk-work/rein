@@ -47,6 +47,16 @@ func TestParseModelsIgnoresProse(t *testing.T) {
 	}
 }
 
+func TestParseModelsColumns(t *testing.T) {
+	if got := parseModels("You are logged in.\ngrok-4 is deprecated\n"); got != nil {
+		t.Errorf("single-space prose gave %v, want nil", got)
+	}
+	got := parseModels("You are logged in.\ngrok-4\t131k\ngrok-3   131k\n")
+	if want := []string{"grok-4", "grok-3"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("columns = %v, want %v", got, want)
+	}
+}
+
 func TestPreflightKeepsModels(t *testing.T) {
 	path, _ := fakeGrok(t, modelsSample, "unused", 0)
 	a := New()
