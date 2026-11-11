@@ -28,7 +28,12 @@ A run goes on a key, and only on a key (`keyAuth` in `home.go`):
 | settings choose a Google sign-in, or nothing, and `~/.gemini/.env` is there or a key is stored for Rein | runs on the Gemini API key sign-in |
 | no key anywhere | refused: **"Set up Gemini CLI on this computer with your own Google AI Studio or Google Cloud key first."** |
 
-Rein looks only at whether `.env` exists, never inside it. The refusal matches
+The run's settings carry that one choice and enforce it (`enforcedType`), and
+nothing else of the person's `security.auth`. Gemini CLI then refuses to start
+on any other sign-in, whatever else would choose one; unattended, it takes the
+settings' choice before the environment's (its `validateNonInteractiveAuth`,
+read 2026-11-11). Rein looks only at whether `.env` exists, never inside it.
+The refusal matches
 `adapter.ErrLoginRequired` and `adapter.ErrPreflight`, so Elk hears
 `agent_login`, as for an expired Claude Code sign-in; Preflight says the same.
 Not installed is the same line.
@@ -38,8 +43,8 @@ Three more guards keep a run off a Google sign-in:
 - **A repository's own settings.** Gemini CLI layers a worktree's
   `.gemini/settings.json` over the user's (measured: a checked-in
   `enforcedType: oauth-personal` opened Google's sign-in page). A repository
-  whose settings choose anything but a key, or that Rein cannot read, is
-  refused before anything starts (`checkWorkspaceAuth`, `ErrNotPlanAuth`).
+  whose settings choose anything but the Gemini API key, or that Rein cannot
+  read, is refused before anything starts (`checkWorkspaceAuth`, `ErrNotPlanAuth`).
 - **The environment.** `GOOGLE_GENAI_USE_GCA`, which picks a Google sign-in,
   never reaches a run, whatever the daemon or a queue says.
 - **A sign-in prompt.** A session that prints Gemini CLI's sign-in prompt

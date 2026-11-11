@@ -217,7 +217,7 @@ func TestTheHomeCarriesThePersonsKeySetUpAndTheRunsServers(t *testing.T) {
 	conf := filepath.Join(real, ".gemini")
 	must(t, os.MkdirAll(conf, 0o700))
 	must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`// theirs
-{"security":{"auth":{"selectedType":"vertex-ai"}},"mcpServers":{"elk":{"httpUrl":"https://elk.example/mcp"}}}`), 0o600))
+{"security":{"auth":{"selectedType":"vertex-ai","useExternal":true}},"mcpServers":{"elk":{"httpUrl":"https://elk.example/mcp"}}}`), 0o600))
 	must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte(".env"), 0o600))
 	for _, f := range signInFiles {
 		must(t, os.WriteFile(filepath.Join(conf, f), []byte(f), 0o600))
@@ -242,8 +242,8 @@ func TestTheHomeCarriesThePersonsKeySetUpAndTheRunsServers(t *testing.T) {
 		MCPServers map[string]map[string]any `json:"mcpServers"`
 	}
 	must(t, json.Unmarshal(blob, &s))
-	if s.Security.Auth["selectedType"] != "vertex-ai" || s.Security.Auth["enforcedType"] != "" {
-		t.Errorf("auth = %v, want the person's own key choice and nothing added", s.Security.Auth)
+	if s.Security.Auth["selectedType"] != "vertex-ai" || s.Security.Auth["enforcedType"] != "vertex-ai" || len(s.Security.Auth) != 2 {
+		t.Errorf("auth = %v, want the person's own key choice, enforced, and nothing else of theirs", s.Security.Auth)
 	}
 	if s.General["enableAutoUpdate"] {
 		t.Error("the run may update Gemini CLI")
@@ -334,8 +334,8 @@ func TestARunGoesOnlyOnAKey(t *testing.T) {
 				} `json:"security"`
 			}
 			must(t, json.Unmarshal(blob, &got))
-			if got.Security.Auth["selectedType"] != c.want {
-				t.Errorf("auth %v, want %q", got.Security.Auth, c.want)
+			if got.Security.Auth["selectedType"] != c.want || got.Security.Auth["enforcedType"] != c.want {
+				t.Errorf("auth %v, want %q chosen and enforced", got.Security.Auth, c.want)
 			}
 			if strings.Contains(string(blob), testKey) {
 				t.Error("the key was written into the settings")
@@ -358,7 +358,8 @@ func TestCheckWorkspaceAuth(t *testing.T) {
 		{`{"security":{"auth":{"useExternal":true}}}`, true},
 		{`not json`, true},
 		{`{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, false},
-		{`{"security":{"auth":{"selectedType":"vertex-ai","enforcedType":"vertex-ai"}}}`, false},
+		{`{"security":{"auth":{"selectedType":"vertex-ai"}}}`, true},
+		{`{"selectedAuthType":"gemini-api-key"}`, false},
 		{"// a comment\n{\"general\":{\"vimMode\":true}}", false},
 		{`{"mcpServers":{}}`, false},
 	}

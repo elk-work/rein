@@ -25,11 +25,14 @@ import (
 // What comes in from the person's own home is their key setup and nothing
 // else (keyAuth):
 //
-//   - settings.json carries their `security.auth` (or the older top-level
-//     `selectedAuthType`) only when it chooses a key: the Gemini API key
-//     sign-in or Vertex AI. A choice of a Google sign-in is never carried: the
-//     run is put on the key sign-in instead when there is a key, and refused
-//     when there is none. Rein never drives a personal Google sign-in.
+//   - settings.json carries their sign-in choice (`security.auth.selectedType`,
+//     or the older top-level `selectedAuthType`) only when it is a key: the
+//     Gemini API key or Vertex AI. A choice of a Google sign-in is never
+//     carried: the run is put on the key sign-in instead when there is a key,
+//     and refused when there is none. The run's settings also enforce that
+//     choice (`enforcedType`), so Gemini CLI refuses to start on any other,
+//     whatever else would choose one. Rein never drives a personal Google
+//     sign-in.
 //   - Their `.env`, where Gemini CLI reads a key, is linked, not copied
 //     (keyFiles). Rein never opens it. The files that hold a Google sign-in
 //     are never linked.
@@ -98,17 +101,18 @@ func personAuth(geminiDir string) map[string]any {
 	return nil
 }
 
-// keyAuth is the sign-in choice a run's settings carry: the person's own when
-// it is a key (keyAuthTypes); otherwise the Gemini API key sign-in, when a key
-// is stored for Rein or their `.env` can give one (only its presence is looked
-// at; Rein never opens it). With neither it is the not-set-up refusal.
+// keyAuth is the sign-in choice a run's settings carry, and enforce: the
+// person's own when it is a key (keyAuthTypes), and nothing else of their
+// `security.auth`; otherwise the Gemini API key sign-in, when a key is stored
+// for Rein or their `.env` can give one (only its presence is looked at; Rein
+// never opens it). With neither it is the not-set-up refusal.
 func keyAuth(geminiDir string, storedKey bool) (map[string]any, error) {
 	auth := personAuth(geminiDir)
 	if t, _ := auth["selectedType"].(string); keyAuthTypes[t] {
-		return auth, nil
+		return map[string]any{"selectedType": t, "enforcedType": t}, nil
 	}
 	if storedKey || hasEnvFile(geminiDir) {
-		return map[string]any{"selectedType": apiKeyAuth}, nil
+		return map[string]any{"selectedType": apiKeyAuth, "enforcedType": apiKeyAuth}, nil
 	}
 	if auth != nil {
 		return nil, notSetUp("its settings choose a Google sign-in, which Rein never drives, and it has no key")
@@ -254,7 +258,7 @@ func (h *home) childEnv(base []string, over map[string]string, key string) []str
 }
 
 // checkWorkspaceAuth refuses a worktree whose checked-in Gemini settings
-// choose anything but a key. Gemini CLI layers the workspace's
+// choose anything but the Gemini API key. Gemini CLI layers the workspace's
 // .gemini/settings.json over the private home's (measured: a checked-in
 // `enforcedType: oauth-personal` opened Google's sign-in page), so a
 // repository could otherwise move a run onto a Google sign-in, which Rein
@@ -280,15 +284,13 @@ func checkWorkspaceAuth(worktree string) error {
 	}
 	for _, k := range []string{"selectedType", "enforcedType"} {
 		if v, ok := s.Security.Auth[k]; ok {
-			if t, _ := v.(string); !keyAuthTypes[t] {
+			if v != apiKeyAuth {
 				return refusal(fmt.Sprintf("its .gemini/settings.json sets security.auth.%s to %v", k, v))
 			}
 		}
 	}
-	if s.Legacy != nil {
-		if t, _ := s.Legacy.(string); !keyAuthTypes[t] {
-			return refusal(fmt.Sprintf("its .gemini/settings.json sets selectedAuthType to %v", s.Legacy))
-		}
+	if s.Legacy != nil && s.Legacy != apiKeyAuth {
+		return refusal(fmt.Sprintf("its .gemini/settings.json sets selectedAuthType to %v", s.Legacy))
 	}
 	if v, ok := s.Security.Auth["useExternal"]; ok && v != false {
 		return refusal("its .gemini/settings.json sets security.auth.useExternal")

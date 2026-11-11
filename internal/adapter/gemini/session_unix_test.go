@@ -170,7 +170,7 @@ func TestASessionRunsOnThePersonsKeySetUpUnderAPrivateHome(t *testing.T) {
 	if _, err := os.Stat(home); !os.IsNotExist(err) {
 		t.Error("the private home outlived the session")
 	}
-	if set := read("settings.json"); !strings.Contains(set, `"selectedType": "vertex-ai"`) || strings.Contains(set, "enforcedType") {
+	if set := read("settings.json"); !strings.Contains(set, `"selectedType": "vertex-ai"`) || !strings.Contains(set, `"enforcedType": "vertex-ai"`) {
 		t.Errorf("settings = %s", set)
 	}
 	if argv := read("argv"); strings.Contains(argv, "do the thing") || !strings.Contains(argv, "--skip-trust") {
