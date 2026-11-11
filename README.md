@@ -822,13 +822,14 @@ macOS, Linux and Windows.
 Antigravity's command-line program (`agy`) on the same key, but only while
 Elk's server switches it on (the heartbeat reply's `antigravity` field). It is
 off by default and stays off until Google confirms in writing that Elk may run
-Antigravity on a person's key; while off, Rein never executes `agy`. On, and
-with `agy` installed, a run uses it: key mode is set in the session's own
+Antigravity on a person's key; while off, Rein never executes `agy`. It is on
+only while every gemini queue's Elk server says so, and lapses to off when
+heartbeats stop. On, with `agy` 1.5.5 or later installed, a new run uses it: key mode is set in the session's own
 settings, never in the person's file; edits and commands stay in the task's
 folder through Antigravity's own permission rules and terminal sandbox, never
 by skipping its checks; and Elk is told which program ran (`1.5.5
-(Antigravity)` as the program version). On Windows it needs Windows 11 24H2 or
-later. docs/adapter-gemini.md has the detail.
+(Antigravity)` as the program version). On Windows older than 11 24H2,
+Gemini CLI runs instead. docs/adapter-gemini.md has the detail.
 
 **Hosted mode.**
 

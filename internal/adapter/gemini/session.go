@@ -24,6 +24,7 @@ type session struct {
 	program string                        // "Gemini CLI" or "Antigravity", for what a person reads
 	decode  func([]byte) (decoded, error) // the program's stream-json
 	cleanup func()                        // removes what the session left on disk; may be nil
+	notes   []string                      // progress lines emitted after the first
 	started time.Time
 	grace   time.Duration
 	red     *secretenv.Redactor
@@ -59,6 +60,8 @@ type launch struct {
 	key     string
 	decode  func([]byte) (decoded, error)
 	signIn  []string
+	fold    bool     // match signIn without regard to case (agy)
+	notes   []string // progress lines a person reads before the program's own
 	cleanup func()
 }
 
@@ -98,11 +101,12 @@ func (a *Adapter) launch(spec adapter.RunSpec, l launch) (adapter.Session, error
 		events:  make(chan adapter.Event),
 		done:    make(chan struct{}),
 		model:   spec.Model,
+		notes:   l.notes,
 	}
 	if s.grace <= 0 {
 		s.grace = defaultInterruptGrace
 	}
-	s.stderr = &stderrWatch{limit: 64 << 10, markers: l.signIn, onSignIn: s.stopSignIn}
+	s.stderr = &stderrWatch{limit: 64 << 10, markers: l.signIn, fold: l.fold, onSignIn: s.stopSignIn}
 	cmd.Stderr = s.stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("gemini: starting %s: %w", bin, err)
@@ -245,6 +249,9 @@ func (s *session) run(stdout io.Reader) {
 	defer close(s.events)
 
 	s.emit(adapter.Event{Kind: adapter.EventProgress, Text: "Running " + s.program + " on the person's own Google key"})
+	for _, n := range s.notes {
+		s.emit(adapter.Event{Kind: adapter.EventProgress, Text: n})
+	}
 	if s.spec.Effort != "" && s.program == "Gemini CLI" {
 		s.emit(adapter.Event{Kind: adapter.EventProgress,
 			Text: "Gemini CLI has no reasoning-effort setting, so the queue's effort " + s.spec.Effort + " was not applied"})
@@ -376,6 +383,7 @@ type stderrWatch struct {
 	mu       sync.Mutex
 	limit    int
 	markers  []string
+	fold     bool
 	buf      []byte
 	fired    bool
 	onSignIn func()
@@ -389,9 +397,15 @@ func (w *stderrWatch) Write(p []byte) (int, error) {
 	}
 	fire := false
 	if !w.fired {
-		text := strings.ToLower(string(w.buf))
+		text := string(w.buf)
+		if w.fold {
+			text = strings.ToLower(text)
+		}
 		for _, m := range w.markers {
-			if strings.Contains(text, strings.ToLower(m)) {
+			if w.fold {
+				m = strings.ToLower(m)
+			}
+			if strings.Contains(text, m) {
 				w.fired, fire = true, true
 				break
 			}

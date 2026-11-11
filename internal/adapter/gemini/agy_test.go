@@ -81,7 +81,7 @@ func strs(v any) []string {
 // preflight — even with it installed. This is the switch's whole promise
 // until Google says yes.
 func TestSwitchedOffAntigravityIsNeverRun(t *testing.T) {
-	SetAntigravity(false)
+	ResetAntigravity()
 	agyBin, agyRec := standin(t, AgyBinary, standinConfig{Fixture: "agy-tool.jsonl"})
 	gemBin, gemRec := standin(t, Binary, standinConfig{Fixture: "text.jsonl", Version: "0.64.0"})
 	a := agyAdapter(t, agyBin, gemBin)
@@ -130,7 +130,7 @@ func TestSwitchedOnARunIsAntigravityOnTheKey(t *testing.T) {
 	if err != nil || res.Status != adapter.StatusSucceeded {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
-	if res.SessionID != "11111111-1111-4111-8111-111111111111" || res.Summary != "All done." {
+	if res.SessionID != agyResumePrefix+"11111111-1111-4111-8111-111111111111" || res.Summary != "All done." {
 		t.Fatalf("session id %q summary %q", res.SessionID, res.Summary)
 	}
 	if res.Usage.InputTokens != 30 || res.Usage.OutputTokens != 15 {
@@ -311,14 +311,17 @@ func TestAgyEnvStripsWhateverTheCase(t *testing.T) {
 
 // In a linked worktree, as Rein cuts them, a commit writes into git's shared
 // folder outside the task folder: the run is granted exactly the parts a
-// commit writes, never hooks or config.
+// commit writes, never hooks or config, and the files that point git at a
+// folder are denied, so a run cannot redirect git to hooks it planted. On a
+// Mac the temporary folder is behind a symlink: the task folder is there under
+// both names, and git's folders under the real one, which is the one git
+// writes into the .git file and the one the sandbox sees.
 func TestGrantsCoverACommitFromALinkedWorktree(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git")
 	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	must(t, err)
+	root := t.TempDir()
 	repo, wt := filepath.Join(root, "repo"), filepath.Join(root, "wt")
 	for _, args := range [][]string{
 		{"init", "-q", repo},
@@ -329,32 +332,69 @@ func TestGrantsCoverACommitFromALinkedWorktree(t *testing.T) {
 			t.Fatalf("git %v: %v %s", args, err, out)
 		}
 	}
-	allow, err := agyGrants(wt, true)
+	allow, deny, err := agyGrants(wt, true)
 	must(t, err)
-	common := filepath.Join(repo, ".git")
-	for _, want := range []string{
-		"write_file(" + rulePath(wt) + ")",
-		"write_file(" + rulePath(filepath.Join(common, "worktrees", "wt")) + ")",
-		"write_file(" + rulePath(filepath.Join(common, "objects")) + ")",
-		"write_file(" + rulePath(filepath.Join(common, "refs")) + ")",
-		"write_file(" + rulePath(filepath.Join(common, "packed-refs.lock")) + ")",
-		"read_file(" + rulePath(common) + ")",
-		"read_url(*)",
-	} {
-		if !slices.Contains(allow, want) {
-			t.Fatalf("grants %q lack %q", allow, want)
+	realRoot, err := filepath.EvalSymlinks(root)
+	must(t, err)
+	if !slices.Contains(allow, "write_file("+rulePath(wt)+")") {
+		t.Fatalf("grants %q lack the task folder as named", allow)
+	}
+	for _, r := range []string{realRoot} {
+		common := filepath.Join(r, "repo", ".git")
+		private := filepath.Join(common, "worktrees", "wt")
+		for _, want := range []string{
+			"write_file(" + rulePath(filepath.Join(r, "wt")) + ")",
+			"write_file(" + rulePath(private) + ")",
+			"write_file(" + rulePath(filepath.Join(common, "objects")) + ")",
+			"write_file(" + rulePath(filepath.Join(common, "refs")) + ")",
+			"write_file(" + rulePath(filepath.Join(common, "packed-refs.lock")) + ")",
+			"read_file(" + rulePath(common) + ")",
+		} {
+			if !slices.Contains(allow, want) {
+				t.Fatalf("grants %q lack %q", allow, want)
+			}
+		}
+		for _, want := range []string{
+			"write_file(" + rulePath(filepath.Join(r, "wt", ".git")) + ")",
+			"write_file(" + rulePath(filepath.Join(private, "commondir")) + ")",
+			"write_file(" + rulePath(filepath.Join(private, "gitdir")) + ")",
+			"write_file(" + rulePath(filepath.Join(private, "config.worktree")) + ")",
+		} {
+			if !slices.Contains(deny, want) {
+				t.Fatalf("denies %q lack %q", deny, want)
+			}
+		}
+		for _, rule := range allow {
+			if strings.Contains(rule, "hooks") || strings.HasSuffix(rule, "config)") || rule == "write_file("+rulePath(common)+")" {
+				t.Fatalf("over-broad grant %q", rule)
+			}
 		}
 	}
-	for _, rule := range allow {
-		if strings.Contains(rule, "hooks") || strings.HasSuffix(rule, "config)") || rule == "write_file("+rulePath(common)+")" {
-			t.Fatalf("over-broad grant %q", rule)
-		}
+	if !slices.Contains(allow, "read_url(*)") {
+		t.Fatal("no network for the sandbox")
 	}
-	ro, err := agyGrants(wt, false)
+	ro, roDeny, err := agyGrants(wt, false)
 	must(t, err)
 	for _, rule := range ro {
 		if strings.HasPrefix(rule, "write_file(") {
 			t.Fatalf("read-only grant %q", rule)
+		}
+	}
+	if len(roDeny) == 0 {
+		t.Fatal("a read-only run lost the git denies")
+	}
+}
+
+// A plain repository's git folder is inside the task folder, so its config
+// and hooks are denied outright.
+func TestGrantsDenyAPlainRepositorysHooksAndConfig(t *testing.T) {
+	wt := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(wt, ".git", "hooks"), 0o700))
+	_, deny, err := agyGrants(wt, true)
+	must(t, err)
+	for _, f := range []string{"config", "hooks"} {
+		if want := "write_file(" + rulePath(filepath.Join(wt, ".git", f)) + ")"; !slices.Contains(deny, want) {
+			t.Fatalf("denies %q lack %q", deny, want)
 		}
 	}
 }
@@ -363,7 +403,7 @@ func TestGrantsCoverACommitFromALinkedWorktree(t *testing.T) {
 // (ark:rein#151): its private home, trust, the key once, the prompt on stdin,
 // and a result read from its stream.
 func TestGeminiCLIRunsOnEveryPlatform(t *testing.T) {
-	SetAntigravity(false)
+	ResetAntigravity()
 	gemBin, rec := standin(t, Binary, standinConfig{Fixture: "tool.jsonl", Version: "0.64.0"})
 	a := agyAdapter(t, "", gemBin)
 	spec := baseSpec(t)

@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -126,15 +127,16 @@ func (a *Adapter) Manifest() adapter.Manifest {
 	return geminiCLIManifest()
 }
 
-// useAgy reports whether this run should be Antigravity: the switch is on and
-// the program is installed. With the switch on and only Gemini CLI installed,
-// Gemini CLI runs, as before. Off, agy is never looked for.
+// useAgy reports whether a new run should be Antigravity: the switch is on,
+// this computer can run its sandbox, and a version Rein measured is
+// installed. Otherwise Gemini CLI runs, as before. Off, agy is never looked
+// for. Start asks once and holds the answer for the whole run.
 func (a *Adapter) useAgy() bool {
-	if !AntigravityOn() {
+	if !AntigravityOn() || sandboxUnsupported() != "" {
 		return false
 	}
-	_, err := a.resolveAgy()
-	return err == nil
+	bin, err := a.resolveAgy()
+	return err == nil && agyVersionOK(bin)
 }
 
 // geminiCLIManifest is Gemini CLI's manifest.
@@ -361,7 +363,24 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
-	if err := adapter.CheckSupport(a.Manifest(), spec); err != nil {
+	// Which program runs is decided once, here, and everything below holds
+	// to it: the switch can flip while a run is under way.
+	agy := a.useAgy()
+	m := geminiCLIManifest()
+	if agy {
+		m = agyManifest()
+	}
+	if err := checkResume(spec.ResumeID, agy); err != nil {
+		return nil, err
+	}
+	var notes []string
+	if agy {
+		// The runner resolved the queue's servers when the switch was off, so
+		// a run can arrive with the Elk run connector Antigravity cannot take.
+		// It goes without it, and says so; any other server still refuses.
+		spec, notes = dropRunConnector(spec)
+	}
+	if err := adapter.CheckSupport(m, spec); err != nil {
 		return nil, err
 	}
 	// Hosted runs are Claude Code or Codex only, and no queue's environment
@@ -378,11 +397,14 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if len(key) < secretenv.MinValueLen {
 		return nil, ErrNoKey
 	}
-	if a.useAgy() {
+	if err := checkArgs(spec); err != nil {
+		return nil, err
+	}
+	if agy {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return a.startAgy(spec, key)
+		return a.startAgy(spec, key, notes)
 	}
 	// A repository's own Gemini settings can choose the sign-in, and the
 	// workspace layer outranks the private home's (measured: a checked-in
@@ -412,6 +434,58 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		return nil, err
 	}
 	return s, nil
+}
+
+// checkResume keeps one program's conversation id from reaching the other.
+// Antigravity's ids carry agyResumePrefix; Gemini CLI cannot continue one at
+// all. Either way a mismatch is a refusal, not a fresh start with only the
+// follow-up's words for a prompt.
+func checkResume(id string, agy bool) error {
+	if id == "" {
+		return nil
+	}
+	switch isAgy := strings.HasPrefix(id, agyResumePrefix); {
+	case isAgy && !agy:
+		return fmt.Errorf("%w: this run's conversation is Antigravity's, and Antigravity is switched off or "+
+			"unavailable on this computer now, so it cannot be continued", adapter.ErrNotSupported)
+	case !isAgy && agy:
+		return fmt.Errorf("%w: this run began on Gemini CLI, which cannot continue a conversation, and "+
+			"Antigravity cannot continue one it did not start", adapter.ErrNotSupported)
+	}
+	return nil
+}
+
+// dropRunConnector takes the Elk run connector out of an Antigravity run's
+// servers, with the line that says so.
+func dropRunConnector(spec adapter.RunSpec) (adapter.RunSpec, []string) {
+	if _, ok := spec.MCPServers[adapter.RunConnectorName]; !ok {
+		return spec, nil
+	}
+	servers := make(map[string]any, len(spec.MCPServers))
+	for k, v := range spec.MCPServers {
+		if k != adapter.RunConnectorName {
+			servers[k] = v
+		}
+	}
+	if len(servers) == 0 {
+		servers = nil
+	}
+	spec.MCPServers = servers
+	return spec, []string{"Antigravity takes no MCP server from Rein, so this run goes without Elk's run connector"}
+}
+
+// argPattern is what a model or effort may look like on a command line. On
+// Windows, Gemini CLI is an npm shim run through cmd.exe, which does not
+// escape special characters, and the model comes from Elk's settings.
+var argPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$`)
+
+func checkArgs(spec adapter.RunSpec) error {
+	for name, v := range map[string]string{"model": spec.Model, "effort": spec.Effort} {
+		if v != "" && (len(v) > 128 || !argPattern.MatchString(v)) {
+			return fmt.Errorf("%w: the %s %q is not a name Google's programs take", adapter.ErrNotSupported, name, v)
+		}
+	}
+	return nil
 }
 
 func firstLine(s string) string {

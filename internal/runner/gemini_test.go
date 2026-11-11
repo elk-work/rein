@@ -137,8 +137,11 @@ func TestAGeminiRunWithNoKeyIsStuckWithThePlainLine(t *testing.T) {
 // cannot turn it on or off, and a reply without it turns it off.
 func runWithHeartbeat(t *testing.T, gemini bool, structured map[string]any, start bool) bool {
 	t.Helper()
-	geminiadapter.SetAntigravity(start)
-	t.Cleanup(func() { geminiadapter.SetAntigravity(false) })
+	geminiadapter.ResetAntigravity()
+	if start {
+		geminiadapter.SetAntigravity("another gemini queue", true)
+	}
+	t.Cleanup(geminiadapter.ResetAntigravity)
 	h := newHarness(t)
 	if gemini {
 		asGemini(t, h)

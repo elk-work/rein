@@ -158,6 +158,15 @@ func envValue(env []string, name string) (string, int) {
 // switchOn turns the Antigravity switch on for one test.
 func switchOn(t *testing.T) {
 	t.Helper()
-	SetAntigravity(true)
-	t.Cleanup(func() { SetAntigravity(false) })
+	SetAntigravity("test", true)
+	t.Cleanup(ResetAntigravity)
+}
+
+func readRecordErr(rec string) (standinRecord, error) {
+	var r standinRecord
+	raw, err := os.ReadFile(filepath.Join(rec, "run.json"))
+	if err != nil {
+		return r, err
+	}
+	return r, json.Unmarshal(raw, &r)
 }

@@ -163,15 +163,27 @@ outside software driving Antigravity breaks its terms on consumer plans, and
 recommends a Google AI Studio or Gemini Enterprise key for third-party agents.
 Whether Elk may run it on a person's key is the question put to Google, so:
 
-- **The switch is Elk's.** A gemini queue's heartbeat reply carrying
-  `"antigravity": true` turns it on; any other reply turns it off; it is off
-  at start-up. Another kind of queue's reply never touches it. While it is
-  off Rein never executes `agy` — not a run, a version probe or a preflight.
-  Google's yes needs a server change, not a new Rein.
-- **On, and installed, a run is Antigravity.** On, with only Gemini CLI
-  installed, Gemini CLI runs as before. The program version Rein reports
-  says which ran: `1.5.5 (Antigravity)` or `0.64.0 (Gemini CLI)`, and every
-  run's first event says "Running Antigravity on the person's own Google key".
+- **The switch is Elk's, and it fails closed.** Each gemini queue's
+  heartbeat reply is that queue's say: `"antigravity": true` is on, anything
+  else is off, and a say counts for 15 minutes (three heartbeats). The switch
+  is on only while at least one say counts and every say that counts is on —
+  so it is off at start-up, two Elk servers that disagree leave it off, and
+  heartbeats that keep failing let it lapse to off. Another kind of queue's
+  reply never touches it. While it is off Rein never executes `agy` — not a
+  run, a version probe or a preflight. Google's yes needs a server change, not
+  a new Rein.
+- **On, a new run is Antigravity where it can be:** installed, version 1.5.5
+  or later (the one measured), and, on Windows, a build whose sandbox runs.
+  Otherwise Gemini CLI runs as before. The program is chosen once when a run
+  starts and held for that run. The program version Rein reports says which
+  runs, `1.5.5 (Antigravity)` or `0.64.0 (Gemini CLI)`, and is read again at
+  the next heartbeat after the switch flips; every run's first event says
+  "Running Antigravity on the person's own Google key".
+- **A run under way when it flips** finishes on its program. Its follow-up
+  rounds (a review, a missing summary, a stall restart) continue the same
+  conversation only on the program that started it: Antigravity's
+  conversation ids are marked `agy:`, and a mismatch is refused rather than
+  started over with only the follow-up's words.
 
 ### The key, never a Google sign-in
 
@@ -205,7 +217,15 @@ these allow rules: the task folder (under its real path too), and, for the
 linked worktree Rein cuts, the worktree's own git folder and the shared
 `objects`, `refs`, `logs`, `packed-refs` and its lock — what a commit writes —
 plus read access to the whole git folder and `read_url(*)` (the sandbox has
-no network otherwise). Measured with agy 1.5.5:
+no network otherwise). Git's paths are given under their real names too.
+
+What would let a run plant code that runs outside the sandbox the next time
+git runs there — Rein removing the worktree, or a person looking at a kept
+one — is never writable. The shared folder's hooks and config are not
+granted, and the files that point git at a folder are denied by rule: the
+worktree's `.git` file and the private folder's `commondir`, `gitdir` and
+`config.worktree` (for a plain repository, its `config` and `hooks`). A deny
+rule beats an allow rule. Measured with agy 1.5.5:
 
 | action | result |
 |---|---|
@@ -214,9 +234,14 @@ no network otherwise). Measured with agy 1.5.5:
 | a command writing inside the folder | done |
 | a command writing in the home, outside the folder | "operation not permitted" |
 | a command writing git's `hooks` | "operation not permitted" |
+| write_file or a command rewriting the worktree's `.git` file, or `commondir` | refused by the deny rule; "operation not permitted" |
 | `git commit` from the linked worktree | done |
 | `git ls-remote https://github.com/…` | needs `read_url(*)`; done with it |
 | reading `~/.gitconfig`, writing `~/Library/Caches` and `$TMPDIR` | allowed by the sandbox |
+
+So "stays in the folder" means the person's files and other projects: the
+sandbox still lets commands write the system's temporary and cache folders, as
+build tools need.
 
 A refused action ends agy's turn with status `SUCCESS`, an empty answer and
 the action in `denied_actions`. Rein reports that as failed, naming the
@@ -238,13 +263,19 @@ write. (`--mode plan` has no effect alongside `--disable-slash-commands`.)
 ### What else
 
 - **Windows** needs Windows 11 24H2 (build 26100) or later, where the terminal
-  sandbox runs; on older Windows a run is refused with one line saying so,
-  rather than run with the sandbox off.
+  sandbox runs; on older Windows, Gemini CLI runs instead, never Antigravity
+  with the sandbox off. Rules are given with forward slashes; how agy matches
+  a Windows path against them, drive letter included, has not been measured.
 - **resume** is `yes`, by conversation id (`--conversation`); conversations are
   kept in the person's own Antigravity folder.
-- **effort** is passed as `--effort`; **model** as `--model`.
-- **mcp** is `no`: agy takes no server from Rein (no settings key for one), so
-  the Elk run connector is not offered on Antigravity either (`ark:rein#120`).
+- **effort** is passed as `--effort`; **model** as `--model`. On either
+  program a model or effort that is not a plain name (letters, digits and
+  `._:/@+-`) is refused: on Windows, Gemini CLI's npm shim runs through
+  `cmd.exe`, which does not escape special characters.
+- **mcp** is `no`: agy takes no server from Rein (no settings key for one).
+  Rein adds the Elk run connector to a queue's runs when it starts, before it
+  has heard the switch, so an Antigravity run goes without it and its log says
+  so; any other server on an Antigravity run is refused (`ark:rein#120`).
 - **Not controlled:** agy checks for updates and reports usage per the
   person's own Antigravity settings; `--settings` has no key for either.
 

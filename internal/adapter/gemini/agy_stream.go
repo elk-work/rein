@@ -74,7 +74,7 @@ func decodeAgy(raw []byte) (decoded, error) {
 	var d decoded
 	switch l.Event {
 	case "init":
-		d.sessionID = l.ConversationID
+		d.sessionID = agyResumePrefix + l.ConversationID
 		d.events = append(d.events, adapter.Event{Kind: adapter.EventProgress, Raw: rawCopy,
 			Text: "Antigravity started conversation " + l.ConversationID + " on the Google key"})
 	case "step_update":
@@ -101,7 +101,7 @@ func decodeAgy(raw []byte) (decoded, error) {
 			return d, fmt.Errorf("a result line with no result")
 		}
 		if r.ConversationID != "" {
-			d.sessionID = r.ConversationID
+			d.sessionID = agyResumePrefix + r.ConversationID
 		}
 		tr := &turnResult{ok: r.Status == "SUCCESS"}
 		if !tr.ok {

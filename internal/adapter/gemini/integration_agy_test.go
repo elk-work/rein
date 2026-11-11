@@ -59,8 +59,8 @@ func liveAgy(t *testing.T) *Adapter {
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
 	}
-	SetAntigravity(true)
-	t.Cleanup(func() { SetAntigravity(false) })
+	SetAntigravity("test", true)
+	t.Cleanup(ResetAntigravity)
 	return a
 }
 
@@ -298,8 +298,14 @@ func TestLiveAgyEditsStayInTheTasksFolder(t *testing.T) {
 		runCommand("git add -A && git -c user.name=t -c user.email=t@t commit -q -m work"),
 		runCommand(shellWrite(filepath.Join(outsideHome, "cmd-outside.txt"))),
 		runCommand(shellWrite(hook)),
+		// Pointing git at a folder the run controls would run its hooks outside
+		// the sandbox the next time git runs here: both ways are refused.
+		runCommand(shellWrite(filepath.Join(wt, ".git"))),
+		{"name": "write_file", "args": map[string]any{"Path": filepath.Join(wt, ".git"), "Content": "gitdir: /tmp/x", "Overwrite": true}},
 		{"name": "write_file", "args": map[string]any{"Path": filepath.Join(outsideHome, "tool-outside.txt"), "Content": "out"}},
 	}
+	dotgit, err := os.ReadFile(filepath.Join(wt, ".git"))
+	must(t, err)
 	api := newStandinAPI(t, calls, false)
 	a.agyBaseURL = api.srv.URL
 	res, err := liveRun(t, a, liveSpec(t, wt))
@@ -319,6 +325,9 @@ func TestLiveAgyEditsStayInTheTasksFolder(t *testing.T) {
 		if _, err := os.Stat(f); err == nil {
 			t.Errorf("%s was written outside the folder", f)
 		}
+	}
+	if now, _ := os.ReadFile(filepath.Join(wt, ".git")); string(now) != string(dotgit) {
+		t.Errorf("the worktree's .git file was rewritten to %q", now)
 	}
 	if res.Status != adapter.StatusFailed || err == nil || !strings.Contains(err.Error(), "refused") {
 		t.Errorf("a refused write was reported as res=%+v err=%v", res, err)

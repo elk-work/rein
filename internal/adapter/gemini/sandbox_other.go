@@ -3,5 +3,5 @@
 package gemini
 
 // sandboxUnsupported is "" on macOS and Linux, where Antigravity's terminal
-// sandbox runs (agy 1.3.5 and later).
+// sandbox runs. Rein drives agy 1.5.5 and later only (agyMinVersion).
 func sandboxUnsupported() string { return "" }

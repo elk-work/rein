@@ -1,13 +1,18 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
 )
@@ -105,6 +110,59 @@ func (a *Adapter) resolveAgy() (string, error) {
 	return "", agyNotInstalled()
 }
 
+// agyMinVersion is the oldest Antigravity whose session settings, permission
+// rules and sandbox Rein has measured. An older one is not driven: Gemini CLI
+// runs instead.
+var agyMinVersion = [3]int{1, 5, 5}
+
+var versionPattern = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// agyVersions remembers each program file's answer, by path, size and time,
+// so the manifest does not run it on every call.
+var agyVersions struct {
+	sync.Mutex
+	seen map[string]bool
+}
+
+func agyVersionOK(bin string) bool {
+	info, err := os.Stat(bin)
+	if err != nil {
+		return false
+	}
+	key := fmt.Sprintf("%s|%d|%d", bin, info.Size(), info.ModTime().UnixNano())
+	agyVersions.Lock()
+	ok, seen := agyVersions.seen[key]
+	agyVersions.Unlock()
+	if seen {
+		return ok
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ok = versionAtLeast(adapter.ReadProgramVersion(ctx, bin), agyMinVersion)
+	agyVersions.Lock()
+	if agyVersions.seen == nil {
+		agyVersions.seen = map[string]bool{}
+	}
+	agyVersions.seen[key] = ok
+	agyVersions.Unlock()
+	return ok
+}
+
+// versionAtLeast reads the first x.y.z in v; one it cannot read is too old.
+func versionAtLeast(v string, min [3]int) bool {
+	m := versionPattern.FindStringSubmatch(v)
+	if m == nil {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		n, _ := strconv.Atoi(m[i+1])
+		if n != min[i] {
+			return n > min[i]
+		}
+	}
+	return true
+}
+
 // agyStripped are variables an Antigravity session never inherits, whatever a
 // queue says. AGY_ADC_AUTH and AGY_ACCOUNT pick a Google sign-in or Google
 // Cloud billing; AGY_LLM_GATEWAY_* and GOOGLE_GEMINI_BASE_URL send the key to
@@ -150,49 +208,79 @@ func agyEnv(base []string, over map[string]string, key, baseURL string) []string
 	return out
 }
 
-// rulePath is a path as agy's permission rules take it. agy normalises
-// Windows paths the same way before it compares them (backslashes to
-// slashes, drive letter dropped), so forward slashes are safe everywhere.
+// rulePath is a path as agy's permission rules take it: forward slashes, as
+// its documentation writes them. How agy matches a Windows path against a
+// rule, drive letter included, has not been measured (docs/adapter-gemini.md).
 func rulePath(p string) string { return filepath.ToSlash(filepath.Clean(p)) }
 
-// agyGrants are the allow rules for a full run: the task's folder, and the
-// parts of git's own folder a commit writes. A Rein worktree is a linked
-// worktree, so its git folder is outside it: `.git` is a file naming
-// <common>/worktrees/<id>, and a commit writes there, into the shared object
-// store, refs and logs. Hooks and config are deliberately not granted: write
-// access there would let a run plant code that runs outside the sandbox.
-// Reading the whole git folder is granted, since git reads its config.
-func agyGrants(worktree string, write bool) ([]string, error) {
-	var allow []string
-	if write {
-		allow = append(allow, "write_file("+rulePath(worktree)+")")
-		// The sandbox sees real paths (/private/var for /var on a Mac), so
-		// the folder is granted under both names when they differ.
-		if real, err := filepath.EvalSymlinks(worktree); err == nil && rulePath(real) != rulePath(worktree) {
-			allow = append(allow, "write_file("+rulePath(real)+")")
+// agyGrants are the permission rules for a run: what it may write, what it
+// may never write, and what it may read.
+//
+// A full run may write the task's folder and the parts of git's own folder a
+// commit writes. A Rein worktree is a linked worktree, so its git folder is
+// outside it: `.git` is a file naming <common>/worktrees/<id>, and a commit
+// writes there, into the shared object store, refs and logs.
+//
+// What would let a run plant code that runs outside the sandbox, the next time
+// git runs there (Rein removing the worktree, a person looking at it), is
+// never writable: the hooks and config of the shared folder are not granted,
+// and the files that point git at a folder — the worktree's `.git` file, and
+// the private folder's commondir, gitdir and config.worktree — are denied by
+// rule. A deny rule beats an allow rule, for agy's own file tool and for
+// commands in its sandbox alike (measured 2026-11-10: both refused, and a
+// commit still worked).
+//
+// The sandbox sees real paths (/private/var for /var on a Mac), so every path
+// is given under both names when they differ.
+func agyGrants(worktree string, write bool) (allow, deny []string, err error) {
+	rule := func(list *[]string, verb, path string) {
+		*list = append(*list, verb+"("+rulePath(path)+")")
+		if real, err := filepath.EvalSymlinks(path); err == nil && rulePath(real) != rulePath(path) {
+			*list = append(*list, verb+"("+rulePath(real)+")")
+		} else if err != nil {
+			// Not there yet (a lock file): resolve its folder instead.
+			if dir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+				if r := filepath.Join(dir, filepath.Base(path)); rulePath(r) != rulePath(path) {
+					*list = append(*list, verb+"("+rulePath(r)+")")
+				}
+			}
 		}
 	}
 	private, common, err := gitDirs(worktree)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if common != "" {
-		if write {
+	if write {
+		rule(&allow, "write_file", worktree)
+		if common != "" {
 			if private != common {
-				allow = append(allow, "write_file("+rulePath(private)+")")
+				rule(&allow, "write_file", private)
 			}
 			// packed-refs and its lock: a commit's ref update takes the lock
 			// (measured: without them git commits but prints an error).
 			for _, sub := range []string{"objects", "refs", "logs", "packed-refs", "packed-refs.lock"} {
-				allow = append(allow, "write_file("+rulePath(filepath.Join(common, sub))+")")
+				rule(&allow, "write_file", filepath.Join(common, sub))
 			}
 		}
-		allow = append(allow, "read_file("+rulePath(common)+")")
+	}
+	if common != "" {
+		rule(&allow, "read_file", common)
+		if private != common {
+			rule(&deny, "write_file", filepath.Join(worktree, ".git"))
+			for _, f := range []string{"commondir", "gitdir", "config.worktree"} {
+				rule(&deny, "write_file", filepath.Join(private, f))
+			}
+		} else {
+			// A plain repository's own git folder sits inside the task folder.
+			for _, f := range []string{"config", "config.worktree", "hooks"} {
+				rule(&deny, "write_file", filepath.Join(common, f))
+			}
+		}
 	}
 	// The terminal sandbox has no network until a host is granted. Granted, so
 	// a run can push, fetch and install packages, as every other agent can.
 	allow = append(allow, "read_url(*)")
-	return allow, nil
+	return allow, deny, nil
 }
 
 // gitDirs reads where a worktree's git folders are without running git:
@@ -249,11 +337,11 @@ func agyPermissions(spec adapter.RunSpec) (mode string, perms map[string]any, er
 		return "", nil, fmt.Errorf("%w: permission mode %q has no Antigravity mapping: headless agy cannot ask, so only read_only and full can be honoured",
 			adapter.ErrNotSupported, string(spec.PermissionMode))
 	}
-	allow, err := agyGrants(spec.WorktreeDir, write)
+	allow, deny, err := agyGrants(spec.WorktreeDir, write)
 	if err != nil {
 		return "", nil, err
 	}
-	return mode, map[string]any{"allow": allow, "deny": []string{"mcp(*)"}, "ask": []string{}}, nil
+	return mode, map[string]any{"allow": allow, "deny": append([]string{"mcp(*)"}, deny...), "ask": []string{}}, nil
 }
 
 // agySettings is the `--settings` JSON. agy refuses a key it does not know
@@ -297,11 +385,17 @@ func buildAgyArgs(spec adapter.RunSpec) ([]string, error) {
 	if spec.Effort != "" {
 		args = append(args, "--effort", spec.Effort)
 	}
-	if spec.ResumeID != "" {
-		args = append(args, "--conversation", spec.ResumeID)
+	if id, ok := strings.CutPrefix(spec.ResumeID, agyResumePrefix); ok && id != "" {
+		args = append(args, "--conversation", id)
 	}
 	return args, nil
 }
+
+// agyResumePrefix marks a session id as Antigravity's conversation id. Elk
+// hands a run's session id back for a follow-up round, and the program can
+// change between rounds when the switch flips; the mark keeps one program's id
+// from ever reaching the other (Start).
+const agyResumePrefix = "agy:"
 
 // agyStdin is the one stream-json user message agy reads. Its field is
 // "event", not "type": agy refuses the latter.
@@ -351,7 +445,10 @@ func agyManifest() adapter.Manifest {
 }
 
 // startAgy starts one Antigravity session.
-func (a *Adapter) startAgy(spec adapter.RunSpec, key string) (adapter.Session, error) {
+//
+// notes are progress lines for the run's log (Start's account of anything it
+// left out).
+func (a *Adapter) startAgy(spec adapter.RunSpec, key string, notes []string) (adapter.Session, error) {
 	if why := sandboxUnsupported(); why != "" {
 		return nil, fmt.Errorf("%w: %s", adapter.ErrPreflight, why)
 	}
@@ -370,15 +467,16 @@ func (a *Adapter) startAgy(spec adapter.RunSpec, key string) (adapter.Session, e
 	env := agyEnv(spec.InheritedEnv(), spec.Env, key, a.agyBaseURL)
 	return a.launch(spec, launch{
 		program: AgyName, bin: bin, args: args, env: env, stdin: stdin, key: key,
-		decode: decodeAgy, signIn: agySignInMarkers,
+		decode: decodeAgy, signIn: agySignInMarkers, fold: true, notes: notes,
 	})
 }
 
 // agySignInMarkers are agy's words when it is about to start a Google
 // sign-in. The session settings make that unreachable; seeing one anyway
 // stops the session.
-var agySignInMarkers = []string{"authentication required", "accounts.google.com", "Sign in with Google",
-	"Opening browser", "paste the displayed code"}
+// Generic phrases ("Opening browser", a Google sign-in address) are left out:
+// Antigravity has a browser tool, and a task may be about sign-in pages.
+var agySignInMarkers = []string{"authentication required", "Sign in with Google", "paste the displayed code"}
 
 // preflightAgy checks the program answers and the key is stored. Like Gemini
 // CLI's, it cannot tell a good key from a revoked one without spending a
