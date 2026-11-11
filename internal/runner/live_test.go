@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/adapter/fake"
 	"github.com/elk-work/rein/internal/elk/elktest"
 	"github.com/elk-work/rein/internal/runner"
 )
@@ -297,5 +298,92 @@ func TestNoInboxWithoutSteer(t *testing.T) {
 	}
 	if n := len(h.elk.CallsTo("run_inbox")); n != 0 {
 		t.Errorf("run_inbox called %d times for a session that takes no input", n)
+	}
+}
+
+func progressFor(n int) []adapter.Event {
+	evs := make([]adapter.Event, n)
+	for i := range evs {
+		evs[i] = adapter.Event{Kind: adapter.EventProgress, Text: "working"}
+	}
+	return evs
+}
+
+// switchTo makes every inbox answer name model as the run's, as Elk does
+// once a person picked it.
+func (h *harness) switchTo(model string) {
+	h.elk.Reply("run_inbox", elktest.Reply{Structured: map[string]any{
+		"comments": "", "cursor": 0, "status": "running", "model": model}})
+}
+
+// A person picks another model: the session is stopped and resumed on it,
+// once, with a line saying so.
+func TestAModelChangeResumesTheSessionOnTheNewModel(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Rounds = []fake.Round{{Script: progressFor(30)}, {Script: progressFor(5)}}
+	h.switchTo("claude-sonnet-5-5")
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	specs := h.agent.Specs()
+	if len(specs) != 2 {
+		t.Fatalf("sessions started = %d, want 2 (one switch, no more)\nlog:\n%s", len(specs), h.log)
+	}
+	next := specs[1]
+	if next.Model != "claude-sonnet-5-5" || next.ResumeID != "fake-session" ||
+		next.Prompt != "The person switched you to claude-sonnet-5-5. Carry on where you were." {
+		t.Errorf("the switch started model %q, resume %q, prompt %q", next.Model, next.ResumeID, next.Prompt)
+	}
+	if h.agent.Sessions()[0].Interrupts() == 0 {
+		t.Error("the first session was not stopped")
+	}
+	found := false
+	for _, b := range h.reportBodies() {
+		found = found || b == "Switched to claude-sonnet-5-5"
+	}
+	if !found {
+		t.Errorf("no switch line: %q", h.reportBodies())
+	}
+	h.submitted()
+}
+
+// The switch is not the stall restart: a stall after it still gets its one
+// resume.
+func TestAModelSwitchLeavesTheStallRestart(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Delay = 100 * time.Millisecond
+	h.agent.Rounds = []fake.Round{
+		{Script: progressFor(30)}, // switched
+		{Script: idleFor(20)},     // stalls
+		{Script: progressFor(2)},  // finishes
+	}
+	h.switchTo("claude-sonnet-5-5")
+	if err := h.run(runner.Options{StallAfter: 500 * time.Millisecond}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	if n := len(h.agent.Specs()); n != 3 {
+		t.Fatalf("sessions = %d, want 3\nlog:\n%s", n, h.log)
+	}
+	if sub := h.submitted(); sub.Arg("status") == "stuck" {
+		t.Errorf("the stall after a switch was treated as the second: %s", sub.Arg("deliverable"))
+	}
+}
+
+// A model a person chose for this run, sent with the claim, wins over the
+// queue's; one that is not a model id is ignored.
+func TestTheClaimsModelWinsOverTheQueues(t *testing.T) {
+	for model, want := range map[string]string{"claude-haiku-5-5": "claude-haiku-5-5", "not a model!": ""} {
+		h := newHarness(t)
+		h.elk.Reply("claim_run", elktest.Reply{Text: order("run-1"), Structured: map[string]any{"model": model}})
+		if err := h.run(runner.Options{}); err != nil {
+			t.Fatalf("%v\nlog:\n%s", err, h.log)
+		}
+		if got := h.agent.Specs()[0].Model; got != want {
+			t.Errorf("claim model %q: the session ran on %q, want %q", model, got, want)
+		}
+		adapter.Unregister(kind)
 	}
 }

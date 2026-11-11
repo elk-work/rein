@@ -165,3 +165,10 @@ func (qr *queueRunner) pollInbox(ctx context.Context, runID string, news chan<- 
 		}
 	}
 }
+
+// canSwitchModel reports whether a person's model change can be honoured
+// mid-run: Claude Code only (scout spec section 8), resumed from its session.
+func (qr *queueRunner) canSwitchModel(sess adapter.Session) bool {
+	return qr.q.AgentKind == "claude" && sess.ID() != "" &&
+		qr.live != nil && qr.live.manifest.Has(adapter.CapResume)
+}

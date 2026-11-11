@@ -126,7 +126,15 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	// What Elk last set for the queue wins over config.toml, which wins over
 	// the CLI's own default (modelchoice.go, ark:rein#106).
 	choice := qr.runModelChoice()
-	if choice.ModelFrom == FromElk || choice.EffortFrom == FromElk {
+	// A model a person chose for this run alone wins over the queue's.
+	if m := wo.Model; m != "" {
+		if config.ValidModel(m) {
+			choice.Model, choice.ModelFrom = m, FromRun
+		} else {
+			qr.logf("run %s: not using the run's model %q: it is not a model id", wo.RunID, m)
+		}
+	}
+	if choice.ModelFrom == FromElk || choice.ModelFrom == FromRun || choice.EffortFrom == FromElk {
 		qr.log.Runner(runlog.KindNote, "%s", choice.String())
 	}
 
@@ -535,6 +543,7 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 	if err != nil || res.done {
 		return err
 	}
+	spec.Model = res.model
 	rec.add(res.out)
 
 	// Never hand in a blank, a one-liner, or a promise (ark:rein#83).
@@ -876,7 +885,7 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			onAttach:  func() error { return asks.retract(ctx, true) },
 		}
 		qr.r.sessions.add(qr.live)
-		out := qr.watch(ctx, sess, wo, spec.WorktreeDir, pending)
+		out := qr.watch(ctx, sess, wo, spec, pending)
 		qr.r.sessions.remove(wo.RunID)
 		qr.live = nil
 		// What the session last said about the subscription outlives it: it
@@ -893,6 +902,25 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			qr.logStatus = runlog.StatusCancelled
 			qr.log.Runner(runlog.KindNote, "cancelled by the user — work discarded")
 			return sessionResult{done: true}, nil
+
+		case out.switchModel != "":
+			// Like the stall restart, but a person asked for it, so it does
+			// not use up the one the watchdog has.
+			qr.interrupt(sess)
+			m := out.switchModel
+			spec.ResumeID, spec.Model = sess.ID(), m
+			spec.Prompt = "The person switched you to " + m + ". Carry on where you were."
+			if c := qr.takeComments(); c != "" {
+				spec.Prompt += "\n\n" + c
+				qr.replyOpened = time.Now()
+			}
+			qr.logf("run %s: switching the session to %s, resuming %s", wo.RunID, m, spec.ResumeID)
+			if err := qr.report(ctx, wo.RunID, elk.ProgressStep, "Switched to "+m, "", "", pending); errors.Is(err, elk.ErrCancelled) {
+				qr.logStatus = runlog.StatusCancelled
+				qr.log.Runner(runlog.KindNote, "cancelled by the user — work discarded")
+				return sessionResult{done: true}, nil
+			}
+			continue
 
 		case out.stalled:
 			qr.interrupt(sess)
@@ -956,7 +984,7 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			return sessionResult{done: true}, ctx.Err()
 		}
 
-		return sessionResult{out: out, sessionID: sess.ID()}, nil
+		return sessionResult{out: out, sessionID: sess.ID(), model: spec.Model}, nil
 	}
 }
 
@@ -970,6 +998,9 @@ const notPlanTitle = "The agent was not on the plan login, so Rein stopped it"
 type sessionResult struct {
 	out       watchOutcome
 	sessionID string
+	// model is the model the session ended on, which a person may have
+	// switched (live.go): what any later session of the run starts on.
+	model string
 	// done means the run has already been reported terminally — a stuck
 	// submit, a cancellation, a shutdown — and there is nothing further to do
 	// with it.
@@ -1200,8 +1231,10 @@ type watchOutcome struct {
 	err       error
 	cancelled bool
 	stalled   bool
-	events    int
-	tools     []string
+	// switchModel is the model a person switched the run to mid-session.
+	switchModel string
+	events      int
+	tools       []string
 	// commands and prs are the shell commands the agent ran and the pull
 	// requests it named, for a deliverable Rein has to write itself.
 	commands []string
@@ -1226,7 +1259,7 @@ func (o *watchOutcome) notePRs(s string) {
 // lease — a run that says nothing for fifteen minutes is handed to somebody
 // else. [MinReportInterval] is the ceiling on the event-driven half, so a
 // chatty agent does not turn every tool call into a round trip.
-func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.WorkOrder, dir string,
+func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.WorkOrder, spec adapter.RunSpec,
 	pending *elk.Usage) watchOutcome {
 
 	var (
@@ -1247,6 +1280,9 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		whyFrom int
 		// questionOpen is true from the agent's question until it resumes.
 		questionOpen bool
+		// refusedModel is a model Elk named that is not a model id, logged
+		// once rather than on every poll.
+		refusedModel string
 		// unsaid is the agent's text not yet sent as a say; sayC fires the
 		// flush inside a reply window.
 		unsaid   strings.Builder
@@ -1375,6 +1411,17 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				out.text = text.String()
 				return out
 			}
+			if m := in.Model; m != "" && m != spec.Model && qr.canSwitchModel(sess) {
+				if config.ValidModel(m) {
+					out.switchModel = m
+					out.text = text.String()
+					return out
+				}
+				if m != refusedModel {
+					refusedModel = m
+					qr.logf("run %s: not switching to %q: it is not a model id", wo.RunID, m)
+				}
+			}
 
 		case <-sayC:
 			sayC = nil
@@ -1497,7 +1544,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					didCmds = append(didCmds, cmd)
 				case file != "":
 					didFiles = append(didFiles, file)
-					if p := repoPath(dir, editedPath(ev.Tool)); p != "" {
+					if p := repoPath(spec.WorktreeDir, editedPath(ev.Tool)); p != "" {
 						didPaths = append(didPaths, p)
 					}
 				default:

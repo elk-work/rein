@@ -515,3 +515,57 @@ sleep 60`
 		})
 	}
 }
+
+// A session Rein started to switch models (`--resume <old> --model <new>`)
+// keeps the new model when its own idle recovery resumes it: the resume
+// reuses this session's argv, swapping only the --resume id.
+func TestIdleResumeKeepsTheSwitchedModel(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := `echo "$*" >> '` + calls + `'
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"silent-session","apiKeySource":"none"}'
+case " $* " in
+ *" --resume silent-session "*) printf '%s\n' '{"type":"result","subtype":"success","session_id":"silent-session","result":"recovered","num_turns":1}'; cat >/dev/null; exit 0 ;;
+esac
+cat <<'EVENT'
+{"type":"api-request"}
+{"type":"system","subtype":"test-ready"}
+EVENT
+sleep 60`
+	clock := &sleepClock{wall: time.Now(), awake: time.Hour}
+	a := &Adapter{Binary: stubBinary(t, script), DisableWatchdog: true, clock: clock}
+	const idle = 300 * time.Millisecond
+	sess, err := a.Start(context.Background(), adapter.RunSpec{
+		WorktreeDir: dir, Prompt: "The person switched you to claude-sonnet-5-5.", PermissionMode: adapter.PermissionFull,
+		Model: "claude-sonnet-5-5", ResumeID: "old-session", Timeouts: adapter.Timeouts{Idle: idle},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Interrupt(context.Background()) })
+	deadline := time.After(30 * time.Second)
+	for done := false; !done; {
+		select {
+		case ev, ok := <-sess.Events():
+			done = !ok
+			if ev.Text == "claude system/test-ready" {
+				clock.run(idle + time.Millisecond)
+			}
+		case <-deadline:
+			t.Fatal("the fake CLI did not finish the idle-recovery sequence")
+		}
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("invocations = %q", lines)
+	}
+	resume := " " + lines[1] + " "
+	if !strings.Contains(resume, " --model claude-sonnet-5-5 ") || !strings.Contains(resume, " --resume silent-session ") ||
+		strings.Contains(resume, "old-session") {
+		t.Errorf("the idle resume ran %q", lines[1])
+	}
+}
