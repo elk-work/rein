@@ -562,6 +562,11 @@ session running, 8 minutes in, claude-opus-5, 125k of 1M context,
 `session.land` is the queue's landing policy, on every beat whether or not a
 run is in flight: configuration rather than a measurement, so it is always
 known.
+`session.permission` is the queue's permission mode, the same way. Elk can set it
+(`read_only` or `full`) in the heartbeat reply's `settings`, beside `land` and
+`secrets`; any other value is refused and logged. `session.models` lists the
+models the agent's own program reported, and is omitted when it reports none
+(today only Grok does).
 
 Two rules shape all of it.
 

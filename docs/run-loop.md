@@ -1080,6 +1080,10 @@ carries `permission` beside `land` and `secrets`; Rein writes it to the queue's
 `permission_mode` in the same config write, and an unknown value is refused and
 logged. `session.permission` reports the running mode on every beat.
 
+**`session.models`** lists the models the queue's program itself reported
+(today only Grok's `grok models`, at preflight). It is left out when the program
+lists none; Elk's model menu must read a missing key as "not known".
+
 **None of this is a control**, for the reason in *What the prompt cannot
 enforce* above: an agent holding a shell under `full` can run whatever merge
 it is told not to, and the check sees only the run's own branch — a second
