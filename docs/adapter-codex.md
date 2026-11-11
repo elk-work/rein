@@ -331,3 +331,10 @@ upgrade; it is what tells you the recordings need redoing.
 
 `schema/` holds the protocol subset the Go types model, generated with
 `codex app-server generate-json-schema --out`. See `schema/README.md`.
+
+## Model list
+
+Rein reports none. The app-server schema vendored in `internal/adapter/codex/schema`
+has no model-listing method, and no `codex` binary was available on 2026-11-10 to
+check a newer one. When a generated schema shows one, read it in the adapter and
+implement `adapter.ModelLister`.

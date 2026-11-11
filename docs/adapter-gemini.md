@@ -135,3 +135,8 @@ not valid").
 Live` runs the real Gemini CLI: it sends one short prompt to Google with a key
 that is not a key and expects Google's own refusal, and checks the worktree is
 trusted.
+
+## Model list
+
+Rein reports none. `gemini --help` (checked 2026-11-10) has `-m, --model` and no
+command that lists models; a list written into Rein would be a guess.

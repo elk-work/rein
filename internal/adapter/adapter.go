@@ -51,6 +51,13 @@ type ProgramVersioner interface {
 	ProgramVersion(ctx context.Context) string
 }
 
+// ModelLister is an adapter whose program itself reports the models it can use,
+// as of its last Preflight. Optional: nil means "not known", never "none", and
+// an adapter whose program has no list does not implement it.
+type ModelLister interface {
+	Models() []string
+}
+
 // programVersionMax caps what a program's --version may put on a reading.
 const programVersionMax = 80
 

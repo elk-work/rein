@@ -124,6 +124,11 @@ type SessionReading struct {
 	// it: "2.1.296 (Claude Code)". Absent when it could not be read.
 	ProgramVersion string `json:"program_version,omitempty"`
 
+	// Models is what the agent's own program says it can use, so the app can
+	// offer a menu. Left out when the program lists none: a guessed list is
+	// worse than no list.
+	Models *[]string `json:"models,omitempty"`
+
 	// Effort is the resolved effort passed to the run. Absent when the CLI
 	// chooses its own default, which Rein does not know.
 	Effort string `json:"effort,omitempty"`

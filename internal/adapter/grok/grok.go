@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -73,6 +74,9 @@ type Adapter struct {
 	binary    string
 	spawn     func(ctx context.Context, spec adapter.RunSpec) (*process, error)
 	heartbeat time.Duration
+
+	modelsMu sync.Mutex
+	modelIDs []string // from the last Preflight; nil when grok listed none
 }
 
 // New returns the Grok adapter.
@@ -153,18 +157,50 @@ func (a *Adapter) Preflight(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if loggedIn(text) {
-		return nil
-	}
-	if text, err = a.models(ctx, path); err != nil {
-		return err
-	}
 	if !loggedIn(text) {
-		return fmt.Errorf("%w: %s reports no login, twice: %s; %s",
-			adapter.ErrPreflight, a.binary, firstLine(text), loginAdvice)
+		if text, err = a.models(ctx, path); err != nil {
+			return err
+		}
+		if !loggedIn(text) {
+			return fmt.Errorf("%w: %s reports no login, twice: %s; %s",
+				adapter.ErrPreflight, a.binary, firstLine(text), loginAdvice)
+		}
 	}
+	a.modelsMu.Lock()
+	a.modelIDs = parseModels(text)
+	a.modelsMu.Unlock()
 	return nil
 }
+
+// Models implements [adapter.ModelLister]: the ids `grok models` listed at the
+// last Preflight, or nil when it listed none Rein could read.
+func (a *Adapter) Models() []string {
+	a.modelsMu.Lock()
+	defer a.modelsMu.Unlock()
+	return a.modelIDs
+}
+
+// parseModels reads model ids from `grok models`: the first field of each line
+// after the "logged in" line, with an optional bullet, when it starts "grok-".
+// Anything else is skipped, so a changed or empty output gives nil rather than
+// a wrong list. Nothing here is checked against a real grok capture.
+func parseModels(text string) []string {
+	var ids []string
+	seen := false
+	for _, line := range strings.Split(text, "\n") {
+		if !seen {
+			seen = loggedIn(line)
+			continue
+		}
+		f := strings.Fields(strings.TrimLeft(strings.TrimSpace(line), "-*• "))
+		if len(f) > 0 && modelIDRE.MatchString(f[0]) {
+			ids = append(ids, f[0])
+		}
+	}
+	return ids
+}
+
+var modelIDRE = regexp.MustCompile(`^grok-[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // loginAdvice is what a person reads when Preflight refuses. Running `grok
 // models` is a sign-in in its own right: if the refresh token is good, that

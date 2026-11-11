@@ -431,6 +431,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		// carried forward, and whether the queue is holding (ark:rein#40).
 		qr.fillHeadroom(s, nil)
 		qr.putModel(s, tel)
+		qr.putModels(s)
 		return s
 	}
 
@@ -464,6 +465,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	if live == nil {
 		qr.fillHeadroom(s, nil)
 		qr.putModel(s, tel)
+		qr.putModels(s)
 		return s
 	}
 	if state, ok := live.state(); ok {
@@ -477,6 +479,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		qr.telMu.Unlock()
 	}
 	qr.putModel(s, tel)
+	qr.putModels(s)
 	return s
 }
 
@@ -493,6 +496,17 @@ func (qr *queueRunner) putModel(s *elk.SessionReading, tel queueTelemetry) {
 		return
 	}
 	s.Model = tel.model
+}
+
+// putModels adds the models the queue's program reported, when it reports any.
+func (qr *queueRunner) putModels(s *elk.SessionReading) {
+	if a, ok := adapter.Lookup(qr.q.AgentKind); ok {
+		if l, ok := a.(adapter.ModelLister); ok {
+			if m := l.Models(); len(m) > 0 {
+				s.Models = &m
+			}
+		}
+	}
 }
 
 // putWaiting adds why the queue's work is held up, when something is.
