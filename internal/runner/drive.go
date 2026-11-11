@@ -1417,7 +1417,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				}
 
 			case adapter.EventProgress:
-				if ev.Text != "" && time.Since(lastRep) >= MinReportInterval {
+				if ev.Text != "" && !vendorNoise(ev.Text) && time.Since(lastRep) >= MinReportInterval {
 					if !report(elk.ProgressStep, ev.Text) {
 						out.text = text.String()
 						return out
