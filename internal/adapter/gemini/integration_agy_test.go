@@ -350,8 +350,7 @@ func TestLiveAgyRealKeyFinishesATask(t *testing.T) {
 	spec := liveSpec(t, wt)
 	spec.ProviderKey = strings.TrimSpace(string(raw))
 	spec.Model = os.Getenv("REIN_AGY_LIVE_MODEL")
-	spec.Prompt = "Create a file named hello.txt in the current folder containing exactly the word hi, " +
-		"then commit it with git with the message 'hello'. Do nothing else."
+	spec.Prompt = realKeyTask
 	res, err := liveRun(t, a, spec)
 	if err != nil || res.Status != adapter.StatusSucceeded {
 		t.Fatalf("res=%+v err=%v", res, err)
@@ -361,6 +360,9 @@ func TestLiveAgyRealKeyFinishesATask(t *testing.T) {
 		t.Fatalf("hello.txt: %q %v", b, err)
 	}
 	out, _ := exec.Command("git", "-C", wt, "log", "--oneline", "-1").Output()
+	if !strings.Contains(string(out), "hello") {
+		t.Errorf("the commit did not land: %q", out)
+	}
 	t.Logf("last commit: %s; usage %+v; summary %q", strings.TrimSpace(string(out)), res.Usage, res.Summary)
 	e.assertNoSignIn(t)
 }

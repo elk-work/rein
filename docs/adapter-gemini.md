@@ -303,4 +303,6 @@ write. (`--mode plan` has no effect alongside `--disable-slash-commands`.)
 `REIN_GEMINI_LIVE=1 go test -tags integration ./internal/adapter/gemini/ -run
 Live` runs the real Gemini CLI: it sends one short prompt to Google with a key
 that is not a key and expects Google's own refusal, and checks the worktree is
-trusted.
+trusted. Add `REIN_GEMINI_LIVE_KEY_FILE=<file holding a real paid key>` to send
+one small task on that key and check the file and commit it makes — the lab
+proof for Windows (`ark:rein#151`).
