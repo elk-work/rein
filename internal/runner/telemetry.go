@@ -700,7 +700,7 @@ func agentSetupFailure(err error) string {
 	}
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "login") || strings.Contains(text, "auth") || errors.Is(err, adapter.ErrNotPlanAuth) ||
-		errors.Is(err, adapter.ErrNoProviderKey) {
+		errors.Is(err, adapter.ErrNoProviderKey) || errors.Is(err, adapter.ErrLoginRequired) {
 		return setupLogin
 	}
 	return setupNotReady

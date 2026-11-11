@@ -22,9 +22,10 @@ func stopCode(err error) (code, line string) {
 		return "", ""
 	case errors.Is(err, exec.ErrNotFound):
 		return "other", ""
-	case errors.Is(err, adapter.ErrNoProviderKey):
-		// The gemini adapter's missing Google key: the person's own
-		// credential, so a sign-in in all but name.
+	case errors.Is(err, adapter.ErrNoProviderKey), errors.Is(err, adapter.ErrLoginRequired):
+		// A missing provider key, or an agent that says it needs signing in
+		// (the gemini adapter's "Set up Antigravity on this computer first."),
+		// whatever its words.
 		return "agent_login", ""
 	}
 	// agentSetupFailure's sniff, plus a bare "not logged in".
