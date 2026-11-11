@@ -134,7 +134,9 @@ per model, prompt tokens split into fresh and cached). Fixtures are in
 ## The probe
 
 Gemini CLI: `gemini --version` answers, and it is set up — the person's
-settings choose a sign-in, or a key is stored. Presence-only: Gemini CLI has no
+settings choose a sign-in, their `~/.gemini/.env` is there (Gemini CLI reads a
+key from it; Rein looks only at whether the file exists, never inside), or a
+key is stored. Presence-only: Gemini CLI has no
 command that checks a sign-in without sending a prompt, and its Google sign-in
 lives in the keychain, which Rein does not read. A lapsed sign-in or a bad key
 surfaces as the run's own error.

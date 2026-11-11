@@ -93,6 +93,21 @@ func personAuth(geminiDir string) map[string]any {
 	return nil
 }
 
+// personSetUp is whether the person's own Gemini CLI is set up to run: their
+// settings choose a sign-in, or their `.env` there can give it a key (Gemini
+// CLI reads one from it, and the run's home links it). Only the file's
+// presence is looked at; Rein never opens it.
+func personSetUp(geminiDir string) bool {
+	if personAuth(geminiDir) != nil {
+		return true
+	}
+	if geminiDir == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(geminiDir, ".env"))
+	return err == nil && !info.IsDir()
+}
+
 // newHome writes a run's private home.
 func (a *Adapter) newHome(spec adapter.RunSpec, key string) (*home, error) {
 	root, err := a.root()

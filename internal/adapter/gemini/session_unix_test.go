@@ -273,6 +273,17 @@ func TestPreflight(t *testing.T) {
 			t.Fatalf("Preflight: %v", err)
 		}
 	})
+	t.Run("a key in its own .env, no sign-in chosen", func(t *testing.T) {
+		home := t.TempDir()
+		must(t, os.MkdirAll(filepath.Join(home, ".gemini"), 0o700))
+		must(t, os.WriteFile(filepath.Join(home, ".gemini", ".env"), []byte("# not read by Rein\n"), 0o600))
+		a := testAdapter(t, bin)
+		a.RealHome = home
+		a.Items = items{}
+		if err := a.Preflight(context.Background()); err != nil {
+			t.Fatalf("Preflight: %v", err)
+		}
+	})
 	t.Run("not set up", func(t *testing.T) {
 		a := testAdapter(t, bin)
 		a.Items = items{}

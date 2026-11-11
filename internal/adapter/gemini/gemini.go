@@ -211,8 +211,8 @@ func (a *Adapter) Preflight(ctx context.Context) error {
 	if text == "" {
 		return fmt.Errorf("%w: `gemini --version` printed nothing", adapter.ErrPreflight)
 	}
-	if a.storedKey() == "" && personAuth(a.realGeminiDir()) == nil {
-		return notSetUp(GeminiCLIName, "its settings choose no sign-in")
+	if a.storedKey() == "" && !personSetUp(a.realGeminiDir()) {
+		return notSetUp(GeminiCLIName, "its settings choose no sign-in and it has no key")
 	}
 	return nil
 }
