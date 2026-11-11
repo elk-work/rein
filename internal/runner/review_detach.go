@@ -285,6 +285,7 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		if res.done {
 			return
 		}
+		spec.Model = res.model
 		rec.add(res.out)
 		res, err = qr.secureDeliverable(ctx, c.a, spec, c.wo, c.wt, c.repo, res, verdict, sentBack, &rec, c.pending)
 		if err != nil {

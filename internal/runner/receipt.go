@@ -45,9 +45,17 @@ func commandWords(cmd string) string {
 }
 
 // editedFile is the base name of the file an edit tool wrote, or "".
+func editedFile(t *adapter.ToolUse) string {
+	if p := editedPath(t); p != "" {
+		return filepath.Base(p)
+	}
+	return ""
+}
+
+// editedPath is the path an edit tool wrote, as the agent gave it, or "".
 // ponytail: matches tool names on edit/write; an adapter whose edit tool is
 // named otherwise (Codex's apply_patch) reads as "ran <tool>".
-func editedFile(t *adapter.ToolUse) string {
+func editedPath(t *adapter.ToolUse) string {
 	if t == nil || len(t.Input) == 0 {
 		return ""
 	}
@@ -64,7 +72,7 @@ func editedFile(t *adapter.ToolUse) string {
 	}
 	for _, p := range []string{in.FilePath, in.Path, in.NotebookPath} {
 		if p = strings.TrimSpace(p); p != "" {
-			return filepath.Base(p)
+			return p
 		}
 	}
 	return ""

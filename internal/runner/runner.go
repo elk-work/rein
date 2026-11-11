@@ -778,6 +778,10 @@ type queueRunner struct {
 	unsent   []string
 	unsentMu sync.Mutex
 
+	// replyOpened is when a person's message last went into the session:
+	// for replyWindow after it, the agent's text is sent as it comes.
+	replyOpened time.Time
+
 	// log is the current run's event log, and logStatus is how the run will
 	// be recorded as having ended. Both are set by drive and cleared by it.
 	// A nil log is a working no-op — see [runlog.Writer].
