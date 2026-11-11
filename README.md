@@ -10,7 +10,7 @@ binary installed as a user service (launchd, Windows service,
 queue per agent kind, claims the runs Elk dispatches to those queues, and
 drives a coding-agent session against each one in an isolated git worktree —
 Claude Code, Codex, Grok Build or Gemini CLI, shelled out as the vendor's own
-binary on the developer's own login — or, for Gemini CLI alone, on the
+binary on the developer's own login — or, for Google's programs alone, on the
 person's own Google key (see *Gemini on your own Google key* below). It watches each session through structured events,
 reports progress and the deliverable back to Elk, and recycles the worktree.
 
@@ -815,8 +815,21 @@ settings enforce the key, a repository whose own `.gemini/settings.json`
 chooses another sign-in is refused, and a session that starts a Google sign-in
 anyway is stopped. With no key stored the run is stuck with *"Add your Google
 key in Elk to use Gemini."* Install Gemini CLI with `brew install gemini-cli`
-(or `npm install -g @google/gemini-cli`). docs/adapter-gemini.md has the
-detail.
+(or `npm install -g @google/gemini-cli`, the route on Windows). Gemini runs on
+macOS, Linux and Windows.
+
+**Antigravity, behind Elk's switch.** A gemini queue can also drive
+Antigravity's command-line program (`agy`) on the same key, but only while
+Elk's server switches it on (the heartbeat reply's `antigravity` field). It is
+off by default and stays off until Google confirms in writing that Elk may run
+Antigravity on a person's key; while off, Rein never executes `agy`. It is on
+only while every gemini queue's Elk server says so, and lapses to off when
+heartbeats stop. On, with `agy` 1.5.5 or later installed, a new run uses it: key mode is set in the session's own
+settings, never in the person's file; edits and commands stay in the task's
+folder through Antigravity's own permission rules and terminal sandbox, never
+by skipping its checks; and Elk is told which program ran (`1.5.5
+(Antigravity)` as the program version). On Windows older than 11 24H2,
+Gemini CLI runs instead. docs/adapter-gemini.md has the detail.
 
 **Hosted mode.**
 

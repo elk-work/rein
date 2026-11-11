@@ -945,6 +945,13 @@ type Heartbeat struct {
 	// Elk app and this credential is the one to replace (ark:scout#4417).
 	Reconnect bool
 
+	// Antigravity is Elk's switch for running Antigravity, Google's
+	// command-line program, on a gemini queue (Elk #1755). True only when the
+	// reply's structured content carries `"antigravity": true`; anything
+	// else — no field, null, false, a string — is off. It stays off until
+	// Google confirms Elk may run Antigravity on a person's own key.
+	Antigravity bool
+
 	// Model and Effort are what the queue's person set for it in Elk, from
 	// the reply's structured content (ark:rein#106). Nil means Elk set
 	// nothing — an Elk that sends no structured content, a null, a missing
@@ -1104,6 +1111,14 @@ func (hb *Heartbeat) readStructured(raw json.RawMessage) {
 		}
 		if s = strings.TrimSpace(s); s != "" {
 			*f.dst = &s
+		}
+	}
+	if v, ok := fields["antigravity"]; ok && !isNull(v) {
+		var on bool
+		if json.Unmarshal(v, &on) == nil {
+			hb.Antigravity = on
+		} else {
+			hb.Unreadable = append(hb.Unreadable, "antigravity: "+string(v))
 		}
 	}
 	if v, ok := fields["reconnect"]; ok && !isNull(v) {

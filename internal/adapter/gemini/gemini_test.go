@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -128,7 +129,7 @@ func TestStartRefuses(t *testing.T) {
 		{"accept edits", func(s *adapter.RunSpec) { s.PermissionMode = adapter.PermissionAcceptEdits }, adapter.ErrCapability, "approvals"},
 		{"resume", func(s *adapter.RunSpec) { s.ResumeID = "abc" }, adapter.ErrCapability, "resume"},
 		{"a tool list", func(s *adapter.RunSpec) { s.DeniedTools = []string{"run_shell_command"} }, adapter.ErrNotSupported, "tool"},
-		{"program missing", func(*adapter.RunSpec) {}, exec.ErrNotFound, InstallCommand},
+		{"program missing", func(*adapter.RunSpec) {}, exec.ErrNotFound, installLine()},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -391,4 +392,12 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// installLine is the install command a missing Gemini CLI names here.
+func installLine() string {
+	if runtime.GOOS == "windows" {
+		return InstallCommandWindows
+	}
+	return InstallCommand
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
+	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/secretenv"
 )
@@ -36,4 +37,27 @@ func (qr *queueRunner) resolveGeminiKey() (string, error) {
 		return "", geminiadapter.ErrNoKey
 	}
 	return v, nil
+}
+
+// absorbAntigravity takes Elk's Antigravity switch from a gemini queue's
+// heartbeat reply (internal/adapter/gemini/switch.go, Elk #1755). Only a
+// gemini queue's reply counts, so another queue's beat from an Elk that sends
+// the field to gemini queues alone cannot flick it. Each gemini queue has its
+// own say: a reply without the field is that queue saying off, and the switch
+// is on only while every gemini queue that is still hearing from Elk says on.
+func (qr *queueRunner) absorbAntigravity(hb *elk.Heartbeat) {
+	if qr.q.AgentKind != geminiadapter.Kind || hb == nil {
+		return
+	}
+	was := geminiadapter.AntigravityOn()
+	// Keyed by workspace and name: one name may serve two workspaces.
+	geminiadapter.SetAntigravity(qr.workspace+"\x00"+qr.q.Name, hb.Antigravity)
+	now := geminiadapter.AntigravityOn()
+	if was != now {
+		if now {
+			qr.logf("gemini: Elk switched Antigravity on; runs use it where it is installed")
+		} else {
+			qr.logf("gemini: Antigravity is switched off; runs use Gemini CLI")
+		}
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,14 +18,18 @@ import (
 //
 //	REIN_GEMINI_LIVE=1 go test -tags integration ./internal/adapter/gemini/ -run Live
 //
-// It sends one short prompt and a key that is not a key to Google.
+// It sends one short prompt and a key that is not a key to Google. With
+// REIN_GEMINI_LIVE_KEY_FILE naming a file that holds a real paid key, it also
+// sends one small task to Google on that key and checks the file and commit
+// it makes (the lab proof of ark:rein#151, on Windows too).
 
 func liveAdapter(t *testing.T) *Adapter {
 	t.Helper()
 	if os.Getenv("REIN_GEMINI_LIVE") != "1" {
 		t.Skip("set REIN_GEMINI_LIVE=1 to run against the real Gemini CLI")
 	}
-	bin, err := exec.LookPath(Binary)
+	a := &Adapter{binary: Binary}
+	bin, err := a.resolveBinary()
 	if err != nil {
 		t.Skipf("Gemini CLI is not installed: %v", err)
 	}
@@ -100,3 +105,41 @@ func TestLiveTheWorktreeIsTrustedSoItsServersConnect(t *testing.T) {
 		t.Logf("control did not show the untrusted warning (Gemini CLI may have changed):\n%s", untrusted)
 	}
 }
+
+// A real paid key: one small task, sent to Google, finished in the folder.
+func TestLiveGeminiCLIRealKeyFinishesATask(t *testing.T) {
+	path := os.Getenv("REIN_GEMINI_LIVE_KEY_FILE")
+	if path == "" {
+		t.Skip("set REIN_GEMINI_LIVE_KEY_FILE to a file holding a real paid key")
+	}
+	ResetAntigravity()
+	a := liveAdapter(t)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the key file: %v", err)
+	}
+	_, wt := linkedWorktree(t)
+	spec := liveSpec(t, wt)
+	spec.ProviderKey = strings.TrimSpace(string(raw))
+	spec.Model = os.Getenv("REIN_GEMINI_LIVE_MODEL")
+	spec.Prompt = realKeyTask
+	res, err := liveRun(t, a, spec)
+	if err != nil || res.Status != adapter.StatusSucceeded {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	b, err := os.ReadFile(filepath.Join(wt, "hello.txt"))
+	if err != nil || !strings.Contains(string(b), "hi") {
+		t.Fatalf("hello.txt: %q %v", b, err)
+	}
+	out, _ := exec.Command("git", "-C", wt, "log", "--oneline", "-1").Output()
+	if !strings.Contains(string(out), "hello") {
+		t.Errorf("the commit did not land: %q", out)
+	}
+	t.Logf("last commit: %s; usage %+v; summary %q", strings.TrimSpace(string(out)), res.Usage, res.Summary)
+}
+
+// realKeyTask is the one small task both programs' real-key tests send. The
+// git identity is given, since a lab machine may have none.
+const realKeyTask = "Create a file named hello.txt in the current folder containing exactly the word hi, " +
+	"then commit it by running: git add hello.txt && git -c user.name=lab -c user.email=lab@example.invalid " +
+	"commit -m hello . Do nothing else."

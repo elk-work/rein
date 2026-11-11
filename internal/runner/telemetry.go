@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/runlog"
 )
@@ -251,6 +252,10 @@ type queueTelemetry struct {
 	// programVersionAt when that was asked: see [queueRunner.recheckProgramVersion].
 	programVersion   string
 	programVersionAt time.Time
+	// programVersionGen is the gemini adapter's switch generation when the
+	// version was asked: the version names which Google program runs, so a
+	// flip of Elk's Antigravity switch makes it stale at once.
+	programVersionGen uint64
 
 	// effort is the resolved effort passed to the most recent run, retained
 	// between runs. Empty means the CLI chose its own unknown default.
@@ -783,9 +788,12 @@ const programVersionEvery = time.Hour
 // and a failure only means no version on the reading: it can't touch a run.
 func (qr *queueRunner) recheckProgramVersion(ctx context.Context) {
 	qr.telMu.Lock()
-	due := time.Since(qr.tel.programVersionAt) >= programVersionEvery
+	gen := geminiadapter.SwitchGeneration()
+	due := time.Since(qr.tel.programVersionAt) >= programVersionEvery ||
+		(qr.q.AgentKind == geminiadapter.Kind && gen != qr.tel.programVersionGen)
 	if due {
 		qr.tel.programVersionAt = time.Now()
+		qr.tel.programVersionGen = gen
 	}
 	qr.telMu.Unlock()
 	if !due {
