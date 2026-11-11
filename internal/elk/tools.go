@@ -585,6 +585,9 @@ type Progress struct {
 	// Why and Next finish a receipt (Body is what was done): one line each,
 	// sent only when set, clipped to Elk's 140 characters.
 	Why, Next string
+	// Files are the repository-relative paths edited since the previous
+	// receipt (scout 0710), sent only when there are any.
+	Files []string
 }
 
 // ReportProgress heartbeats a claimed run and renews its 15-minute lease.
@@ -614,6 +617,9 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 			}
 			args[k] = v
 		}
+	}
+	if len(p.Files) > 0 {
+		args["files"] = p.Files
 	}
 	p.Usage.put(args)
 

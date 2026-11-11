@@ -876,7 +876,7 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			onAttach:  func() error { return asks.retract(ctx, true) },
 		}
 		qr.r.sessions.add(qr.live)
-		out := qr.watch(ctx, sess, wo, pending)
+		out := qr.watch(ctx, sess, wo, spec.WorktreeDir, pending)
 		qr.r.sessions.remove(wo.RunID)
 		qr.live = nil
 		// What the session last said about the subscription outlives it: it
@@ -1226,7 +1226,7 @@ func (o *watchOutcome) notePRs(s string) {
 // lease — a run that says nothing for fifteen minutes is handed to somebody
 // else. [MinReportInterval] is the ceiling on the event-driven half, so a
 // chatty agent does not turn every tool call into a round trip.
-func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.WorkOrder,
+func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.WorkOrder, dir string,
 	pending *elk.Usage) watchOutcome {
 
 	var (
@@ -1239,6 +1239,9 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		live      = qr.live
 		// What ran since the last tool report, for its receipt.
 		didTools, didCmds, didFiles []string
+		// didPaths are the same edits, repository-relative, for the
+		// receipt's files.
+		didPaths []string
 		// whyFrom is where the text the next receipt's Why and Next come
 		// from starts: only what the agent wrote since the last one.
 		whyFrom int
@@ -1443,6 +1446,9 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					didCmds = append(didCmds, cmd)
 				case file != "":
 					didFiles = append(didFiles, file)
+					if p := repoPath(dir, editedPath(ev.Tool)); p != "" {
+						didPaths = append(didPaths, p)
+					}
 				default:
 					didTools = append(didTools, name)
 				}
@@ -1450,9 +1456,11 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				if time.Since(lastToolT) >= MinReportInterval || time.Since(lastRep) >= MinReportInterval {
 					lastToolT = time.Now()
 					body := orDefault(didLine(didTools, didCmds, didFiles), "Ran "+name+".")
-					didTools, didCmds, didFiles = nil, nil, nil
+					files := distinct(didPaths)
+					didTools, didCmds, didFiles, didPaths = nil, nil, nil, nil
 					why, next := whyNextSince(text.String(), &whyFrom)
-					if !receipt(elk.ProgressTool, body, why, next) {
+					if !(say() && post(elk.Progress{Kind: elk.ProgressTool, Body: body, Why: why, Next: next,
+						Files: files}) && deliver()) {
 						out.text = text.String()
 						return out
 					}

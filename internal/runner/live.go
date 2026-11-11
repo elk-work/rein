@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -48,4 +49,33 @@ func sayParts(text string) []string {
 		out = append(out, text)
 	}
 	return out
+}
+
+// repoPath is p relative to the worktree dir, slash-separated, or "" when p
+// is outside it. A worktree reached through a symlink (macOS /var is
+// /private/var) still matches the file's real path.
+func repoPath(dir, p string) string {
+	if p = strings.TrimSpace(p); p == "" {
+		return ""
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	dirs := []string{dir}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dirs = append(dirs, real)
+	}
+	paths := []string{p}
+	if real, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		paths = append(paths, filepath.Join(real, filepath.Base(p)))
+	}
+	for _, d := range dirs {
+		for _, q := range paths {
+			rel, err := filepath.Rel(d, q)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return filepath.ToSlash(rel)
+			}
+		}
+	}
+	return ""
 }

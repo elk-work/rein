@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,5 +55,33 @@ func TestSayPartsSplitOnRunesUnderTheCap(t *testing.T) {
 	}
 	if got := sayParts("  \n"); len(got) != 0 {
 		t.Errorf("blank text made parts: %q", got)
+	}
+}
+
+func TestRepoPath(t *testing.T) {
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		filepath.Join(dir, "a", "b.go"):  "a/b.go",
+		filepath.Join(real, "c.go"):      "c.go",
+		"docs/x.md":                      "docs/x.md",
+		"../escape.go":                   "",
+		"/etc/hosts":                     "",
+		filepath.Join(dir, "..", "x.go"): "",
+	} {
+		if got := repoPath(dir, in); got != want {
+			t.Errorf("repoPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// The worktree named through a symlink, the file through its real path.
+	if got := repoPath(link, filepath.Join(real, "d.go")); got != "d.go" {
+		t.Errorf("through a symlinked worktree: %q", got)
 	}
 }

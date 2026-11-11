@@ -1,6 +1,8 @@
 package runner_test
 
 import (
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -9,7 +11,6 @@ import (
 	"github.com/elk-work/rein/internal/elk/elktest"
 	"github.com/elk-work/rein/internal/runner"
 )
-
 
 // reportBodies is every report_progress body, in order.
 func (h *harness) reportBodies() []string {
@@ -100,4 +101,31 @@ func TestAReplyToAMessageIsSentAtOnce(t *testing.T) {
 	if say < 0 || question < 0 || say > question {
 		t.Errorf("the reply was not sent before the agent's next report: %q", bodies)
 	}
+}
+
+// A tool receipt names the files edited since the last one, relative to the
+// repository; a path outside the worktree is left out.
+func TestAToolReceiptCarriesTheEditedFiles(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	dir := filepath.Join(h.wts.root, "run-1")
+	edit := func(path string) adapter.Event {
+		return adapter.Event{Kind: adapter.EventToolUse,
+			Tool: &adapter.ToolUse{Name: "Edit", Input: []byte(`{"file_path":"` + path + `"}`)}}
+	}
+	h.agent.Script = []adapter.Event{edit(filepath.Join(dir, "Sources", "Sheet.swift"))}
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	for _, c := range h.elk.CallsTo("report_progress") {
+		if !strings.HasPrefix(c.Arg("body"), "Edited") {
+			continue
+		}
+		files, _ := c.Args["files"].([]any)
+		if len(files) != 1 || files[0] != "Sources/Sheet.swift" {
+			t.Errorf("files = %#v", c.Args["files"])
+		}
+		return
+	}
+	t.Errorf("no tool receipt\nlog:\n%s", h.log)
 }
