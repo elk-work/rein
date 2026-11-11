@@ -182,3 +182,41 @@ func liveRun(t *testing.T, a *Adapter, spec adapter.RunSpec) (adapter.Result, er
 	}
 	return s.Wait()
 }
+
+// A person whose Gemini CLI chooses a Google sign-in but whose key is in its
+// own .env: the run reads the key through the private home's link and goes
+// to the Gemini API, never the sign-in, even when that .env also says
+// GOOGLE_GENAI_USE_GCA=true. Google's refusal of a key that is not a key is
+// the proof the key, and not a sign-in, was used.
+func TestLiveTheKeyComesFromItsEnvFileNeverASignIn(t *testing.T) {
+	for _, c := range []struct{ name, env string }{
+		{"key only", "GEMINI_API_KEY=" + testKey + "\n"},
+		{"key and the sign-in switch", "GOOGLE_GENAI_USE_GCA=true\nGEMINI_API_KEY=" + testKey + "\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := liveAdapter(t)
+			a.Items = items{}
+			conf := filepath.Join(a.RealHome, ".gemini")
+			must(t, os.MkdirAll(conf, 0o700))
+			must(t, os.WriteFile(filepath.Join(conf, "settings.json"), []byte(`{"security":{"auth":{"selectedType":"oauth-personal"}}}`), 0o600))
+			must(t, os.WriteFile(filepath.Join(conf, ".env"), []byte(c.env), 0o600))
+			spec := baseSpec(t)
+			spec.ProviderKey = ""
+			spec.PermissionMode = adapter.PermissionReadOnly
+			spec.Model = "gemini-2.5-flash"
+			spec.Prompt = "Reply with the single word: hi"
+			spec.Timeouts.Total = 3 * time.Minute
+			s, err := a.Start(context.Background(), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range s.Events() {
+			}
+			res, err := s.Wait()
+			t.Logf("status %s, exit %d, err %v", res.Status, res.ExitCode, err)
+			if err == nil || !strings.Contains(err.Error(), "API key not valid") {
+				t.Fatalf("want Google's own refusal of the key from .env; got %v", err)
+			}
+		})
+	}
+}

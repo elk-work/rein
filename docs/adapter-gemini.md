@@ -174,6 +174,12 @@ runs a whole Gemini CLI session. A real Windows run on a real key is a lab step
 
 ## Checking it
 
+Measured on the lab Mac, 2026-11-11, with Gemini CLI 0.68.0 and a key that is
+not a key (`TestLiveTheKeyComesFromItsEnvFileNeverASignIn`): a person whose
+settings choose a Google sign-in and whose `.env` holds the key, even with
+`GOOGLE_GENAI_USE_GCA=true` in it too, runs on the key: Google refused it as
+"API key not valid", and no sign-in was started.
+
 `go test ./internal/adapter/gemini/` runs against a stand-in program, on
 macOS, Linux and Windows in CI; the tests run with an empty HOME so the
 machine's own Gemini CLI setup is never read. `REIN_GEMINI_LIVE=1 go test
