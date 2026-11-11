@@ -156,6 +156,22 @@ clear blocker is a finished run, not a failed one.
 Still forbidden whatever the task appears to ask: force-pushing, rewriting
 history, touching production, and anything reaching outside this repository.
 
+## Wrong repository
+
+If the work requires a different repository from the worktree you were handed,
+stop without changing files or reaching into another checkout. Begin your final
+markdown deliverable with these two plain lines (no code fence or blockquote),
+replacing the repository with the corrected GitHub owner/name:
+
+    stop_code: wrong_repo
+    repo: owner/name
+
+Then explain why the work belongs there. Use this declaration only for an actual
+wrong-repository stop, never as an example in a normal deliverable. Rein submits
+it as `status: stuck` with `stop_code: wrong_repo` and preserves the repo line so
+Elk can restart the task in the corrected repository. Do not ask a person to
+requeue it, and do not call Elk's submission tools yourself.
+
 ## Finish with a deliverable
 
 End by stating what you did, as **markdown**. Open with one to three plain

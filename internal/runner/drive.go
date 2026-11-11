@@ -1664,6 +1664,11 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 	}
 
 	status := elk.StatusReady
+	code := ""
+	if declaresWrongRepo(summary, repo) {
+		status = elk.StatusStuck
+		code = "wrong_repo"
+	}
 	if out.emptyResult {
 		status = elk.StatusStuck
 	}
@@ -1710,6 +1715,7 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 		RunID:       wo.RunID,
 		Deliverable: body,
 		Status:      status,
+		StopCode:    code,
 		Title:       truncate(title, 200),
 		NoProof:     noProof,
 	}, pending)

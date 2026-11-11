@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/elk-work/rein/internal/adapter"
@@ -32,4 +33,13 @@ func stopCode(err error) (code, line string) {
 		return "agent_login", ""
 	}
 	return "other", ""
+}
+
+// Only an explicit declaration at the start of the final account is a stop.
+// Never scan the work order, tool output, or quoted examples for this marker.
+var wrongRepoDeclaration = regexp.MustCompile(`\Astop_code: wrong_repo\r?\nrepo: ([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)(?:\r?\n|$)`)
+
+func declaresWrongRepo(account string, repo RepoResolution) bool {
+	m := wrongRepoDeclaration.FindStringSubmatch(strings.TrimSpace(account))
+	return m != nil && !strings.EqualFold(m[1], repo.Name)
 }
