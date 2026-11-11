@@ -110,8 +110,9 @@ var strippedPrefixes = []string{"GEMINI_", "GOOGLE_GEMINI_", "GOOGLE_GENAI_", "G
 	"GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_SHELL"}
 
 func strippedName(name string) bool {
+	up := strings.ToUpper(name) // Windows variable names ignore case
 	for _, p := range strippedPrefixes {
-		if strings.HasPrefix(name, p) {
+		if strings.HasPrefix(up, p) {
 			return true
 		}
 	}

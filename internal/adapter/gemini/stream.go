@@ -72,9 +72,11 @@ func (m modelStats) toAdapter(model string) adapter.Usage {
 
 // turnResult is a result line, as the session needs it.
 type turnResult struct {
-	ok    bool
-	error string
-	usage []adapter.Usage // one per model
+	ok       bool
+	error    string
+	usage    []adapter.Usage // one per model
+	denied   []string        // actions the program refused (Antigravity)
+	response string          // the final answer, when the program sends one whole
 }
 
 // decoded is what one line means to the session.

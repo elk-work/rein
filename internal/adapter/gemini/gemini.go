@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -75,6 +76,10 @@ const KeyService = "elk-secret"
 // needs neither.
 const InstallCommand = "brew install gemini-cli"
 
+// InstallCommandWindows is Google's other route, and the only one on Windows;
+// it needs Node.js.
+const InstallCommandWindows = "npm install -g @google/gemini-cli"
+
 // MissingKeyLine is what a person reads when no key is stored.
 const MissingKeyLine = "Add your Google key in Elk to use Gemini."
 
@@ -83,6 +88,13 @@ func init() { adapter.MustRegister(New()) }
 // Adapter drives Gemini CLI. Safe for concurrent use.
 type Adapter struct {
 	binary string
+
+	// agyBinary is Antigravity's program, for tests; empty is [AgyBinary].
+	agyBinary string
+	// agyBaseURL points Antigravity at a test stand-in for the Gemini API. It
+	// is set only by tests: in a real run GOOGLE_GEMINI_BASE_URL is stripped,
+	// since it would send the key to another host.
+	agyBaseURL string
 
 	// Items reads the key for Preflight. Nil opens this machine's store the
 	// way the run loop does (keyring.OpenItems, REIN_KEYRING).
@@ -105,12 +117,32 @@ func New() *Adapter { return &Adapter{binary: Binary} }
 // Name implements [adapter.Adapter].
 func (a *Adapter) Name() string { return Kind }
 
-// Manifest implements [adapter.Adapter].
+// Manifest implements [adapter.Adapter]: Antigravity's while Elk's server has
+// it switched on (switch.go), Gemini CLI's otherwise.
+func (a *Adapter) Manifest() adapter.Manifest {
+	if a.useAgy() {
+		return agyManifest()
+	}
+	return geminiCLIManifest()
+}
+
+// useAgy reports whether this run should be Antigravity: the switch is on and
+// the program is installed. With the switch on and only Gemini CLI installed,
+// Gemini CLI runs, as before. Off, agy is never looked for.
+func (a *Adapter) useAgy() bool {
+	if !AntigravityOn() {
+		return false
+	}
+	_, err := a.resolveAgy()
+	return err == nil
+}
+
+// geminiCLIManifest is Gemini CLI's manifest.
 //
 // Checked against Gemini CLI 0.64 on darwin/arm64, 2026-11-04, against a local
 // stand-in for the Gemini API (no real key exists for Rein's tests) and once
 // against Google's own API with a key Google refused.
-func (a *Adapter) Manifest() adapter.Manifest {
+func geminiCLIManifest() adapter.Manifest {
 	return adapter.Manifest{
 		Kind:   Kind,
 		Binary: Binary,
@@ -125,8 +157,9 @@ func (a *Adapter) Manifest() adapter.Manifest {
 			adapter.CapApprovals:        adapter.SupportNo,
 			adapter.CapSteer:            adapter.SupportNo,
 		},
-		// Windows is left out until it is measured there.
-		Platforms: []adapter.Platform{adapter.AnyArch("darwin"), adapter.AnyArch("linux")},
+		// Windows since ark:rein#151: the same program from npm (gemini.cmd),
+		// the same settings and environment; a run is killed by process tree.
+		Platforms: []adapter.Platform{adapter.AnyArch("darwin"), adapter.AnyArch("linux"), adapter.AnyArch("windows")},
 		Notes: "Runs on the person's own Gemini API key, never a Google sign-in (Casey, " +
 			"2026-11-04). approvals is `no`: headless Gemini CLI cannot ask, so the usable " +
 			"modes are read_only (`--approval-mode plan`, measured: write_file denied) and " +
@@ -158,8 +191,12 @@ func (keyError) Is(target error) bool {
 var ErrNoKey error = keyError{}
 
 func notInstalled() error {
+	how := InstallCommand
+	if runtime.GOOS == "windows" {
+		how = InstallCommandWindows
+	}
 	return fmt.Errorf("%w: Gemini CLI (`gemini`) is not installed on this computer. Install it with: %s (%w)",
-		adapter.ErrPreflight, InstallCommand, exec.ErrNotFound)
+		adapter.ErrPreflight, how, exec.ErrNotFound)
 }
 
 // ------------------------------------------------------------- preflight ---
@@ -174,6 +211,9 @@ func notInstalled() error {
 // Google's API itself with the person's key. A bad key surfaces as the run's
 // own error, in Google's words ("API key not valid").
 func (a *Adapter) Preflight(ctx context.Context) error {
+	if a.useAgy() {
+		return a.preflightAgy()
+	}
 	bin, err := a.resolveBinary()
 	if err != nil {
 		return err
@@ -232,15 +272,27 @@ func (a *Adapter) resolveBinary() (string, error) {
 	if path, err := exec.LookPath(bin); err == nil {
 		return path, nil
 	}
-	// Homebrew's prefix, for a daemon started outside a login shell.
+	// Homebrew's prefix, or npm's on Windows, for a service started outside
+	// a login shell.
 	if bin == Binary {
-		for _, p := range []string{"/opt/homebrew/bin/gemini", "/usr/local/bin/gemini"} {
-			if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		for _, p := range fallbackGeminiPaths() {
+			if info, err := os.Stat(p); err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
 				return p, nil
 			}
 		}
 	}
 	return "", notInstalled()
+}
+
+func fallbackGeminiPaths() []string {
+	if runtime.GOOS != "windows" {
+		return []string{"/opt/homebrew/bin/gemini", "/usr/local/bin/gemini"}
+	}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		// npm install -g puts its shims in %APPDATA%\npm.
+		return []string{filepath.Join(appData, "npm", "gemini.cmd")}
+	}
+	return nil
 }
 
 func (a *Adapter) root() (string, error) {
@@ -319,12 +371,18 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		return nil, err
 	}
 	if len(spec.AllowedTools) > 0 || len(spec.DeniedTools) > 0 {
-		return nil, fmt.Errorf("%w: Gemini CLI has no per-run tool list Rein drives, so a run that narrows its tools cannot be honoured",
+		return nil, fmt.Errorf("%w: Rein drives no per-run tool list for Google's programs, so a run that narrows its tools cannot be honoured",
 			adapter.ErrNotSupported)
 	}
 	key := strings.TrimSpace(spec.ProviderKey)
 	if len(key) < secretenv.MinValueLen {
 		return nil, ErrNoKey
+	}
+	if a.useAgy() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return a.startAgy(spec, key)
 	}
 	// A repository's own Gemini settings can choose the sign-in, and the
 	// workspace layer outranks the private home's (measured: a checked-in
@@ -367,11 +425,26 @@ func firstLine(s string) string {
 	return s
 }
 
-// ProgramVersion implements [adapter.ProgramVersioner].
+// ProgramVersion implements [adapter.ProgramVersioner]: the version with the
+// program's name, "1.5.5 (Antigravity)" or "0.64.0 (Gemini CLI)", which is how
+// Elk learns which Google program this queue runs.
 func (a *Adapter) ProgramVersion(ctx context.Context) string {
-	bin, err := a.resolveBinary()
+	name, bin := "Gemini CLI", ""
+	if a.useAgy() {
+		name, bin = AgyName, mustPath(a.resolveAgy())
+	} else {
+		bin = mustPath(a.resolveBinary())
+	}
+	v := adapter.ReadProgramVersion(ctx, bin)
+	if v == "" {
+		return ""
+	}
+	return v + " (" + name + ")"
+}
+
+func mustPath(p string, err error) string {
 	if err != nil {
 		return ""
 	}
-	return adapter.ReadProgramVersion(ctx, bin)
+	return p
 }

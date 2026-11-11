@@ -7,6 +7,7 @@ import (
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/adapter/fake"
 	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
+	"github.com/elk-work/rein/internal/elk/elktest"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/runner"
 )
@@ -128,5 +129,48 @@ func TestAGeminiRunWithNoKeyIsStuckWithThePlainLine(t *testing.T) {
 	}
 	if sub.Arg("stop_code") != "agent_login" {
 		t.Errorf("stop_code = %q, want agent_login", sub.Arg("stop_code"))
+	}
+}
+
+// Elk's Antigravity switch (Elk #1755) reaches the gemini adapter from a
+// gemini queue's heartbeat reply, and only from one: another queue's reply
+// cannot turn it on or off, and a reply without it turns it off.
+func runWithHeartbeat(t *testing.T, gemini bool, structured map[string]any, start bool) bool {
+	t.Helper()
+	geminiadapter.SetAntigravity(start)
+	t.Cleanup(func() { geminiadapter.SetAntigravity(false) })
+	h := newHarness(t)
+	if gemini {
+		asGemini(t, h)
+	}
+	h.elk.Reply("heartbeat_executor", elktest.Reply{Text: "ok", Structured: structured})
+	h.elk.Text("claim_run", order("run-1"))
+	if err := h.run(runner.Options{Secrets: newFakeItems("elk-secret/GEMINI_API_KEY", geminiValue)}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	return geminiadapter.AntigravityOn()
+}
+
+func TestAGeminiQueuesHeartbeatSwitchesAntigravityOn(t *testing.T) {
+	if !runWithHeartbeat(t, true, map[string]any{"antigravity": true}, false) {
+		t.Fatal("a gemini queue's heartbeat did not switch Antigravity on")
+	}
+}
+
+func TestAnotherQueuesHeartbeatCannotSwitchAntigravityOn(t *testing.T) {
+	if runWithHeartbeat(t, false, map[string]any{"antigravity": true}, false) {
+		t.Fatal("a claude queue's heartbeat switched Antigravity on")
+	}
+}
+
+func TestAnotherQueuesHeartbeatCannotSwitchAntigravityOff(t *testing.T) {
+	if !runWithHeartbeat(t, false, nil, true) {
+		t.Fatal("a claude queue's heartbeat switched Antigravity off")
+	}
+}
+
+func TestAHeartbeatWithoutTheSwitchTurnsItOff(t *testing.T) {
+	if runWithHeartbeat(t, true, nil, true) {
+		t.Fatal("a reply without the switch left Antigravity on")
 	}
 }
