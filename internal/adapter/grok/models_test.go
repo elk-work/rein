@@ -32,6 +32,21 @@ func TestParseModels(t *testing.T) {
 	}
 }
 
+func TestParseModelsIgnoresProse(t *testing.T) {
+	got := parseModels("You are logged in.\ngrok-4 is deprecated since the last release\n")
+	if got != nil {
+		t.Errorf("prose line gave %v, want nil", got)
+	}
+	got = parseModels("You are logged in.\n  - grok-4\nNote: grok-5 is coming soon, stay tuned\ngrok-6\n")
+	if want := []string{"grok-4"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("parseModels = %v, want %v", got, want)
+	}
+	got = parseModels("You are logged in.\nModels:\ngrok-4\n\ngrok-3\n")
+	if want := []string{"grok-4", "grok-3"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("header then ids = %v, want %v", got, want)
+	}
+}
+
 func TestPreflightKeepsModels(t *testing.T) {
 	path, _ := fakeGrok(t, modelsSample, "unused", 0)
 	a := New()

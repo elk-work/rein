@@ -1078,7 +1078,9 @@ run's details, and `rein status` has a `LAND` column.
 **Elk can set `read_only` or `full` too.** The heartbeat reply's `settings`
 carries `permission` beside `land` and `secrets`; Rein writes it to the queue's
 `permission_mode` in the same config write, and an unknown value is refused and
-logged. `session.permission` reports the running mode on every beat.
+logged. `session.permission` reports the running mode on every beat. Elk's
+`full` replaces a locally set `ask` or `accept_edits` mode; only a heartbeat
+with no `permission` leaves the local mode alone.
 
 **`session.models`** lists the models the queue's program itself reported
 (today only Grok's `grok models`, at preflight). It is left out when the program

@@ -180,10 +180,12 @@ func (a *Adapter) Models() []string {
 	return a.modelIDs
 }
 
-// parseModels reads model ids from `grok models`: the first field of each line
-// after the "logged in" line, with an optional bullet, when it starts "grok-".
-// Anything else is skipped, so a changed or empty output gives nil rather than
-// a wrong list. Nothing here is checked against a real grok capture.
+// parseModels reads model ids from `grok models`: after the "logged in" line,
+// a line is a model when it has at most three fields and its first (after an
+// optional bullet) is `grok-` plus [a-z0-9.-]. Collecting stops at the first
+// other non-blank line once an id was found, so trailing prose is never read as
+// a model. Anything else gives nil. Nothing here is checked against a real grok
+// capture.
 func parseModels(text string) []string {
 	var ids []string
 	seen := false
@@ -193,14 +195,18 @@ func parseModels(text string) []string {
 			continue
 		}
 		f := strings.Fields(strings.TrimLeft(strings.TrimSpace(line), "-*• "))
-		if len(f) > 0 && modelIDRE.MatchString(f[0]) {
+		switch {
+		case len(f) == 0:
+		case len(f) <= 3 && modelIDRE.MatchString(f[0]):
 			ids = append(ids, f[0])
+		case len(ids) > 0:
+			return ids
 		}
 	}
 	return ids
 }
 
-var modelIDRE = regexp.MustCompile(`^grok-[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var modelIDRE = regexp.MustCompile(`^grok-[a-z0-9.-]+$`)
 
 // loginAdvice is what a person reads when Preflight refuses. Running `grok
 // models` is a sign-in in its own right: if the refresh token is good, that

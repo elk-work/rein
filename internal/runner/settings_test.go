@@ -103,3 +103,18 @@ func TestApplyElkSettingsPermission(t *testing.T) {
 		t.Errorf("both: land=%q mode=%q changed=%v err=%v", q.Land, q.PermissionMode, changed, err)
 	}
 }
+
+func TestApplyElkSettingsNilPermissionKeepsMode(t *testing.T) {
+	cfg := settingsCfg(config.Queue{})
+	next, changed, err := ApplyElkSettings(cfg, "Elk Scout", "mac-claude", elk.WorkerSettings{Permission: ptr("read_only")})
+	if err != nil || !changed {
+		t.Fatalf("first: changed=%v err=%v", changed, err)
+	}
+	again, changed, err := ApplyElkSettings(next, "Elk Scout", "mac-claude", elk.WorkerSettings{})
+	if err != nil || changed {
+		t.Fatalf("second: changed=%v err=%v", changed, err)
+	}
+	if q, _ := again.QueueIn("Elk Scout", "mac-claude"); q.PermissionMode != "read_only" {
+		t.Errorf("mode = %q, want read_only", q.PermissionMode)
+	}
+}
