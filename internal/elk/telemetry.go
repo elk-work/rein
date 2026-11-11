@@ -135,6 +135,10 @@ type SessionReading struct {
 	// idle or running. Empty only from a caller that built no queue at all.
 	Land string `json:"land,omitempty"`
 
+	// Permission is this queue's permission mode — "read_only", "ask",
+	// "accept_edits" or "full" — configuration like Land, on every beat.
+	Permission string `json:"permission,omitempty"`
+
 	// ContextUsedTokens is how full the model's context is: the prompt the
 	// most recent request actually carried. ContextWindowTokens is what the
 	// model can hold. Both pointers — an adapter that does not report them

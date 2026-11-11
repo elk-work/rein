@@ -602,3 +602,18 @@ func TestSessionReadingCarriesProgramVersion(t *testing.T) {
 		t.Fatalf("running: %q", s.ProgramVersion)
 	}
 }
+
+func TestSessionReadingCarriesPermission(t *testing.T) {
+	qr := testQueueRunner(testRunner(fullMachine()))
+	if got := qr.sessionReading().Permission; got != "full" {
+		t.Errorf("default permission = %q, want full", got)
+	}
+	qr.q.PermissionMode = "read_only"
+	if got := qr.sessionReading().Permission; got != "read_only" {
+		t.Errorf("idle permission = %q, want read_only", got)
+	}
+	qr.startRun("arun-1")
+	if got := qr.sessionReading().Permission; got != "read_only" {
+		t.Errorf("running permission = %q, want read_only", got)
+	}
+}

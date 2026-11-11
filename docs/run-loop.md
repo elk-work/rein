@@ -1075,6 +1075,11 @@ pushed, since there is then no branch for one to come from). Then:
 needed to send it), it is in the run's first progress report and in every
 run's details, and `rein status` has a `LAND` column.
 
+**Elk can set `read_only` or `full` too.** The heartbeat reply's `settings`
+carries `permission` beside `land` and `secrets`; Rein writes it to the queue's
+`permission_mode` in the same config write, and an unknown value is refused and
+logged. `session.permission` reports the running mode on every beat.
+
 **None of this is a control**, for the reason in *What the prompt cannot
 enforce* above: an agent holding a shell under `full` can run whatever merge
 it is told not to, and the check sees only the run's own branch — a second

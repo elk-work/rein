@@ -424,7 +424,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		if tel.faulted {
 			state = StateFaulted
 		}
-		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Effort: tel.effort, ProgramVersion: tel.programVersion}
+		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Permission: qr.q.PermissionModeOrDefault(), Effort: tel.effort, ProgramVersion: tel.programVersion}
 		putWaiting(s, tel)
 		qr.r.putRefusal(s)
 		// No session, but the subscription is still there: the last reading,
@@ -441,6 +441,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		ProgramVersion: tel.programVersion,
 		StartedAt:      elk.RFC3339(tel.started),
 		Land:           qr.q.LandOrDefault(),
+		Permission:     qr.q.PermissionModeOrDefault(),
 	}
 	if !tel.tokens.empty() {
 		s.Tokens = &elk.TokenReading{

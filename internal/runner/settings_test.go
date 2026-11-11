@@ -80,3 +80,26 @@ func TestApplyElkSettingsRefusesWhatWouldNotLoad(t *testing.T) {
 		t.Fatal("an unknown queue was accepted")
 	}
 }
+
+func TestApplyElkSettingsPermission(t *testing.T) {
+	mode := func(c config.Config) string { q, _ := c.QueueIn("Elk Scout", "mac-claude"); return q.PermissionMode }
+	cfg := settingsCfg(config.Queue{PermissionMode: "ask"})
+	for _, want := range []string{"read_only", "full"} {
+		next, changed, err := ApplyElkSettings(cfg, "Elk Scout", "mac-claude", elk.WorkerSettings{Permission: ptr(want)})
+		if err != nil || !changed || mode(next) != want {
+			t.Errorf("%s: mode=%q changed=%v err=%v", want, mode(next), changed, err)
+		}
+	}
+	next, changed, err := ApplyElkSettings(cfg, "Elk Scout", "mac-claude", elk.WorkerSettings{})
+	if err != nil || changed || mode(next) != "ask" {
+		t.Errorf("nil permission: mode=%q changed=%v err=%v", mode(next), changed, err)
+	}
+	if _, changed, err := ApplyElkSettings(cfg, "Elk Scout", "mac-claude", elk.WorkerSettings{Permission: ptr("sudo")}); err == nil || changed || !strings.Contains(err.Error(), "sudo") {
+		t.Errorf("sudo: changed=%v err=%v", changed, err)
+	}
+	both, changed, err := ApplyElkSettings(cfg, "Elk Scout", "mac-claude", elk.WorkerSettings{Land: ptr("pr"), Permission: ptr("read_only")})
+	q, _ := both.QueueIn("Elk Scout", "mac-claude")
+	if err != nil || !changed || q.Land != config.LandPR || q.PermissionMode != "read_only" {
+		t.Errorf("both: land=%q mode=%q changed=%v err=%v", q.Land, q.PermissionMode, changed, err)
+	}
+}
