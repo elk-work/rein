@@ -129,3 +129,63 @@ func TestAToolReceiptCarriesTheEditedFiles(t *testing.T) {
 	}
 	t.Errorf("no tool receipt\nlog:\n%s", h.log)
 }
+
+// Claude's TodoWrite input, in the shape Claude Code sends it (hand-written;
+// no recorded fixture carries one).
+func todoWrite(statuses ...string) adapter.Event {
+	in := `{"todos":[`
+	for i, s := range statuses {
+		if i > 0 {
+			in += ","
+		}
+		in += `{"content":"Step ` + string(rune('A'+i)) + `","status":"` + s + `","activeForm":"Doing it"}`
+	}
+	in += `]}`
+	return adapter.Event{Kind: adapter.EventToolUse, Tool: &adapter.ToolUse{Name: "TodoWrite", Input: []byte(in)}}
+}
+
+// TodoWrite becomes the run's plan: sent at once, then at most every five
+// seconds, and the last one held is sent before the session's end is handled.
+func TestTodoWriteSendsThePlan(t *testing.T) {
+	h := newHarness(t)
+	h.elk.Text("claim_run", order("run-1"))
+	h.agent.Script = []adapter.Event{
+		todoWrite("in_progress", "pending"),
+		todoWrite("completed", "in_progress"),
+		todoWrite("completed", "completed", ""),
+	}
+	if err := h.run(runner.Options{}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	var plans [][]any
+	for _, c := range h.elk.CallsTo("report_progress") {
+		if c.Arg("body") == "Ran TodoWrite" {
+			t.Errorf("TodoWrite was also reported as a tool")
+		}
+		if c.Arg("body") != "Updated the plan" {
+			continue
+		}
+		if c.Arg("kind") != "step" {
+			t.Errorf("plan kind = %q", c.Arg("kind"))
+		}
+		plan, _ := c.Args["plan"].([]any)
+		plans = append(plans, plan)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("plan reports = %d, want the first and the last: %#v", len(plans), plans)
+	}
+	last := plans[1]
+	if len(last) != 3 {
+		t.Fatalf("last plan = %#v", last)
+	}
+	want := []string{"completed", "completed", "pending"} // a missing status reads as pending
+	for i, item := range last {
+		m, _ := item.(map[string]any)
+		if m["status"] != want[i] || m["content"] != "Step "+string(rune('A'+i)) {
+			t.Errorf("item %d = %#v", i, m)
+		}
+		if _, extra := m["activeForm"]; extra {
+			t.Errorf("item %d carries more than content and status: %#v", i, m)
+		}
+	}
+}

@@ -588,6 +588,15 @@ type Progress struct {
 	// Files are the repository-relative paths edited since the previous
 	// receipt (scout 0710), sent only when there are any.
 	Files []string
+	// Plan, when not nil, replaces the run's plan (scout 0710).
+	Plan []PlanItem
+}
+
+// PlanItem is one line of the agent's plan; Status is pending, in_progress
+// or completed.
+type PlanItem struct {
+	Content string `json:"content"`
+	Status  string `json:"status"`
 }
 
 // ReportProgress heartbeats a claimed run and renews its 15-minute lease.
@@ -620,6 +629,9 @@ func (c *Client) ReportProgress(ctx context.Context, p Progress) (*ToolResult, e
 	}
 	if len(p.Files) > 0 {
 		args["files"] = p.Files
+	}
+	if p.Plan != nil {
+		args["plan"] = p.Plan
 	}
 	p.Usage.put(args)
 

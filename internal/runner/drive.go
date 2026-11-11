@@ -1252,6 +1252,10 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		unsaid   strings.Builder
 		sayTimer *time.Timer
 		sayC     <-chan time.Time
+		// heldPlan is the agent's latest plan not yet sent, held while
+		// planEvery has not passed since lastPlan.
+		heldPlan []elk.PlanItem
+		lastPlan time.Time
 	)
 	var capC <-chan time.Time
 	if qr.r.opts.Hosted {
@@ -1296,6 +1300,16 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		}
 		return true
 	}
+	// plan sends the held plan, when there is one and force or planEvery
+	// allows it.
+	plan := func(force bool) bool {
+		if heldPlan == nil || !force && time.Since(lastPlan) < planEvery {
+			return true
+		}
+		p := heldPlan
+		heldPlan, lastPlan = nil, time.Now()
+		return post(elk.Progress{Kind: elk.ProgressStep, Body: "Updated the plan", Plan: p})
+	}
 	// deliver hands the session the task comments waiting in qr.unsent, the
 	// way `rein attach` input goes in. Not while the agent's question is
 	// open: an adapter may take input then as the answer (Codex does). A
@@ -1320,7 +1334,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 		return true
 	}
 	receipt := func(kind elk.ProgressKind, body, why, next string) bool {
-		return say() && send(kind, body, why, next) && deliver()
+		return say() && plan(false) && send(kind, body, why, next) && deliver()
 	}
 	report := func(kind elk.ProgressKind, body string) bool { return receipt(kind, body, "", "") }
 
@@ -1438,6 +1452,15 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					name = ev.Tool.Name
 				}
 				out.tools = append(out.tools, name)
+				if p, ok := todoPlan(ev.Tool); ok {
+					// The plan has a report of its own, not a receipt line.
+					heldPlan = p
+					if !plan(false) {
+						out.text = text.String()
+						return out
+					}
+					break
+				}
 				cmd, file := toolCommand(ev.Tool), editedFile(ev.Tool)
 				switch {
 				case cmd != "":
@@ -1459,7 +1482,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 					files := distinct(didPaths)
 					didTools, didCmds, didFiles, didPaths = nil, nil, nil, nil
 					why, next := whyNextSince(text.String(), &whyFrom)
-					if !(say() && post(elk.Progress{Kind: elk.ProgressTool, Body: body, Why: why, Next: next,
+					if !(say() && plan(false) && post(elk.Progress{Kind: elk.ProgressTool, Body: body, Why: why, Next: next,
 						Files: files}) && deliver()) {
 						out.text = text.String()
 						return out
@@ -1524,7 +1547,7 @@ func (qr *queueRunner) watch(ctx context.Context, sess adapter.Session, wo *elk.
 				// A reply the person is waiting on goes out even when the
 				// turn ends inside the coalesce delay. Otherwise the last
 				// text is the deliverable, which Elk shows on its own.
-				if sayC != nil && !say() {
+				if sayC != nil && !say() || !plan(true) {
 					out.text = text.String()
 					return out
 				}
@@ -1664,6 +1687,13 @@ func (qr *queueRunner) reportProgress(ctx context.Context, p elk.Progress, pendi
 	}
 	p.Body = truncate(qr.redactString(p.Body), 4000)
 	p.Why, p.Next = qr.redactString(p.Why), qr.redactString(p.Next)
+	if p.Plan != nil {
+		plan := make([]elk.PlanItem, len(p.Plan))
+		for i, item := range p.Plan {
+			plan[i] = elk.PlanItem{Content: qr.redactString(item.Content), Status: item.Status}
+		}
+		p.Plan = plan
+	}
 	if pending.Valid() && !pending.Empty() {
 		u := *pending
 		p.Usage = &u

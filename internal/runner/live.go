@@ -1,10 +1,14 @@
 package runner
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/elk"
 )
 
 // What task live step 2 adds to the run loop (scout spec
@@ -24,6 +28,8 @@ const (
 	sayCoalesce = 500 * time.Millisecond
 	// sayMax is Elk's cap on one event body.
 	sayMax = 4000
+	// planEvery is the least time between two plan reports.
+	planEvery = 5 * time.Second
 )
 
 // inReplyWindow reports whether now is inside the window a delivered message
@@ -78,4 +84,28 @@ func repoPath(dir, p string) string {
 		}
 	}
 	return ""
+}
+
+// todoPlan is the plan in a Claude TodoWrite call, and whether t is one. A
+// status Elk does not know reads as pending.
+func todoPlan(t *adapter.ToolUse) ([]elk.PlanItem, bool) {
+	if t == nil || t.Name != "TodoWrite" {
+		return nil, false
+	}
+	var in struct {
+		Todos []elk.PlanItem `json:"todos"`
+	}
+	if json.Unmarshal(t.Input, &in) != nil {
+		return nil, false
+	}
+	plan := make([]elk.PlanItem, 0, len(in.Todos))
+	for _, item := range in.Todos {
+		switch item.Status {
+		case "pending", "in_progress", "completed":
+		default:
+			item.Status = "pending"
+		}
+		plan = append(plan, item)
+	}
+	return plan, true
 }
