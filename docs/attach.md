@@ -158,8 +158,22 @@ deliverable (see *submit_deliverable* in run-loop.md):
 
 **And never what they typed.** The lines you send are recorded in this
 machine's run log, `~/.rein/log/runs/<run id>.jsonl`, which is the account of
-the run and does not leave the machine. A deliverable is read by whoever asked
-for the work, and a takeover transcript is not theirs.
+the run. The run log file itself stays on the machine. A deliverable is read by
+whoever asked for the work, and a takeover transcript is not theirs.
+
+**What may leave the machine** (Nathanael's ruling, 11 November 2026, which
+replaces the earlier rule that a run's transcript stays on the machine). For a
+session in Elk's task workspace, Elk may receive the agent's **thinking** and
+the agent's **own words**, and nothing of a tool's **output**: a tool step
+reaches Elk as its name, a one-line summary and its exit status. The ruling
+covers every Rein run, including tasks Elk's scheduler sends, not only ones a
+person starts. **Redaction on the machine lands first**: nothing new streams
+until it is in place. Today Rein removes only the exact values of secrets it
+handed the run, so a key the agent reads from a file is not caught. The fuller
+redaction is described in the Security section of
+`docs/milestones/task-workspace/plan.html` in elk-work/elk. Rein still drops
+thinking today (see `internal/adapter/claude/stream.go`). What a person types
+through `rein attach` is still not sent.
 
 ## Trade-offs worth knowing
 

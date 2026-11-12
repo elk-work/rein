@@ -250,7 +250,7 @@ The vendor's NDJSON, line by line:
 | `system` / anything else | `progress` | e.g. `thinking_tokens` |
 | `assistant` → `text` block | `text` | |
 | `assistant` → `tool_use` block | `tool_use` | name, id and arguments verbatim |
-| `assistant` → `thinking` block | *dropped* | reasoning is not a work record |
+| `assistant` → `thinking` block | *dropped* | for now: Elk may receive it under the 2026-11-11 ruling, but not before redaction on the machine lands ([`attach.md`](attach.md#what-the-run-says)) |
 | `assistant` → `message.usage` | `usage` | an increment, with the model |
 | `user` → `tool_result` block | `progress` | Rein has no `tool_result` kind; the correlation id is in the text and in `Raw` |
 | `rate_limit_event` | `progress` | window utilisation — a fleet starving the developer is the named risk in elk `docs/rein.md` §3 |
