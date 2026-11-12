@@ -81,9 +81,8 @@ func TestEveryRunGetsAnElkConnectorOnTheQueuesOwnToken(t *testing.T) {
 }
 
 func TestAnAdapterThatCannotDenyToolsGetsNoElkConnector(t *testing.T) {
-	// Codex and Grok cannot keep a named MCP tool out of a session, so they
-	// would hand the agent submit_deliverable and rotate_own_token on the very
-	// token Rein uses. No connector, and no claim to have one.
+	// An adapter without MCP tool denial support (such as Grok) gets no
+	// connector and makes no claim to have one.
 	h := newHarness(t)
 	h.elk.Text("claim_run", order("run-1"))
 	if err := h.run(runner.Options{}); err != nil {

@@ -139,8 +139,8 @@ func (s MCPServerSpec) Capability() string { return "mcp:" + s.Name }
 // holds that token — a loopback proxy in the run loop does, and refuses Rein's
 // own tools — and an adapter that can also deny them by name keeps them out of
 // the session's tool list, so the agent is never offered a call that will be
-// refused. Only such an adapter gets the connector today: the proxy has been
-// verified against Claude Code alone.
+// refused. Only such an adapter gets the connector today; the proxy has been
+// verified against Claude Code and Codex.
 type MCPToolDenier interface {
 	MCPToolName(server, tool string) (name string, ok bool)
 }

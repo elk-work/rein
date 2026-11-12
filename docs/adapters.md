@@ -344,10 +344,24 @@ type MCPToolDenier interface {
 }
 ```
 
-Only an adapter that implements it gets the connector today, which is Claude
-(`mcp__elk__<tool>`, the form `--disallowedTools` takes); the proxy has not yet
-been verified against Codex's or Grok's MCP clients. A Wrangler cycle is
-unaffected: it gets its owner's connector, no proxy and no deny list.
+Claude and Codex implement this interface. Claude uses
+`mcp__elk__<tool>` with `--disallowedTools`. Codex 0.159.0 uses the same
+qualified names; the adapter translates them to unqualified `disabled_tools`
+entries under `thread/start params.config.mcp_servers.elk`. The run connector
+therefore reaches Codex as a plain loopback URL and its queue declares
+`mcp:elk`. Built-in tool denials and allow lists remain unsupported by Codex.
+
+The real Codex integration test starts an isolated, unauthenticated app-server
+thread against a local fake Elk through the proxy. It checks the tool
+inventory, client-side filtering, an allowed read call and refusal of
+`claim_run` both through Codex and directly through the proxy, without a model
+turn or real Elk access:
+`go test -tags integration ./internal/runner -run '^TestIntegrationCodexRunConnector$' -v`.
+The inventory API returns unqualified tool keys.
+
+Grok remains outside this connector path. A Wrangler cycle is unaffected:
+it gets its owner's connector, no proxy and no deny list. This wiring does
+not update a running daemon; release and rollout are separate work.
 
 ## Errors
 
