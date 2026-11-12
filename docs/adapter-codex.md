@@ -68,10 +68,16 @@ turn is running; everything after that arrives as notifications.
 `never` is what makes `read_only` and `full` quiet: under it Codex raises no
 approval at all, so neither mode can wait on an answer nobody promised.
 
-**`AllowedTools` and `DeniedTools` are refused, not ignored.** The app server
-has no per-tool allow list this adapter has verified, and quietly dropping the
-narrowing a packet asked for is exactly the downgrade `docs/adapters.md`
-forbids. `Start` returns `ErrNotSupported`.
+**`AllowedTools` and built-in tool denials are refused, not ignored.**
+`Start` returns `ErrNotSupported` for restrictions it cannot enforce.
+Qualified MCP `DeniedTools` names (`mcp__<server>__<tool>`) on a supplied
+server become unqualified `disabled_tools` entries in that server's
+`thread/start params.config.mcp_servers` table. Ambiguous, malformed or
+overlength names are refused. Existing server denials are preserved, and
+shared server configuration is never mutated. This lets ordinary Codex runs
+receive the queue's proxied Elk connector (ark:rein#155); the proxy also filters
+discovery and refuses Rein-owned tools independently of client settings.
+See [the connector verification](adapters.md#the-elk-run-connector).
 
 ## Capabilities
 

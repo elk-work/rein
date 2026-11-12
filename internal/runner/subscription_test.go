@@ -280,12 +280,12 @@ func TestAnIdleReaderIsReadAndHeldWithoutClaiming(t *testing.T) {
 			Exhausted: true, ExhaustedUntil: until,
 		}, nil
 	})
-	reader.Kind = "codex"
+	reader.Kind = "test-headroom-reader"
 	if err := adapter.Register(reader); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { adapter.Unregister("codex") })
-	h.cfg.Queues[0].AgentKind = "codex"
+	t.Cleanup(func() { adapter.Unregister("test-headroom-reader") })
+	h.cfg.Queues[0].AgentKind = "test-headroom-reader"
 
 	err := h.runLoop(runner.Options{PollInterval: 20 * time.Millisecond, TelemetryInterval: time.Hour}, 400*time.Millisecond)
 	if err != nil {
@@ -331,12 +331,12 @@ func TestAReaderIsAskedAgainBeforeClaimingAfterAHold(t *testing.T) {
 		}
 		return rl, nil
 	})
-	reader.Kind = "codex"
+	reader.Kind = "test-headroom-reader"
 	if err := adapter.Register(reader); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { adapter.Unregister("codex") })
-	h.cfg.Queues[0].AgentKind = "codex"
+	t.Cleanup(func() { adapter.Unregister("test-headroom-reader") })
+	h.cfg.Queues[0].AgentKind = "test-headroom-reader"
 
 	// Wait for the claim that follows the second read, with a deadline that
 	// only bounds failure: the hold ends 300ms after the first read on the
@@ -366,12 +366,12 @@ func TestAFailingReadCarriesTheLastReadingAndSaysSoOnce(t *testing.T) {
 	reader := fake.NewReader(func(context.Context) (*adapter.RateLimit, error) {
 		return nil, errors.New("codex: headroom read: initialize: context deadline exceeded")
 	})
-	reader.Kind = "codex"
+	reader.Kind = "test-headroom-reader"
 	if err := adapter.Register(reader); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { adapter.Unregister("codex") })
-	h.cfg.Queues[0].AgentKind = "codex"
+	t.Cleanup(func() { adapter.Unregister("test-headroom-reader") })
+	h.cfg.Queues[0].AgentKind = "test-headroom-reader"
 
 	err := h.runLoop(runner.Options{
 		PollInterval: 10 * time.Millisecond, TelemetryInterval: time.Hour, HeadroomRefresh: 30 * time.Millisecond,

@@ -141,10 +141,8 @@ func (a *Adapter) Manifest() adapter.Manifest {
 			"a probe server — and it means exactly the packet's servers: every " +
 			"session runs under a private CODEX_HOME, so the developer's own " +
 			"config.toml servers do not load (ark:rein#21, home.go). " +
-			"AllowedTools/DeniedTools are refused rather than ignored: the app " +
-			"server has no per-tool allow list this adapter has verified, and " +
-			"silently dropping one would be exactly the downgrade the contract " +
-			"forbids. Interactive tool questions raise EventQuestion in order; Send " +
+			"MCP DeniedTools become server disabled_tools; AllowedTools and built-in " +
+			"tool denials are refused. Interactive tool questions raise EventQuestion in order; Send " +
 			"answers each question and replies once the request is complete (verified " +
 			"with codex-cli 0.159.0). MCP elicitation remains declined because it can " +
 			"require structured form data.",
@@ -196,11 +194,6 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 	if err := spec.CheckPlanEnv(); err != nil {
 		return nil, err
 	}
-	if len(spec.AllowedTools) > 0 || len(spec.DeniedTools) > 0 {
-		return nil, fmt.Errorf("%w: codex app-server has no verified per-tool allow/deny list; "+
-			"narrow the session with PermissionMode and the sandbox instead", adapter.ErrNotSupported)
-	}
-
 	connectorURL := ""
 	if spec.WranglerConnectorAccount != "" {
 		resolve := a.ResolveWranglerConnector
@@ -216,6 +209,9 @@ func (a *Adapter) Start(ctx context.Context, spec adapter.RunSpec) (adapter.Sess
 		}
 		connectorURL = u
 		spec.MCPServers = map[string]any{"elk": map[string]any{"url": u}}
+	}
+	if err := validateToolRestrictions(spec); err != nil {
+		return nil, err
 	}
 	startupCtx, cancelStartup := context.WithTimeout(
 		context.WithoutCancel(ctx), orDefault(spec.Timeouts.Startup, defaultStartupTimeout))

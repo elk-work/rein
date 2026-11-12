@@ -215,6 +215,27 @@ func (s *session) threadConfig() map[string]any {
 	for name, cfg := range s.spec.MCPServers {
 		servers[name] = cfg
 	}
+	// Copy each affected table and its existing deny list: RunSpec may share
+	// server values with other runs. Never modify the queue's configuration.
+	for _, name := range s.spec.DeniedTools {
+		server, tool, _ := splitMCPTool(name) // validated before spawning
+		original := servers[server].(map[string]any)
+		cfg := make(map[string]any, len(original)+1)
+		for k, v := range original {
+			cfg[k] = v
+		}
+		var disabled []any
+		switch existing := original["disabled_tools"].(type) {
+		case []string:
+			for _, v := range existing {
+				disabled = append(disabled, v)
+			}
+		case []any:
+			disabled = append(disabled, existing...)
+		}
+		cfg["disabled_tools"] = append(disabled, tool)
+		servers[server] = cfg
+	}
 	return map[string]any{"mcp_servers": servers}
 }
 
