@@ -575,8 +575,12 @@ func (d *decoder) decodeAssistant(sl streamLine, raw json.RawMessage) []adapter.
 				Raw:  raw,
 			})
 		case "thinking", "redacted_thinking":
-			// Deliberately dropped. Reasoning is not a work record, and Elk
-			// relays what an adapter emits.
+			// Dropped for now. Under Nathanael's ruling of 2026-11-11, Elk
+			// may receive an agent's thinking (never tool output), but only
+			// once redaction on the machine is in place, and Elk relays what
+			// an adapter emits. Emit it here when the task workspace's
+			// streaming work lands, not before (docs/attach.md, "What may
+			// leave the machine").
 		}
 	}
 
