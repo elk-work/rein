@@ -570,3 +570,9 @@ not make model requests.
 A failed recovery remains blocked and retries on the normal setup interval.
 Failure history does not survive daemon restarts, but startup verifies the
 login again before reporting ready.
+
+## Model list
+
+Rein reports none. `claude --help` (checked 2026-11-10) has no command that lists
+models, only `--model <alias or full name>`; a list written into Rein would be a
+guess, and a wrong list is worse than none.

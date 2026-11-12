@@ -204,3 +204,8 @@ expects Google's own refusal, and checks the worktree is trusted. Add
 `REIN_GEMINI_LIVE_KEY_FILE=<file holding a real paid key>` to send one small
 task on that key and check the file and commit it makes — the lab proof for
 Windows (`ark:rein#151`). An agent never signs in to Google.
+
+## Model list
+
+Rein reports none. `gemini --help` (checked 2026-11-10) has `-m, --model` and no
+command that lists models; a list written into Rein would be a guess.

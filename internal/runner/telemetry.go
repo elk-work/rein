@@ -424,13 +424,14 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		if tel.faulted {
 			state = StateFaulted
 		}
-		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Effort: tel.effort, ProgramVersion: tel.programVersion}
+		s := &elk.SessionReading{State: string(state), Land: qr.q.LandOrDefault(), Permission: qr.q.PermissionModeOrDefault(), Effort: tel.effort, ProgramVersion: tel.programVersion}
 		putWaiting(s, tel)
 		qr.r.putRefusal(s)
 		// No session, but the subscription is still there: the last reading,
 		// carried forward, and whether the queue is holding (ark:rein#40).
 		qr.fillHeadroom(s, nil)
 		qr.putModel(s, tel)
+		qr.putModels(s)
 		return s
 	}
 
@@ -441,6 +442,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		ProgramVersion: tel.programVersion,
 		StartedAt:      elk.RFC3339(tel.started),
 		Land:           qr.q.LandOrDefault(),
+		Permission:     qr.q.PermissionModeOrDefault(),
 	}
 	if !tel.tokens.empty() {
 		s.Tokens = &elk.TokenReading{
@@ -463,6 +465,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	if live == nil {
 		qr.fillHeadroom(s, nil)
 		qr.putModel(s, tel)
+		qr.putModels(s)
 		return s
 	}
 	if state, ok := live.state(); ok {
@@ -476,6 +479,7 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 		qr.telMu.Unlock()
 	}
 	qr.putModel(s, tel)
+	qr.putModels(s)
 	return s
 }
 
@@ -492,6 +496,17 @@ func (qr *queueRunner) putModel(s *elk.SessionReading, tel queueTelemetry) {
 		return
 	}
 	s.Model = tel.model
+}
+
+// putModels adds the models the queue's program reported, when it reports any.
+func (qr *queueRunner) putModels(s *elk.SessionReading) {
+	if a, ok := adapter.Lookup(qr.q.AgentKind); ok {
+		if l, ok := a.(adapter.ModelLister); ok {
+			if m := l.Models(); len(m) > 0 {
+				s.Models = &m
+			}
+		}
+	}
 }
 
 // putWaiting adds why the queue's work is held up, when something is.

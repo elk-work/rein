@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/adapter/fake"
 	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/runlog"
@@ -600,5 +601,42 @@ func TestSessionReadingCarriesProgramVersion(t *testing.T) {
 	qr.telMu.Unlock()
 	if s := qr.sessionReading(); s.ProgramVersion != "2.1.296 (Claude Code)" {
 		t.Fatalf("running: %q", s.ProgramVersion)
+	}
+}
+
+func TestSessionReadingCarriesPermission(t *testing.T) {
+	qr := testQueueRunner(testRunner(fullMachine()))
+	if got := qr.sessionReading().Permission; got != "full" {
+		t.Errorf("default permission = %q, want full", got)
+	}
+	qr.q.PermissionMode = "read_only"
+	if got := qr.sessionReading().Permission; got != "read_only" {
+		t.Errorf("idle permission = %q, want read_only", got)
+	}
+	qr.startRun("arun-1")
+	if got := qr.sessionReading().Permission; got != "read_only" {
+		t.Errorf("running permission = %q, want read_only", got)
+	}
+}
+
+type listerAdapter struct{ *fake.Adapter }
+
+func (listerAdapter) Models() []string { return []string{"m-1", "m-2"} }
+
+func TestSessionReadingCarriesModelsOnlyWhenListed(t *testing.T) {
+	qr := testQueueRunner(testRunner(fullMachine()))
+	if s := qr.sessionReading(); s.Models != nil {
+		t.Fatalf("an adapter with no list reported %v", *s.Models)
+	}
+	f := fake.New()
+	f.Kind = "lister-test"
+	if err := adapter.Register(listerAdapter{f}); err != nil {
+		t.Fatal(err)
+	}
+	defer adapter.Unregister("lister-test")
+	qr.q.AgentKind = "lister-test"
+	s := qr.sessionReading()
+	if s.Models == nil || len(*s.Models) != 2 || (*s.Models)[0] != "m-1" {
+		t.Fatalf("Models = %v", s.Models)
 	}
 }

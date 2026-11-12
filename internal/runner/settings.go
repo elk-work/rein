@@ -24,6 +24,8 @@ const ManagedSecretService = "elk-secret"
 // so a bad choice in the app can never leave a file this computer cannot load.
 //
 //   - Land: set when Elk names one; nil leaves the queue's own.
+//   - Permission: read_only or full when Elk names one; nil leaves the queue's
+//     own. Anything else is refused.
 //   - Secrets: the managed entries become exactly the names Elk sent. A name
 //     the person already mapped to their own keychain item keeps that item.
 func ApplyElkSettings(cfg config.Config, workspace, queue string, s elk.WorkerSettings) (config.Config, bool, error) {
@@ -40,6 +42,16 @@ func ApplyElkSettings(cfg config.Config, workspace, queue string, s elk.WorkerSe
 			next.Land = land
 		default:
 			return cfg, false, fmt.Errorf("Elk sent landing policy %q; want merge, pr or branch", *s.Land)
+		}
+	}
+
+	if s.Permission != nil {
+		switch p := strings.ToLower(strings.TrimSpace(*s.Permission)); p {
+		case "":
+		case "read_only", "full":
+			next.PermissionMode = p
+		default:
+			return cfg, false, fmt.Errorf("Elk sent permission %q; want read_only or full", *s.Permission)
 		}
 	}
 
@@ -74,7 +86,7 @@ func ApplyElkSettings(cfg config.Config, workspace, queue string, s elk.WorkerSe
 	}
 	next.Secrets = secrets
 
-	if next.Land == q.Land && sameSecrets(next.Secrets, q.Secrets) {
+	if next.Land == q.Land && next.PermissionMode == q.PermissionMode && sameSecrets(next.Secrets, q.Secrets) {
 		return cfg, false, nil
 	}
 	out := cfg
@@ -107,7 +119,11 @@ func settingsSignature(s elk.WorkerSettings) string {
 	}
 	names := append([]string(nil), s.Secrets...)
 	sort.Strings(names)
-	return land + "|" + strings.Join(names, ",")
+	perm := "-"
+	if s.Permission != nil {
+		perm = *s.Permission
+	}
+	return land + "|" + perm + "|" + strings.Join(names, ",")
 }
 
 // applySettings writes Elk's settings for this queue into config.toml. The
@@ -143,8 +159,8 @@ func (qr *queueRunner) applySettings(s *elk.WorkerSettings) {
 			qr.settingsSeen = ""
 			return
 		}
-		qr.logf("settings: took the Elk app's settings for %s (finishes by: %s; %d secret(s))",
-			qr.q.Name, landOf(next, qr.workspace, qr.q.Name), len(s.Secrets))
+		qr.logf("settings: took the Elk app's settings for %s (finishes by: %s; permission: %s; %d secret(s))",
+			qr.q.Name, landOf(next, qr.workspace, qr.q.Name), permissionOf(next, qr.workspace, qr.q.Name), len(s.Secrets))
 		if !qr.r.canSelfRestart() {
 			qr.logf("settings: restart Rein to use them (it is not running as the service)")
 		}
@@ -154,4 +170,9 @@ func (qr *queueRunner) applySettings(s *elk.WorkerSettings) {
 func landOf(cfg config.Config, workspace, name string) string {
 	q, _ := cfg.QueueIn(workspace, name)
 	return q.LandOrDefault()
+}
+
+func permissionOf(cfg config.Config, workspace, name string) string {
+	q, _ := cfg.QueueIn(workspace, name)
+	return q.PermissionModeOrDefault()
 }

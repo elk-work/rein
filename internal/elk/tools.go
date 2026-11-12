@@ -1038,11 +1038,13 @@ type Heartbeat struct {
 }
 
 // WorkerSettings is a worker's landing policy and secret names as chosen in
-// the app. Land nil means "leave this computer's own setting". Secrets are
+// the app. Land and Permission nil mean "leave this computer's own setting";
+// Permission is read_only or full. Secrets are
 // variable NAMES only: a value never passes through Elk.
 type WorkerSettings struct {
-	Land    *string  `json:"land"`
-	Secrets []string `json:"secrets"`
+	Land       *string  `json:"land"`
+	Permission *string  `json:"permission"`
+	Secrets    []string `json:"secrets"`
 }
 
 var (

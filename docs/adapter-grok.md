@@ -403,3 +403,13 @@ re-recording.
 `go test -tags integration ./internal/adapter/grok/`. Not in the PR gate — it
 needs a login and spends the developer's own quota. Run it after a `grok`
 upgrade.
+
+## Model list
+
+`Preflight` keeps the model ids `grok models` printed (`Adapter.Models`, an
+`adapter.ModelLister`) and they ride the heartbeat as `session.models`. The
+parser takes the first field of each line after the "logged in" line when it
+starts `grok-`; any other output gives no list, and preflight still passes on
+"logged in". **The format is assumed, not captured:** no grok binary was
+available when this was written, so check a real `grok models` against
+`models_test.go` before trusting the menu it feeds.

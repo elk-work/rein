@@ -124,6 +124,11 @@ type SessionReading struct {
 	// it: "2.1.296 (Claude Code)". Absent when it could not be read.
 	ProgramVersion string `json:"program_version,omitempty"`
 
+	// Models is what the agent's own program says it can use, so the app can
+	// offer a menu. Left out when the program lists none: a guessed list is
+	// worse than no list.
+	Models *[]string `json:"models,omitempty"`
+
 	// Effort is the resolved effort passed to the run. Absent when the CLI
 	// chooses its own default, which Rein does not know.
 	Effort string `json:"effort,omitempty"`
@@ -134,6 +139,10 @@ type SessionReading struct {
 	// configuration, not a measurement: always known, and on every beat,
 	// idle or running. Empty only from a caller that built no queue at all.
 	Land string `json:"land,omitempty"`
+
+	// Permission is this queue's permission mode — "read_only", "ask",
+	// "accept_edits" or "full" — configuration like Land, on every beat.
+	Permission string `json:"permission,omitempty"`
 
 	// ContextUsedTokens is how full the model's context is: the prompt the
 	// most recent request actually carried. ContextWindowTokens is what the
