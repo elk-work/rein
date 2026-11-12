@@ -40,6 +40,8 @@ const (
 	FromElk        = "Elk"
 	FromConfig     = "config.toml"
 	FromCLIDefault = "CLI default"
+	// FromRun is a model a person chose for one run (scout 0710).
+	FromRun = "this run in Elk"
 )
 
 // ModelChoice is the model and effort a queue's next run uses, and where each

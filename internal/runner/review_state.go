@@ -194,12 +194,10 @@ func (qr *queueRunner) restoreReviewRuntime(c *reviewCont) error {
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
 	}
 	if qr.q.AgentKind == geminiadapter.Kind {
-		key, err := qr.resolveGeminiKey()
-		if err != nil {
-			return err
+		if key := qr.storedGeminiKey(); key != "" {
+			spec.ProviderKey = key
+			values[geminiadapter.KeyName] = key
 		}
-		spec.ProviderKey = key
-		values[geminiadapter.KeyName] = key
 	}
 	qr.applySecrets(qr.withOwnToken(values))
 	if qr.mcp.connector && !cycle {

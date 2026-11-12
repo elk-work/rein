@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/elk-work/rein/internal/adapter"
@@ -21,9 +22,11 @@ func stopCode(err error) (code, line string) {
 		return "", ""
 	case errors.Is(err, exec.ErrNotFound):
 		return "other", ""
-	case errors.Is(err, adapter.ErrNoProviderKey):
-		// The gemini adapter's missing Google key: the person's own
-		// credential, so a sign-in in all but name.
+	case errors.Is(err, adapter.ErrNoProviderKey), errors.Is(err, adapter.ErrLoginRequired):
+		// A missing provider key, or an agent that says it needs signing in
+		// (the gemini adapter's "Set up Gemini CLI on this computer with your own
+		// Google AI Studio or Google Cloud key first."),
+		// whatever its words.
 		return "agent_login", ""
 	}
 	// agentSetupFailure's sniff, plus a bare "not logged in".
@@ -32,4 +35,13 @@ func stopCode(err error) (code, line string) {
 		return "agent_login", ""
 	}
 	return "other", ""
+}
+
+// Only an explicit declaration at the start of the final account is a stop.
+// Never scan the work order, tool output, or quoted examples for this marker.
+var wrongRepoDeclaration = regexp.MustCompile(`\Astop_code: wrong_repo\r?\nrepo: ([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)(?:\r?\n|$)`)
+
+func declaresWrongRepo(account string, repo RepoResolution) bool {
+	m := wrongRepoDeclaration.FindStringSubmatch(strings.TrimSpace(account))
+	return m != nil && !strings.EqualFold(m[1], repo.Name)
 }

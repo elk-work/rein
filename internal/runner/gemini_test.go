@@ -11,9 +11,10 @@ import (
 	"github.com/elk-work/rein/internal/runner"
 )
 
-// The person's own Google key (Casey's ruling, 2026-11-04): read from the
-// keychain for a gemini run, handed to that adapter alone in ProviderKey, and
-// redacted everywhere Rein writes.
+// A Google key the person stored for Rein: optional since Casey's ruling of
+// 2026-11-11, and when there is one, read from the keychain for a gemini run,
+// handed to that adapter alone in ProviderKey, and redacted everywhere Rein
+// writes.
 
 const geminiValue = "AIza_TESTVALUE_google_key_fedcba9876543210"
 
@@ -111,7 +112,11 @@ func TestAnotherKindNeverReadsOrGetsTheKey(t *testing.T) {
 	}
 }
 
-func TestAGeminiRunWithNoKeyIsStuckWithThePlainLine(t *testing.T) {
+// No stored key is no refusal (Casey's ruling, 2026-11-11): the program runs
+// on whatever setup it already has, and Rein asks for nothing. On the old code
+// this run was stuck with "Add your Google key in Elk to use Gemini." and never
+// started.
+func TestAGeminiRunWithNoStoredKeyStartsOnTheProgramsOwnSetup(t *testing.T) {
 	h := newHarness(t)
 	g := asGemini(t, h)
 	h.elk.Text("claim_run", order("run-1"))
@@ -119,14 +124,14 @@ func TestAGeminiRunWithNoKeyIsStuckWithThePlainLine(t *testing.T) {
 	if err := h.run(runner.Options{Secrets: newFakeItems()}); err != nil {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}
-	if n := len(g.Specs()); n != 0 {
-		t.Fatalf("started %d sessions with no key", n)
+	specs := g.Specs()
+	if len(specs) != 1 {
+		t.Fatalf("started %d sessions with no stored key, want 1\nlog:\n%s", len(specs), h.log)
 	}
-	sub := h.submitted()
-	if sub.Arg("status") != "stuck" || sub.Arg("title") != geminiadapter.MissingKeyLine {
-		t.Errorf("status %q, title %q", sub.Arg("status"), sub.Arg("title"))
+	if specs[0].ProviderKey != "" {
+		t.Error("a key was handed over that nobody stored")
 	}
-	if sub.Arg("stop_code") != "agent_login" {
-		t.Errorf("stop_code = %q, want agent_login", sub.Arg("stop_code"))
+	if sub := h.submitted(); sub.Arg("status") == "stuck" {
+		t.Errorf("the run was stuck: %q", sub.Arg("title"))
 	}
 }

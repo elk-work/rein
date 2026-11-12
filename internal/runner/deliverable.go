@@ -171,6 +171,9 @@ func (qr *queueRunner) secureDeliverable(ctx context.Context, a adapter.Adapter,
 		// Submitted as stuck, with its own explanation; not a summary problem.
 		return res, nil
 	}
+	if declaresWrongRepo(agentAccount(res.out), repo) {
+		return res, nil
+	}
 	why := weakDeliverable(agentAccount(res.out), prev)
 	if why == "" {
 		return res, nil
@@ -205,7 +208,7 @@ func (qr *queueRunner) secureDeliverable(ctx context.Context, a adapter.Adapter,
 		if again.out.result != nil && !again.out.result.OK() {
 			return again, nil
 		}
-		if !unusable(agentAccount(again.out), prev) {
+		if declaresWrongRepo(agentAccount(again.out), repo) || !unusable(agentAccount(again.out), prev) {
 			qr.log.Runner(runlog.KindNote, "the agent wrote its deliverable when asked")
 			return again, nil
 		}

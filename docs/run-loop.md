@@ -724,6 +724,14 @@ cancellation.
 Never `done` — see the four rules. Never `cancelled` or `failed`: those are not
 an agent's to set.
 
+An agent handed the wrong worktree begins its final account with
+`stop_code: wrong_repo`, followed immediately by a plain `repo: owner/name`
+line naming the corrected repository. Rein preserves that account and submits
+`status: stuck` and `stop_code: wrong_repo`, bypassing the minimum-length
+summary retry. Elk can then restart the task in the corrected repository.
+Only this explicit declaration at the start of the final account is recognized;
+mentions in task text or quoted examples do not trigger it.
+
 Every finished run carries a **Run details** block naming the repository, the
 branch, the permission mode, the landing policy and check, and the agent session
 id. The branch is the important line: the worktree is gone by the time anyone

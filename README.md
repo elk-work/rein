@@ -10,8 +10,7 @@ binary installed as a user service (launchd, Windows service,
 queue per agent kind, claims the runs Elk dispatches to those queues, and
 drives a coding-agent session against each one in an isolated git worktree —
 Claude Code, Codex, Grok Build or Gemini CLI, shelled out as the vendor's own
-binary on the developer's own login — or, for Gemini CLI alone, on the
-person's own Google key (see *Gemini on your own Google key* below). It watches each session through structured events,
+binary on the developer's own login or key (see *Gemini* below). It watches each session through structured events,
 reports progress and the deliverable back to Elk, and recycles the worktree.
 
 The agents run on your machine, under your logins, against your checkouts.
@@ -805,23 +804,24 @@ onto metered API billing:
   session before its first tool call, and the run is reported `stuck` as
   *"The agent was not on the plan login, so Rein stopped it"* with the reason.
 
-**Gemini on your own Google key.** The one exception to the plan-login rule,
-by Casey's ruling of 2026-11-04: a `gemini` queue drives Google's Gemini CLI
-on the person's own Gemini API key. The key stays on the computer, Google
-bills the person, and Elk never sees it. Store it once —
-`rein secret set GEMINI_API_KEY` (the value is read from stdin), or from the
-Elk app — and every gemini run reads it from the keychain, hands it to Gemini
-CLI alone as `GEMINI_API_KEY`, and redacts it from everything Rein writes. No
-other agent, task process or queue environment can carry it: both Google key
-names stay on the refused list above. Rein never uses a Google sign-in for
-Gemini — Google's terms do not allow another program to drive its agent on
-one — and is built so it cannot: each run gets a private Gemini CLI home whose
-settings enforce the key, a repository whose own `.gemini/settings.json`
-chooses another sign-in is refused, and a session that starts a Google sign-in
-anyway is stopped. With no key stored the run is stuck with *"Add your Google
-key in Elk to use Gemini."* Install Gemini CLI with `brew install gemini-cli`
-(or `npm install -g @google/gemini-cli`). docs/adapter-gemini.md has the
-detail.
+**Gemini.** A `gemini` queue drives Google's Gemini CLI as it is already set up
+on the person's computer, on their own Google AI Studio or Google Cloud key,
+the way Codex and Claude Code run on theirs (Casey's ruling, 2026-11-11). Google
+allows this on your own Google AI Studio or Google Cloud key. Elk installs
+nothing and asks for no key. A run never goes on a personal Google sign-in:
+the person's own key choice (the Gemini API key or Vertex AI) is kept; a Google
+sign-in choice is replaced by the key sign-in when their `~/.gemini/.env` is
+there or a key is stored; with no key at all the run stops with *"Set up Gemini
+CLI on this computer with your own Google AI Studio or Google Cloud key
+first."*, stop code `agent_login`. A repository whose own Gemini settings
+choose a sign-in is refused before anything starts. A key stored with `rein
+secret set GEMINI_API_KEY` is optional: when there is one, a gemini run alone is
+handed it as `GEMINI_API_KEY`, and it is redacted from everything Rein writes;
+both Google key names stay refused everywhere else. Gemini CLI runs under a
+private home that carries only the person's key setup, so neither their own MCP
+servers nor their Google sign-in reach a run. Rein never starts Antigravity: a
+person who uses it adds Elk to it as a connector, the way they add Elk to
+Claude. docs/adapter-gemini.md has the detail.
 
 **Hosted mode.**
 
