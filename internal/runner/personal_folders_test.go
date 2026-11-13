@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -35,8 +36,8 @@ func TestPersonalFoldersAreOpenedOnlyWhenAQueueAllowsThem(t *testing.T) {
 // A folder that exists but cannot be read is reported, so the log says why
 // the queue's agents later cannot reach it.
 func TestARefusedPersonalFolderIsReported(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads any folder")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("folder modes do not block reading here")
 	}
 	home := t.TempDir()
 	docs := filepath.Join(home, "Documents")
