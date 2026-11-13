@@ -575,10 +575,9 @@ func (a *Adapter) buildArgs(spec adapter.RunSpec, mode string, s *Session) ([]st
 	// allows them (Elk #1832), and the watchdog's hooks.
 	settings := map[string]any{}
 	if !spec.PersonalFolders {
-		if home, err := os.UserHomeDir(); err == nil {
-			if deny := personalFolderDenies(home, spec.WorktreeDir); len(deny) > 0 {
-				settings["permissions"] = map[string]any{"deny": deny}
-			}
+		home, _ := os.UserHomeDir() // unknown home: every rule, no exception
+		if deny := personalFolderDeniesForRun(home, spec.WorktreeDir); len(deny) > 0 {
+			settings["permissions"] = map[string]any{"deny": deny}
 		}
 	}
 	if !a.DisableWatchdog {

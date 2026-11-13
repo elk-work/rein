@@ -402,9 +402,11 @@ it recognises in a shell. A folder holding the run's own repository stays
 open. macOS asks about those folders with no warning the first time a
 background program touches one, so without this a run could raise that
 question in the middle of the night. To let a queue in, enrol it with
-`--personal-folders` (or set `personal_folders = true` on the queue); the
-daemon then opens each folder once at start, so macOS asks right after you
-chose it, not later. The other adapters do not enforce this yet, and a
+`--personal-folders` (or set `personal_folders = true` on the queue) and
+restart the worker (`rein service stop`, then `rein service start`);
+the daemon opens each folder once as it starts, so macOS asks then, not in
+the middle of a run. A folder you refuse is named in the log. The other
+adapters do not enforce this yet, and a
 command that reads files without naming them can still reach the folders:
 it is a default, not a sandbox.
 

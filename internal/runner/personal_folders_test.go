@@ -9,8 +9,8 @@ import (
 	"github.com/elk-work/rein/internal/config"
 )
 
-// Nothing is opened unless a queue allows it; when one does, each folder
-// that exists is listed once at start (Elk #1832).
+// Nothing is opened unless a queue this process serves allows it; when one
+// does, each folder that exists is listed once at start (Elk #1832).
 func TestPersonalFoldersAreOpenedOnlyWhenAQueueAllowsThem(t *testing.T) {
 	home := t.TempDir()
 	for _, d := range []string{"Documents", "Desktop"} {
@@ -20,13 +20,32 @@ func TestPersonalFoldersAreOpenedOnlyWhenAQueueAllowsThem(t *testing.T) {
 	}
 	at := func() (string, error) { return home, nil }
 
-	off := config.Config{Queues: []config.Queue{{Name: "a"}}}
-	if got := openPersonalFolders(off, at); got != nil {
+	if got, _ := openPersonalFolders([]config.Queue{{Name: "a"}}, at); got != nil {
 		t.Errorf("opened %v with no queue allowing it", got)
 	}
-	on := config.Config{Queues: []config.Queue{{Name: "a"}, {Name: "b", PersonalFolders: true}}}
-	got := openPersonalFolders(on, at)
+	got, refused := openPersonalFolders([]config.Queue{{Name: "a"}, {Name: "b", PersonalFolders: true}}, at)
 	if !slices.Equal(got, []string{"Documents", "Desktop"}) {
 		t.Errorf("opened %v, want Documents and Desktop", got)
+	}
+	if refused != nil {
+		t.Errorf("refused %v; missing folders are skipped, not refused", refused)
+	}
+}
+
+// A folder that exists but cannot be read is reported, so the log says why
+// the queue's agents later cannot reach it.
+func TestARefusedPersonalFolderIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any folder")
+	}
+	home := t.TempDir()
+	docs := filepath.Join(home, "Documents")
+	if err := os.MkdirAll(docs, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(docs, 0o755) })
+	_, refused := openPersonalFolders([]config.Queue{{Name: "b", PersonalFolders: true}}, func() (string, error) { return home, nil })
+	if !slices.Equal(refused, []string{"Documents"}) {
+		t.Errorf("refused %v, want Documents", refused)
 	}
 }

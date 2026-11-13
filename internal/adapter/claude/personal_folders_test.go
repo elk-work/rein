@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -29,17 +30,49 @@ func TestPersonalFolderDeniesCoverEveryFolderByDefault(t *testing.T) {
 	worktree := filepath.Join(home, "dev", "app")
 	deny := personalFolderDenies(home, worktree)
 	for _, folder := range []string{"Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Library/Mobile Documents"} {
-		for _, rule := range []string{"Read(~/" + folder + "/**)", "Edit(~/" + folder + "/**)"} {
+		// The folder itself too: a listing of ~/Desktop is what makes macOS ask.
+		for _, rule := range []string{"Read(~/" + folder + ")", "Read(~/" + folder + "/**)", "Edit(~/" + folder + ")", "Edit(~/" + folder + "/**)"} {
 			if !slices.Contains(deny, rule) {
 				t.Errorf("missing %s in %v", rule, deny)
 			}
 		}
 	}
-	if slices.ContainsFunc(deny, func(r string) bool { return r == "Read(~/Library/**)" }) {
+	if slices.ContainsFunc(deny, func(r string) bool { return r == "Read(~/Library/**)" || r == "Read(~/Library)" }) {
 		t.Error("all of Library is denied; agent tools need it")
 	}
-	if personalFolderDenies("", worktree) != nil {
-		t.Error("no home should mean no rules, not rules anchored at /")
+	// Unknown home: the exception cannot be worked out, so every rule holds.
+	if got := personalFolderDenies("", filepath.Join("x", "Documents", "app")); !slices.Equal(got, deny) {
+		t.Errorf("no home should still write every rule; got %v", got)
+	}
+}
+
+// A run restarted after a stall keeps the list it started with, even if the
+// agent rewrote its worktree's .git file to point into Documents meanwhile.
+func TestARunKeepsTheDenyListItStartedWith(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(home, ".rein", "work", "run1")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := personalFolderDeniesForRun(home, worktree)
+	if !slices.Contains(first, "Read(~/Documents/**)") {
+		t.Fatalf("Documents not denied at start: %v", first)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.Join(home, "Documents", "x")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if again := personalFolderDeniesForRun(home, worktree); !slices.Equal(again, first) {
+		t.Errorf("restart worked the list out again from the rewritten .git: %v", again)
+	}
+}
+
+// Case is ignored only where the disk usually ignores it.
+func TestCaseIsIgnoredOnlyOnMacAndWindows(t *testing.T) {
+	home := t.TempDir()
+	deny := personalFolderDenies(home, filepath.Join(home, "documents", "app"))
+	opened := !slices.Contains(deny, "Read(~/Documents/**)")
+	if want := runtime.GOOS == "darwin" || runtime.GOOS == "windows"; opened != want {
+		t.Errorf("on %s a worktree in ~/documents opened Documents = %v, want %v", runtime.GOOS, opened, want)
 	}
 }
 
@@ -58,7 +91,7 @@ func TestAFolderHoldingTheRunsOwnRepositoryIsLeftOpen(t *testing.T) {
 	}
 
 	// A worktree outside Documents whose repository lives in it.
-	common := filepath.Join(home, "documents", "GitHub", "site", ".git")
+	common := filepath.Join(home, "Documents", "GitHub", "site", ".git")
 	gitDir := filepath.Join(common, "worktrees", "run1")
 	worktree := filepath.Join(home, ".rein", "work", "run1")
 	for _, d := range []string{gitDir, worktree} {
@@ -74,7 +107,7 @@ func TestAFolderHoldingTheRunsOwnRepositoryIsLeftOpen(t *testing.T) {
 	}
 	deny = personalFolderDenies(home, worktree)
 	if slices.Contains(deny, "Read(~/Documents/**)") {
-		t.Errorf("repository data in Documents (spelled lower case) was denied: %v", deny)
+		t.Errorf("repository data in Documents was denied: %v", deny)
 	}
 }
 

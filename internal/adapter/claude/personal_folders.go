@@ -3,27 +3,29 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/elk-work/rein/internal/adapter"
 )
 
 // personalFolderDenies is the deny list that keeps a session out of the
-// person's own folders (adapter.PersonalFolders): a Read and an Edit rule each, written from home (`~/`), which
-// Claude Code applies in every permission mode, bypassPermissions included,
-// to its file tools and to the file commands it recognises in Bash (cat,
-// head, sed, redirections). A command that reads without naming a file can
-// still reach them, so this is a default, not a sandbox.
+// person's own folders (adapter.PersonalFolders): Read and Edit rules for
+// each folder and everything in it, written from home (`~/`), which Claude
+// Code applies in every permission mode, bypassPermissions included, to its
+// file tools and to the file commands it recognises in Bash (cat, head, sed,
+// ls, redirections). A command that reads without naming a file can still
+// reach them, so this is a default, not a sandbox.
 //
 // A folder holding the run's own worktree, or the repository it was cut
 // from, is left open: the person chose to keep that code there, and denying
-// it would lock the worker out of its own repository.
+// it would lock the worker out of its own repository. When home is unknown
+// that exception cannot be worked out, so every rule is written: the rules
+// name `~/`, which Claude Code resolves itself.
 func personalFolderDenies(home, worktree string) []string {
-	if home == "" {
-		return nil
-	}
 	inUse := []string{}
-	if worktree != "" {
+	if home != "" && worktree != "" {
 		inUse = append(inUse, worktree)
 		if common := gitCommonDir(worktree); common != "" {
 			inUse = append(inUse, common)
@@ -31,28 +33,57 @@ func personalFolderDenies(home, worktree string) []string {
 	}
 	var deny []string
 	for _, folder := range adapter.PersonalFolders {
-		abs := filepath.Join(home, folder)
-		if holdsAny(abs, inUse) {
+		if home != "" && holdsAny(filepath.Join(home, folder), inUse) {
 			continue
 		}
-		deny = append(deny, "Read(~/"+folder+"/**)", "Edit(~/"+folder+"/**)")
+		// The folder itself as well as what is in it: `~/F/**` alone leaves
+		// a listing of `~/F` unmatched, and a listing is what makes macOS ask.
+		deny = append(deny,
+			"Read(~/"+folder+")", "Read(~/"+folder+"/**)",
+			"Edit(~/"+folder+")", "Edit(~/"+folder+"/**)")
 	}
 	return deny
 }
 
-// holdsAny reports whether dir is, or contains, any of paths. Compared
-// without regard to case, as a Mac disk is.
+// runDenies remembers each worktree's deny list for the life of the process,
+// so a run restarted after a stall (or a review resumed) keeps the list it
+// started with. The exception reads the worktree's `.git` file, which the
+// agent can rewrite once it is running; working it out again then would let
+// the agent open a folder by editing that file.
+var runDenies sync.Map // home + "\x00" + worktree -> []string
+
+func personalFolderDeniesForRun(home, worktree string) []string {
+	key := home + "\x00" + worktree
+	if v, ok := runDenies.Load(key); ok {
+		return v.([]string)
+	}
+	v, _ := runDenies.LoadOrStore(key, personalFolderDenies(home, worktree))
+	return v.([]string)
+}
+
+// holdsAny reports whether dir is, or contains, any of paths, comparing both
+// as written and with symlinks resolved. Case is ignored only where the disk
+// usually ignores it (macOS, Windows).
 func holdsAny(dir string, paths []string) bool {
-	d := strings.ToLower(filepath.Clean(dir))
-	for _, p := range paths {
-		for _, form := range []string{p, resolved(p)} {
-			c := strings.ToLower(filepath.Clean(form))
-			if c == d || strings.HasPrefix(c, d+string(filepath.Separator)) {
-				return true
+	for _, d := range []string{dir, resolved(dir)} {
+		d = fold(filepath.Clean(d))
+		for _, p := range paths {
+			for _, form := range []string{p, resolved(p)} {
+				c := fold(filepath.Clean(form))
+				if c == d || strings.HasPrefix(c, d+string(filepath.Separator)) {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+func fold(p string) string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 func resolved(p string) string {

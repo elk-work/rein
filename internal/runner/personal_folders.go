@@ -8,31 +8,34 @@ import (
 	"github.com/elk-work/rein/internal/config"
 )
 
-// openAllowedPersonalFolders lists each of the person's own folders once when
-// any queue allows them, and returns the ones it opened. Listing is what makes
-// macOS ask, so doing it at start puts the question right after the press
-// that allowed it rather than in the middle of a run (Elk #1832).
-func openAllowedPersonalFolders(cfg config.Config) []string {
-	return openPersonalFolders(cfg, os.UserHomeDir)
-}
-
-func openPersonalFolders(cfg config.Config, home func() (string, error)) []string {
+// openPersonalFolders lists each of the person's own folders once when any
+// queue this process serves allows them, and reports which it opened and
+// which macOS (or anything else) refused. Listing is what makes macOS ask, so
+// doing it as the daemon starts puts the question there rather than in the
+// middle of a run (Elk #1832). The caller runs it off the start path: macOS
+// can hold the listing until the person answers.
+func openPersonalFolders(queues []config.Queue, home func() (string, error)) (opened, refused []string) {
 	allowed := false
-	for _, q := range cfg.Queues {
+	for _, q := range queues {
 		allowed = allowed || q.PersonalFolders
 	}
 	if !allowed {
-		return nil
+		return nil, nil
 	}
 	h, err := home()
 	if err != nil || h == "" {
-		return nil
+		return nil, nil
 	}
-	var opened []string
 	for _, folder := range adapter.PersonalFolders {
-		if _, err := os.ReadDir(filepath.Join(h, folder)); err == nil {
+		path := filepath.Join(h, folder)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		}
+		if _, err := os.ReadDir(path); err != nil {
+			refused = append(refused, folder)
+		} else {
 			opened = append(opened, folder)
 		}
 	}
-	return opened
+	return opened, refused
 }
