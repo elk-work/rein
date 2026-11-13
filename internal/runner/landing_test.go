@@ -461,7 +461,7 @@ func TestGitHubLandingAgainstARealRepository(t *testing.T) {
 	run(clone, "push", "-q", "origin", "HEAD:main")
 	base := run(clone, "rev-parse", "HEAD")
 	run(clone, "checkout", "-q", "-b", "rein/run-1")
-	wt := &worktree.Worktree{Dir: clone, Branch: "rein/run-1", BaseSHA: base}
+	wt := &worktree.Worktree{Dir: clone, Repo: clone, Branch: "rein/run-1", BaseSHA: base}
 
 	bin := t.TempDir()
 	gh := filepath.Join(bin, "gh")

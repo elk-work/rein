@@ -3,9 +3,7 @@ package worktree
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -20,12 +18,6 @@ import (
 // been goes through it. Command-line config outranks every config file, and
 // git hands it to the child processes it starts in submodules through
 // GIT_CONFIG_PARAMETERS, so a submodule's own config cannot undo it either.
-
-// noHooks is the null device, for core.hooksPath: git looks for hooks under
-// it and finds none, and unlike a directory nothing can ever be put there —
-// not by an agent whose sandbox may write to the temporary directory, and not
-// by anyone else (ark:rein#152's review).
-func noHooks() string { return os.DevNull }
 
 // SafeGitArgs are the options Rein puts in front of every git command it runs
 // on a run's worktree: no hooks, no filesystem monitor, and no recursion into
@@ -46,33 +38,36 @@ func SafeGit(args ...string) []string {
 }
 
 // PinnedGit says where and how to run git on a run's worktree so that git
-// reads nothing the agent can write: the directory to run in and the
-// environment entries to add.
+// reads nothing the agent can write: the directory to run in, the environment
+// entries to add, and the ref that stands for the run's work.
 //
-// A linked worktree finds its repository through two files an agent can
-// rewrite — `.git` in the worktree, and `commondir` in the worktree's own
-// entry, which some adapters' sandboxes may write (grok's does). Pointed at a
-// git directory of the agent's own making, either would hand git a config
-// whose core.sshCommand or remote.origin.uploadpack runs for the landing
+// A linked worktree finds its repository through files an agent can rewrite:
+// `.git` in the worktree, and `commondir` and `config.worktree` in the
+// worktree's own entry under the repository's `worktrees/` directory, which
+// some adapters' sandboxes may write (grok's does). Pointed at a git
+// directory of the agent's own making, or given a config of its own, git
+// would run its core.sshCommand or remote.origin.uploadpack for the landing
 // check's `ls-remote`, as the person. Checking those files first is not
-// enough: a relative path can be resolved differently from how git resolves
-// it, and a process the agent left running can swap them between the check
-// and the call (both found by the independent review of ark:rein#152).
+// enough: a relative path can resolve differently in Go than in git, and a
+// process the agent left running can swap them between the check and the
+// call (the independent review of ark:rein#152 reproduced all three).
 //
-// So git is told where everything is instead: GIT_DIR is the worktree's entry
-// under the source repository's `worktrees/` directory and GIT_COMMON_DIR the
-// source repository's own git directory, which outrank both files, and git
-// runs in the source repository, never in the worktree. The source repository
-// is the person's checkout and is trusted. The entry is the one git made for
-// this directory: it must exist, be a real directory, and name this worktree.
+// So git never looks at the worktree or its entry: GIT_DIR is the source
+// repository's own git directory, git runs in the source repository, and the
+// run's work is its branch, refs/heads/<branch>, which lives there. The source
+// repository is the person's checkout and is trusted.
 //
-// A hosted worktree is a plain clone inside a container: it runs in place.
-func (wt *Worktree) PinnedGit(ctx context.Context, git string) (dir string, env []string, err error) {
+// A hosted worktree is a plain clone inside a container: it runs in place,
+// and its work is HEAD.
+func (wt *Worktree) PinnedGit(ctx context.Context, git string) (dir string, env []string, ref string, err error) {
 	if wt == nil || wt.Dir == "" {
-		return "", nil, fmt.Errorf("worktree: no worktree")
+		return "", nil, "", fmt.Errorf("worktree: no worktree")
 	}
-	if wt.Hosted || wt.Repo == "" {
-		return wt.Dir, nil, nil
+	if wt.Hosted {
+		return wt.Dir, nil, "HEAD", nil
+	}
+	if wt.Repo == "" || wt.Branch == "" {
+		return "", nil, "", fmt.Errorf("worktree: %s names no source repository and branch; refusing to run git there", wt.Dir)
 	}
 	if git == "" {
 		git = "git"
@@ -80,29 +75,8 @@ func (wt *Worktree) PinnedGit(ctx context.Context, git string) (dir string, env 
 	cmd := exec.CommandContext(ctx, git, SafeGit("-C", wt.Repo, "rev-parse", "--path-format=absolute", "--git-common-dir")...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", nil, fmt.Errorf("worktree: resolve %s's git directory: %w", wt.Repo, err)
+		return "", nil, "", fmt.Errorf("worktree: resolve %s's git directory: %w", wt.Repo, err)
 	}
 	common := strings.TrimSpace(string(out))
-	entry := filepath.Join(common, "worktrees", filepath.Base(wt.Dir))
-	fi, err := os.Lstat(entry)
-	if err != nil || !fi.IsDir() {
-		return "", nil, fmt.Errorf("worktree: %s has no worktree entry %s; refusing to run git there", wt.Repo, entry)
-	}
-	// `gitdir` names the worktree the entry belongs to. It is advisory — an
-	// agent able to write the entry can change it — so it only guards against
-	// pinning git to some other run's entry; it decides nothing about safety.
-	back, err := os.ReadFile(filepath.Join(entry, "gitdir"))
-	if err != nil || !sameFile(strings.TrimSpace(string(back)), filepath.Join(wt.Dir, ".git")) {
-		return "", nil, fmt.Errorf("worktree: %s does not belong to %s; refusing to run git there", entry, wt.Dir)
-	}
-	return wt.Repo, []string{"GIT_DIR=" + entry, "GIT_COMMON_DIR=" + common}, nil
-}
-
-func sameFile(a, b string) bool {
-	if a == b {
-		return true
-	}
-	ra, errA := filepath.EvalSymlinks(filepath.Dir(a))
-	rb, errB := filepath.EvalSymlinks(filepath.Dir(b))
-	return errA == nil && errB == nil && filepath.Join(ra, filepath.Base(a)) == filepath.Join(rb, filepath.Base(b))
+	return wt.Repo, []string{"GIT_DIR=" + common}, "refs/heads/" + wt.Branch, nil
 }

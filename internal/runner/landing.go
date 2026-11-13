@@ -190,7 +190,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 	// git and gh both read the worktree's .git, which the agent can rewrite to
 	// point at a config that runs a command. Pin them to the repository's own
 	// records instead, or inspect nothing (ark:rein#152).
-	dir, pinned, err := wt.PinnedGit(ctx, git)
+	dir, pinned, work, err := wt.PinnedGit(ctx, git)
 	if err != nil {
 		st.Problems = append(st.Problems, err.Error())
 		return st
@@ -200,7 +200,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 	}
 
 	if wt.BaseSHA != "" {
-		out, err := run(git, worktree.SafeGit("rev-list", "--count", wt.BaseSHA+"..HEAD")...)
+		out, err := run(git, worktree.SafeGit("rev-list", "--count", wt.BaseSHA+".."+work)...)
 		if n, convErr := strconv.Atoi(strings.TrimSpace(out)); err == nil && convErr == nil {
 			st.Commits, st.CommitsKnown = n, true
 		} else {
@@ -268,10 +268,15 @@ func (g GitHubLanding) runEnv(ctx context.Context, dir string, extra []string, b
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	if g.Env != nil || len(extra) > 0 {
+	if g.Env != nil {
 		cmd.Env = secretenv.Filter(os.Environ())
 		for k, v := range g.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
+	if len(extra) > 0 {
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
 		}
 		cmd.Env = append(cmd.Env, extra...)
 	}

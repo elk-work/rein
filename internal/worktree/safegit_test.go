@@ -120,7 +120,7 @@ func lsRemote(t *testing.T, wt *worktree.Worktree, pinned bool) {
 	cmd := exec.Command("git", worktree.SafeGit("ls-remote", "--heads", "origin")...)
 	cmd.Dir = wt.Dir
 	if pinned {
-		dir, env, err := wt.PinnedGit(context.Background(), "")
+		dir, env, _, err := wt.PinnedGit(context.Background(), "")
 		if err != nil {
 			t.Fatalf("PinnedGit: %v", err)
 		}
@@ -129,16 +129,17 @@ func lsRemote(t *testing.T, wt *worktree.Worktree, pinned bool) {
 	_ = cmd.Run()
 }
 
-// The two routes the independent review of ark:rein#152 reproduced: an agent
+// The three routes the independent review of ark:rein#152 reproduced: an agent
 // rewrites its worktree's .git (by a relative path through a symlink, or
-// outright), or the commondir file in the worktree's own entry, to reach a
-// config whose upload-pack runs as the person. Pinned git reads neither file.
+// outright), or the commondir or config.worktree file in the worktree's own
+// entry, to reach a config whose upload-pack runs as the person. Pinned git
+// reads none of them.
 func TestPinnedGitReadsNothingTheAgentWrote(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the stand-in upload-pack is a shell script")
 	}
 	ctx := context.Background()
-	for _, route := range []string{"dot-git", "commondir"} {
+	for _, route := range []string{"dot-git", "commondir", "config-worktree"} {
 		t.Run(route, func(t *testing.T) {
 			clone, origin := newRepoWithOrigin(t)
 			m := &worktree.Manager{Root: t.TempDir(), Ark: "definitely-not-installed"}
@@ -155,6 +156,12 @@ func TestPinnedGitReadsNothingTheAgentWrote(t *testing.T) {
 			case "commondir":
 				common := git(t, clone, "rev-parse", "--path-format=absolute", "--git-common-dir")
 				write(t, filepath.Join(common, "worktrees", filepath.Base(wt.Dir), "commondir"), fake+"\n")
+			case "config-worktree":
+				// `git sparse-checkout init` turns this on in the person's repository.
+				git(t, clone, "config", "extensions.worktreeConfig", "true")
+				common := git(t, clone, "rev-parse", "--path-format=absolute", "--git-common-dir")
+				write(t, filepath.Join(common, "worktrees", filepath.Base(wt.Dir), "config.worktree"),
+					"[remote \"origin\"]\n\tuploadpack = "+script+"\n")
 			}
 
 			lsRemote(t, wt, true)
@@ -179,29 +186,29 @@ func TestPinnedGitSeesTheRunsCommits(t *testing.T) {
 	}
 	write(t, filepath.Join(wt.Dir, "new"), "x\n")
 	commit(t, wt.Dir, "the run's change")
-	dir, env, err := wt.PinnedGit(ctx, "")
+	dir, env, ref, err := wt.PinnedGit(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dir != wt.Repo {
-		t.Errorf("pinned git runs in %s, want the source repository %s", dir, wt.Repo)
+	if dir != wt.Repo || ref != "refs/heads/"+wt.Branch {
+		t.Errorf("pinned git runs in %s on %s, want the source repository %s on the run's branch", dir, ref, wt.Repo)
 	}
-	cmd := exec.Command("git", worktree.SafeGit("rev-list", "--count", wt.BaseSHA+"..HEAD")...)
+	cmd := exec.Command("git", worktree.SafeGit("rev-list", "--count", wt.BaseSHA+".."+ref)...)
 	cmd.Dir, cmd.Env = dir, append(os.Environ(), env...)
 	out, err := cmd.Output()
 	if err != nil || strings.TrimSpace(string(out)) != "1" {
 		t.Errorf("pinned rev-list = %q, %v; want 1", out, err)
 	}
 
-	// Another run's directory name has no entry: refused, not guessed.
-	other := *wt
-	other.Dir = filepath.Join(filepath.Dir(wt.Dir), "someone-else")
-	if _, _, err := other.PinnedGit(ctx, ""); err == nil {
-		t.Error("a worktree with no entry was pinned")
+	// A worktree that names no source repository is refused, not run in place.
+	bare := *wt
+	bare.Repo = ""
+	if _, _, _, err := bare.PinnedGit(ctx, ""); err == nil {
+		t.Error("a worktree with no source repository was run unpinned")
 	}
 
 	hosted := &worktree.Worktree{Dir: t.TempDir(), Repo: "x", Hosted: true}
-	if d, env, err := hosted.PinnedGit(ctx, ""); err != nil || d != hosted.Dir || env != nil {
-		t.Errorf("a hosted clone was pinned: %s %v %v", d, env, err)
+	if d, env, ref, err := hosted.PinnedGit(ctx, ""); err != nil || d != hosted.Dir || env != nil || ref != "HEAD" {
+		t.Errorf("a hosted clone was pinned: %s %v %s %v", d, env, ref, err)
 	}
 }
