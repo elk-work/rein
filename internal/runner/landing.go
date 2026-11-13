@@ -187,8 +187,20 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 	git, gh := orDefault(g.Git, "git"), orDefault(g.GH, "gh")
 	var st LandingState
 
+	// git and gh both read the worktree's .git, which the agent can rewrite to
+	// point at a config that runs a command. Pin them to the repository's own
+	// records instead, or inspect nothing (ark:rein#152).
+	dir, pinned, work, err := wt.PinnedGit(ctx, git)
+	if err != nil {
+		st.Problems = append(st.Problems, err.Error())
+		return st
+	}
+	run := func(bin string, args ...string) (string, error) {
+		return g.runEnv(ctx, dir, pinned, bin, args...)
+	}
+
 	if wt.BaseSHA != "" {
-		out, err := g.runIn(ctx, wt.Dir, git, "rev-list", "--count", wt.BaseSHA+"..HEAD")
+		out, err := run(git, worktree.SafeGit("rev-list", "--count", wt.BaseSHA+".."+work)...)
 		if n, convErr := strconv.Atoi(strings.TrimSpace(out)); err == nil && convErr == nil {
 			st.Commits, st.CommitsKnown = n, true
 		} else {
@@ -196,7 +208,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 		}
 	}
 
-	out, err := g.runIn(ctx, wt.Dir, git, "ls-remote", "--heads", "origin", "refs/heads/"+wt.Branch)
+	out, err := run(git, worktree.SafeGit("ls-remote", "--heads", "origin", "refs/heads/"+wt.Branch)...)
 	if err != nil {
 		st.Problems = append(st.Problems, "could not read origin: "+errLine(err, out))
 	} else {
@@ -219,7 +231,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 		retry = 5 * time.Second
 	}
 	for attempt := 1; ; attempt++ {
-		out, err = g.runIn(ctx, wt.Dir, gh, "pr", "list", "--head", wt.Branch, "--state", "all",
+		out, err = run(gh, "pr", "list", "--head", wt.Branch, "--state", "all",
 			"--json", "number,url,state,isDraft", "--limit", "50")
 		if err == nil {
 			var prs []PullRequest
@@ -247,6 +259,11 @@ func runIn(ctx context.Context, dir, bin string, args ...string) (string, error)
 	return (GitHubLanding{}).runIn(ctx, dir, bin, args...)
 }
 func (g GitHubLanding) runIn(ctx context.Context, dir, bin string, args ...string) (string, error) {
+	return g.runEnv(ctx, dir, nil, bin, args...)
+}
+
+// runEnv is runIn with extra environment entries on top of g.Env.
+func (g GitHubLanding) runEnv(ctx context.Context, dir string, extra []string, bin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, landingTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -256,6 +273,12 @@ func (g GitHubLanding) runIn(ctx context.Context, dir, bin string, args ...strin
 		for k, v := range g.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
+	}
+	if len(extra) > 0 {
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, extra...)
 	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
