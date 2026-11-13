@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -465,6 +466,25 @@ type WorkOrder struct {
 	// from the claim's structured content, or "". Unchecked: the caller
 	// applies the shape check.
 	Model string
+	// Rehanded reports that Elk handed back a run this caller already held
+	// rather than claiming a new one: a claim whose reply was lost.
+	Rehanded bool
+}
+
+// rehandRE is the sentence Elk puts before a work order it hands back to the
+// caller that already holds it (rehand, elk-mcp/queue.ts).
+var rehandRE = regexp.MustCompile("^You already hold run `[^`]+`")
+
+// stripRehand takes Elk's "you already hold" preamble off a work order, so the
+// agent reads the work order and not a note meant for the claimer.
+func stripRehand(text string) (string, bool) {
+	if !rehandRE.MatchString(text) {
+		return text, false
+	}
+	if _, after, ok := strings.Cut(text, "\n\n"); ok {
+		return after, true
+	}
+	return text, true
 }
 
 var (
@@ -476,6 +496,78 @@ var (
 	// because they are races rather than mistakes.
 	notClaimableRE = regexp.MustCompile("^(Run `[^`]+` is not claimable|Nothing left to claim in group)")
 )
+
+// NoWorkError is a claim that handed nothing over. It matches [ErrNoWork].
+//
+// Held is the runs Elk says this caller already holds on a live lease, which a
+// clear queue lists rather than hands back: a bare queue claim must not give
+// one session another session's work, so Elk only names them, and the run
+// itself comes back from a claim that names it by run_id. That list is how a
+// claim whose reply never arrived is found again (heldNote, elk-mcp/queue.ts).
+type NoWorkError struct {
+	// Text is Elk's own first line.
+	Text string
+	// Held is the run ids Elk listed as already held by this caller.
+	Held []string
+}
+
+func (e *NoWorkError) Error() string { return ErrNoWork.Error() + ": " + e.Text }
+
+// Is makes [errors.Is] match [ErrNoWork].
+func (e *NoWorkError) Is(target error) bool { return target == ErrNoWork }
+
+// heldRunsRE finds Elk's note of the runs a caller already holds, appended to
+// a clear queue's reply: "You hold 1 run on a live lease: `arun-…`."
+var (
+	heldRunsRE = regexp.MustCompile("You hold \\d+ runs? on a live lease: ([^\\n]*)")
+	backtickRE = regexp.MustCompile("`([^`]+)`")
+)
+
+func parseHeldRuns(text string) []string {
+	m := heldRunsRE.FindStringSubmatch(text)
+	if m == nil {
+		return nil
+	}
+	// The list ends at the sentence that follows it, which names run_id in
+	// backticks too.
+	list, _, _ := strings.Cut(m[1], ". ")
+	var ids []string
+	for _, b := range backtickRE.FindAllStringSubmatch(list, -1) {
+		ids = append(ids, b[1])
+	}
+	return ids
+}
+
+// claimDeadlineRE is Elk's answer when claim_run ran past its own deadline
+// (withClaimDeadline, elk-mcp/queue.ts): an isError reply sent while the claim
+// carries on and may still commit.
+var claimDeadlineRE = regexp.MustCompile(`^claim_run did not finish within`)
+
+// ClaimMayHaveLanded reports whether a failed claim_run may still have claimed
+// a run. Elk answers its own deadline that way, and a reply lost on the wire
+// (a client timeout, or a gateway that gave up on the call) is the same case:
+// the claim may have committed after the answer stopped being waited for. A
+// retry with the same arguments is safe against Elk, which hands a held run
+// back by its id and lists it on a clear queue.
+func ClaimMayHaveLanded(err error) bool {
+	if err == nil || errors.Is(err, ErrNoWork) {
+		return false
+	}
+	var tool *ToolError
+	if errors.As(err, &tool) {
+		return claimDeadlineRE.MatchString(strings.TrimSpace(tool.Text))
+	}
+	var hErr *HTTPError
+	if errors.As(err, &hErr) {
+		switch hErr.StatusCode {
+		case 502, 503, 504:
+			return true
+		}
+		return false
+	}
+	var nErr net.Error
+	return errors.As(err, &nErr) && nErr.Timeout()
+}
 
 // ClaimRun claims the next run on a queue.
 //
@@ -497,14 +589,16 @@ func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, er
 		return nil, err
 	}
 	if queueClearRE.MatchString(res.Text) || notClaimableRE.MatchString(res.Text) {
-		return nil, fmt.Errorf("%w: %s", ErrNoWork, firstLine(res.Text))
+		return nil, &NoWorkError{Text: firstLine(res.Text), Held: parseHeldRuns(res.Text)}
 	}
 
+	text, rehanded := stripRehand(res.Text)
+	res.Text = text
 	m := claimedRunRE.FindStringSubmatch(res.Text)
 	if m == nil {
 		return nil, fmt.Errorf("elk: claim_run answered something Rein does not understand: %s", firstLine(res.Text))
 	}
-	wo := &WorkOrder{RunID: m[1], Text: res.Text, Notices: res.Notices}
+	wo := &WorkOrder{RunID: m[1], Text: res.Text, Notices: res.Notices, Rehanded: rehanded}
 	if a := actionIDRE.FindStringSubmatch(res.Text); a != nil {
 		wo.ActionID = a[1]
 	}

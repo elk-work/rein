@@ -656,6 +656,45 @@ different pool and never a fallback for a named queue that came back clear.
 An empty queue is plain text — `Queue "mac-claude" is clear: …` — as is a lost
 race (`Run … is not claimable`). Both become `elk.ErrNoWork`.
 
+**A claim that times out may still have claimed a run** (Elk #1772). Elk stops
+waiting for `claim_run` after five seconds and answers, as an error, *"claim_run
+did not finish within 5 seconds. It may still have claimed a run for you. Call
+claim_run again with the same arguments"*, while the claim carries on and may
+commit. A lost reply on the wire (a client timeout, a 502/503/504) is the same
+case. Rein used to log that sentence and move on; on 2026-11-11 a run on
+`fij-claude` then sat `running` with no worktree or agent for over an hour,
+while every heartbeat said nothing was waiting, because a run on a live lease is
+not waiting. So (`internal/runner/claim_retry.go`):
+
+- Such a claim is asked again with **the same arguments**, up to
+  `ClaimAttempts` (4) times in all, waiting 2 s, 4 s and 8 s between them. The log says
+  each retry and, when they run out, that it stopped and why, in Elk's own
+  words.
+- A clear queue lists the runs the caller already holds on a live lease
+  (*"You hold 1 run on a live lease: `arun-…`"*) rather than handing them back,
+  so a second session of the same person is never given the first one's work.
+  **On startup, and after any claim that may have landed**, Rein reads that list
+  and asks for each run by `run_id`, which Elk answers with the run's work
+  order again (*"You already hold run …"*, a preamble Rein strips before the
+  agent sees it). A run this queue is already working, under review, is
+  skipped.
+- After such a claim the loop asks again on its next poll whatever the depth
+  says, rather than waiting a lease for the sweep, and keeps asking until a
+  clear answer lists nothing left to take back.
+
+A hosted container skips the startup look: it starts fresh for one run, and a
+run its queue already holds belongs to another container.
+
+**Why the orphan never went back to the queue on its own.** Most likely it did
+lapse: Elk's lease is 15 minutes, and a lapsed `running` row is claimable
+again. But the claims that would have picked it up, the sweeps at 19:37, 19:52
+and 20:07, timed out the same way, and the log fits each of them having
+re-claimed the lapsed run, renewing its lease under this queue, and lost its
+reply again. A lapse cannot rescue a run when every claim
+that would pick it up loses its answer. The retries above close that loop on
+Rein's side. Why `claim_run` takes more than five seconds on that queue is
+Elk's side.
+
 The reply is the work order. Rein reads five things out of it and passes the
 whole text to the agent as the prompt: the run id from the first line, the
 action id, the direction, the `### Required capabilities — preflight
