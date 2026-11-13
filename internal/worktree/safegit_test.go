@@ -99,61 +99,109 @@ func TestSafeGitRunsNoHookAndNoFsmonitor(t *testing.T) {
 	}
 }
 
-func TestCheckGitLink(t *testing.T) {
-	repo := newRepo(t)
-	m := &worktree.Manager{Root: t.TempDir(), Ark: "definitely-not-installed"}
-	wt, err := m.Create(context.Background(), worktree.Request{Repo: repo, RunID: "link-1"})
-	if err != nil {
-		t.Fatal(err)
+// fakeGitDir makes a git directory of the agent's own making whose origin
+// runs a marker as its upload-pack, the way an agent would get a command run
+// by Rein's `ls-remote`.
+func fakeGitDir(t *testing.T, at, origin, uploadpack string) {
+	t.Helper()
+	for _, d := range []string{"objects", "refs/heads"} {
+		if err := os.MkdirAll(filepath.Join(at, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(at, "HEAD"), "ref: refs/heads/main\n")
+	write(t, filepath.Join(at, "config"), "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = "+origin+"\n\tuploadpack = "+uploadpack+"\n")
+}
+
+// lsRemote runs the landing check's ls-remote the way Rein does: pinned, or
+// (for the control) plainly inside the worktree.
+func lsRemote(t *testing.T, wt *worktree.Worktree, pinned bool) {
+	t.Helper()
+	cmd := exec.Command("git", worktree.SafeGit("ls-remote", "--heads", "origin")...)
+	cmd.Dir = wt.Dir
+	if pinned {
+		dir, env, err := wt.PinnedGit(context.Background(), "")
+		if err != nil {
+			t.Fatalf("PinnedGit: %v", err)
+		}
+		cmd.Dir, cmd.Env = dir, append(os.Environ(), env...)
+	}
+	_ = cmd.Run()
+}
+
+// The two routes the independent review of ark:rein#152 reproduced: an agent
+// rewrites its worktree's .git (by a relative path through a symlink, or
+// outright), or the commondir file in the worktree's own entry, to reach a
+// config whose upload-pack runs as the person. Pinned git reads neither file.
+func TestPinnedGitReadsNothingTheAgentWrote(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in upload-pack is a shell script")
 	}
 	ctx := context.Background()
-	if err := wt.CheckGitLink(ctx, ""); err != nil {
-		t.Fatalf("a fresh worktree failed the link check: %v", err)
-	}
+	for _, route := range []string{"dot-git", "commondir"} {
+		t.Run(route, func(t *testing.T) {
+			clone, origin := newRepoWithOrigin(t)
+			m := &worktree.Manager{Root: t.TempDir(), Ark: "definitely-not-installed"}
+			wt, err := m.Create(ctx, worktree.Request{Repo: clone, RunID: "pin-" + route})
+			if err != nil {
+				t.Fatal(err)
+			}
+			script, ranAt := marker(t, "uploadpack")
+			fake := filepath.Join(wt.Dir, "x")
+			fakeGitDir(t, fake, origin, script)
+			switch route {
+			case "dot-git":
+				write(t, filepath.Join(wt.Dir, ".git"), "gitdir: x\n")
+			case "commondir":
+				common := git(t, clone, "rev-parse", "--path-format=absolute", "--git-common-dir")
+				write(t, filepath.Join(common, "worktrees", filepath.Base(wt.Dir), "commondir"), fake+"\n")
+			}
 
-	link := filepath.Join(wt.Dir, ".git")
-	original, err := os.ReadFile(link)
+			lsRemote(t, wt, true)
+			if ran(ranAt) {
+				t.Fatal("pinned git ran the agent's upload-pack")
+			}
+			lsRemote(t, wt, false)
+			if !ran(ranAt) {
+				t.Fatal("control: plain git did not run the agent's upload-pack, so the test proves nothing")
+			}
+		})
+	}
+}
+
+func TestPinnedGitSeesTheRunsCommits(t *testing.T) {
+	repo := newRepo(t)
+	ctx := context.Background()
+	m := &worktree.Manager{Root: t.TempDir(), Ark: "definitely-not-installed"}
+	wt, err := m.Create(ctx, worktree.Request{Repo: repo, RunID: "pin-count"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	restore := func() {
-		_ = os.RemoveAll(link)
-		write(t, link, string(original))
-	}
-
-	// Repointed at a git directory of the agent's own making.
-	elsewhere := newRepo(t)
-	write(t, link, "gitdir: "+filepath.Join(elsewhere, ".git")+"\n")
-	if err := wt.CheckGitLink(ctx, ""); err == nil || !strings.Contains(err.Error(), "refusing") {
-		t.Errorf("a repointed .git passed: %v", err)
-	}
-
-	// Repointed at another worktree's entry is still inside worktrees/, which
-	// the agent cannot write, so it is not this check's business — but a path
-	// that climbs out of worktrees/ is.
-	common := git(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	write(t, link, "gitdir: "+filepath.Join(common, "worktrees", "..")+"\n")
-	if err := wt.CheckGitLink(ctx, ""); err == nil {
-		t.Error("a .git pointing at the common directory itself passed")
-	}
-
-	// Replaced by a directory.
-	restore()
-	_ = os.Remove(link)
-	if err := os.MkdirAll(link, 0o755); err != nil {
+	write(t, filepath.Join(wt.Dir, "new"), "x\n")
+	commit(t, wt.Dir, "the run's change")
+	dir, env, err := wt.PinnedGit(ctx, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := wt.CheckGitLink(ctx, ""); err == nil {
-		t.Error("a .git directory in place of the link passed")
+	if dir != wt.Repo {
+		t.Errorf("pinned git runs in %s, want the source repository %s", dir, wt.Repo)
+	}
+	cmd := exec.Command("git", worktree.SafeGit("rev-list", "--count", wt.BaseSHA+"..HEAD")...)
+	cmd.Dir, cmd.Env = dir, append(os.Environ(), env...)
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "1" {
+		t.Errorf("pinned rev-list = %q, %v; want 1", out, err)
 	}
 
-	restore()
-	if err := wt.CheckGitLink(ctx, ""); err != nil {
-		t.Errorf("the restored link failed: %v", err)
+	// Another run's directory name has no entry: refused, not guessed.
+	other := *wt
+	other.Dir = filepath.Join(filepath.Dir(wt.Dir), "someone-else")
+	if _, _, err := other.PinnedGit(ctx, ""); err == nil {
+		t.Error("a worktree with no entry was pinned")
 	}
 
 	hosted := &worktree.Worktree{Dir: t.TempDir(), Repo: "x", Hosted: true}
-	if err := hosted.CheckGitLink(ctx, ""); err != nil {
-		t.Errorf("a hosted clone was link-checked: %v", err)
+	if d, env, err := hosted.PinnedGit(ctx, ""); err != nil || d != hosted.Dir || env != nil {
+		t.Errorf("a hosted clone was pinned: %s %v %v", d, env, err)
 	}
 }
