@@ -152,6 +152,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		Timeouts:             adapter.Timeouts{Idle: qr.r.opts.StallAfter},
 		Queue:                qr.q.Name,
 		Settings:             qr.q.Settings,
+		PersonalFolders:      qr.q.PersonalFolders,
 		// The queue's allow-list, and nothing else: each adapter keeps the
 		// developer's own servers out (ark:rein#21, #22), so these are the
 		// only MCP servers the session sees (mcp.go, ark:rein#40). It holds

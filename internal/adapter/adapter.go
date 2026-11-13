@@ -211,6 +211,11 @@ type RunSpec struct {
 	AllowedTools []string
 	DeniedTools  []string
 
+	// PersonalFolders is true when the person let this queue's agents into
+	// their own folders (config Queue.PersonalFolders). False, the default,
+	// keeps an adapter that can enforce it out of them.
+	PersonalFolders bool
+
 	// RequiredCapabilities is the packet's `required_capabilities`, carried
 	// here so an adapter can re-check what the run loop already checked.
 	// Checking twice is cheap; the run loop checking and an adapter assuming

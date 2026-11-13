@@ -133,25 +133,30 @@ func (w *watchdog) handle(rw http.ResponseWriter, req *http.Request) {
 // is deliberate: Rein drives the developer's own Claude Code, not a sanitised
 // copy of it.
 func (w *watchdog) writeSettings(dir string) (string, error) {
+	return writeSettingsFile(dir, map[string]any{"hooks": w.hooks()})
+}
+
+// hooks is the `hooks` value registering the watchdog on Notification and Stop.
+func (w *watchdog) hooks() map[string]any {
 	post := fmt.Sprintf("curl -sS -m 5 -X POST --data-binary @- %s", w.url)
 	entry := []map[string]any{{
 		"hooks": []map[string]any{{"type": "command", "command": post}},
 	}}
-
-	settings := map[string]any{
-		"hooks": map[string]any{
-			"Notification": entry,
-			"Stop":         entry,
-		},
+	return map[string]any{
+		"Notification": entry,
+		"Stop":         entry,
 	}
+}
+
+// writeSettingsFile writes Rein's one `--settings` file and returns its path.
+func writeSettingsFile(dir string, settings map[string]any) (string, error) {
 	blob, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("claude: encoding the watchdog settings: %w", err)
+		return "", fmt.Errorf("claude: encoding the session settings: %w", err)
 	}
-
 	path := filepath.Join(dir, "settings.json")
 	if err := os.WriteFile(path, blob, 0o600); err != nil {
-		return "", fmt.Errorf("claude: writing the watchdog settings: %w", err)
+		return "", fmt.Errorf("claude: writing the session settings: %w", err)
 	}
 	return path, nil
 }

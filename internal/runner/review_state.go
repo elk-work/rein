@@ -140,7 +140,8 @@ func (qr *queueRunner) resumeReviews(ctx context.Context) {
 		c.spec = adapter.RunSpec{RunID: p.WorkOrder.RunID, AgentKind: qr.q.AgentKind,
 			Prompt: p.Prompt, SystemPrompt: p.SystemPrompt, Model: p.Model, Effort: p.Effort,
 			WorktreeDir: p.WorkDir, PermissionMode: qr.mode, RequiredCapabilities: runtime, Queue: qr.q.Name,
-			Settings: qr.q.Settings, Timeouts: adapter.Timeouts{Idle: qr.r.opts.StallAfter}}
+			Settings: qr.q.Settings, PersonalFolders: qr.q.PersonalFolders,
+			Timeouts: adapter.Timeouts{Idle: qr.r.opts.StallAfter}}
 		if p.Worktree != nil {
 			c.spec.WorktreeDir = p.Worktree.Dir
 		}

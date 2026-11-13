@@ -589,6 +589,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.logf("WARNING: %s", w)
 	}
 
+	// A queue the person let into their own folders opens each one now, as
+	// the daemon starts right after the press that allowed it, so macOS asks
+	// about them then and not later, out of the blue, while an agent works
+	// (Elk #1832). macOS remembers the answer, so later starts ask nothing.
+	if opened := openAllowedPersonalFolders(r.opts.Config); len(opened) > 0 {
+		r.logf("personal folders allowed for at least one queue: opened %s", strings.Join(opened, ", "))
+	}
+
 	// Before any run of this process exists: a `running` meta whose runner
 	// died is settled, so it stops holding the log and check prunes
 	// (ark:rein#95).
