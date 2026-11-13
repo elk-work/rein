@@ -570,15 +570,33 @@ func (a *Adapter) buildArgs(spec adapter.RunSpec, mode string, s *Session) ([]st
 	// probe combinations exited success on a subscription login.
 	args = append(args, "--setting-sources", a.settingSources())
 
+	// One --settings file carries both what Rein adds: the deny rules that
+	// keep the session out of the person's own folders unless the queue
+	// allows them (Elk #1832), and the watchdog's hooks.
+	settings := map[string]any{}
+	if !spec.PersonalFolders {
+		home, _ := os.UserHomeDir() // unknown home: every rule, no exception
+		if deny := personalFolderDeniesForRun(home, spec.WorktreeDir); len(deny) > 0 {
+			settings["permissions"] = map[string]any{"deny": deny}
+		}
+	}
 	if !a.DisableWatchdog {
 		if wd, err := newWatchdog(s.hookEvents); err == nil {
 			s.watchdogSrv = wd
-			if path, err := wd.writeSettings(s.tmpDir); err == nil {
-				args = append(args, "--settings", path)
-			}
+			settings["hooks"] = wd.hooks()
 		}
 		// A watchdog that will not start is not fatal. The stream is the
 		// primary signal; the hooks are corroboration.
+	}
+	if len(settings) > 0 {
+		path, err := writeSettingsFile(s.tmpDir, settings)
+		switch {
+		case err == nil:
+			args = append(args, "--settings", path)
+		case settings["permissions"] != nil:
+			// Never run without the folder rules the person did not waive.
+			return nil, err
+		}
 	}
 
 	// Deliberately never `--bare`: it disables subscription auth.

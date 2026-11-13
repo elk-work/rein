@@ -589,6 +589,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.logf("WARNING: %s", w)
 	}
 
+	// A queue the person let into their own folders opens each one now, as
+	// the daemon starts right after the press that allowed it, so macOS asks
+	// about them then and not later, out of the blue, while an agent works
+	// (Elk #1832). macOS remembers the answer, so later starts ask nothing.
+	// Off the start path: macOS can hold the listing until the person answers.
+	go func() {
+		opened, refused := openPersonalFolders(r.queues, os.UserHomeDir)
+		if len(opened) > 0 {
+			r.logf("personal folders allowed for at least one queue: opened %s", strings.Join(opened, ", "))
+		}
+		if len(refused) > 0 {
+			r.logf("personal folders allowed but not readable (refused in System Settings > Privacy & Security?): %s", strings.Join(refused, ", "))
+		}
+	}()
+
 	// Before any run of this process exists: a `running` meta whose runner
 	// died is settled, so it stops holding the log and check prunes
 	// (ark:rein#95).

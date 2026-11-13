@@ -394,6 +394,22 @@ run; isolation that holds against a run trying to reach further is a separate
 OS user, or a separate machine, per customer. The detail is in
 [`docs/run-loop.md`](docs/run-loop.md#scoped-secrets-a-queue-that-gets-only-its-own-credentials).
 
+**Your own folders are out of bounds by default.** A Claude Code run gets
+deny rules for `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`,
+`~/Movies`, `~/Music` and iCloud Drive, which Claude Code applies in every
+permission mode, `full` included, to its file tools and to the file commands
+it recognises in a shell. A folder holding the run's own repository stays
+open. macOS asks about those folders with no warning the first time a
+background program touches one, so without this a run could raise that
+question in the middle of the night. To let a queue in, enrol it with
+`--personal-folders` (or set `personal_folders = true` on the queue) and
+restart the worker (`rein service stop`, then `rein service start`);
+the daemon opens each folder once as it starts, so macOS asks then, not in
+the middle of a run. A folder you refuse is named in the log. The other
+adapters do not enforce this yet, and a
+command that reads files without naming them can still reach the folders:
+it is a default, not a sandbox.
+
 **Tools that read credentials themselves: wrap them.** Under the service, a
 run's environment is closed — a LaunchAgent does not read your shell profile,
 so a key exported in `~/.zshrc` is not there. A tool that must find its own

@@ -500,6 +500,15 @@ type Queue struct {
 	// Like [Queue.Model] it is the fallback: an effort set for the queue in
 	// Elk wins over it, and this value applies whenever Elk sets none.
 	Effort string `toml:"effort,omitempty"`
+
+	// PersonalFolders lets this queue's agents into the person's own folders:
+	// Documents, Desktop, Downloads, Pictures, Movies, Music and iCloud Drive.
+	// Off by default (Casey's ruling on Elk #1832, 2026-11-12): a worker stays
+	// out unless the person allows it, because macOS asks about those folders
+	// with no warning the moment a background agent touches one. Today only
+	// the Claude Code adapter enforces it, with deny rules (see
+	// adapter/claude personalFolderDenies); the others do not yet.
+	PersonalFolders bool `toml:"personal_folders,omitempty"`
 }
 
 // modelRE is the shape of a vendor model id: `claude-opus-5-5`,

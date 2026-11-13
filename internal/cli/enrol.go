@@ -105,6 +105,7 @@ func addEnrolConnectFlags(f *pflag.FlagSet) {
 	f.Bool("force", false, "replace an existing enrolment for this queue")
 	f.StringArray("repo", nil, "a repository this queue serves, as name=path (repeatable); adds to [repos] and the queue's repos list")
 	f.String("default-repo", "", "the repository a run that names none is cut from: a --repo name, a [repos] key, or a mapped path (default: the only repository, when there is one)")
+	f.Bool("personal-folders", false, "let this queue's agents into your Documents, Desktop, Downloads, Pictures, Movies, Music and iCloud Drive (default: they stay out; a re-enrol without the flag keeps the earlier choice)")
 }
 
 func runEnrol(cmd *cobra.Command) error {
@@ -334,6 +335,11 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	cfg, q, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
 	if err != nil {
 		return fmt.Errorf("Elk bound queue %q, but nothing was written here: %w", queue, err)
+	}
+	// Only when the flag is given, so a re-enrol keeps the person's choice.
+	if f.Changed("personal-folders") {
+		q.PersonalFolders, _ = f.GetBool("personal-folders")
+		cfg.SetQueue(q)
 	}
 	if err := cfg.SaveFile(path); err != nil {
 		return err
