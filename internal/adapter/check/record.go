@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/worktree"
 )
 
 // SuiteRecord is the suite run record, schema_version 1, exactly as
@@ -326,7 +327,7 @@ func verifiedBranch(ctx context.Context, git, dir, ref, sha string) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, git, "-C", dir, "ls-remote", "origin", "refs/heads/"+b).Output()
+	out, err := exec.CommandContext(ctx, git, worktree.SafeGit("-C", dir, "ls-remote", "origin", "refs/heads/"+b)...).Output()
 	if err != nil {
 		return ""
 	}

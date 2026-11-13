@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/worktree"
 )
 
 // A run-private `$GROK_HOME`, which is how a Rein session is kept from
@@ -304,7 +305,7 @@ func (h *privateHome) writeTOML(name string, value any) error {
 // expose other worktrees' indexes and the repository's configuration/hooks.
 func gitWritePaths(ctx context.Context, dir string) ([]string, error) {
 	resolve := func(flag string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--path-format=absolute", flag)
+		cmd := exec.CommandContext(ctx, "git", worktree.SafeGit("rev-parse", "--path-format=absolute", flag)...)
 		cmd.Dir = dir
 		cmd.Env = mergeEnv(os.Environ(), map[string]string{"LC_ALL": "C"})
 		out, err := cmd.Output()

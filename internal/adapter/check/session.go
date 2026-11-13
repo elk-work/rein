@@ -15,6 +15,7 @@ import (
 
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/secretenv"
+	"github.com/elk-work/rein/internal/worktree"
 )
 
 // Start implements [adapter.Adapter]: it checks the worktree is the commit
@@ -703,7 +704,7 @@ func (a *Adapter) imagePresent(ctx context.Context, image string, env []string) 
 func gitOut(ctx context.Context, git, dir string, args ...string) string {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, git, append([]string{"-C", dir}, args...)...).Output()
+	out, err := exec.CommandContext(ctx, git, worktree.SafeGit(append([]string{"-C", dir}, args...)...)...).Output()
 	if err != nil {
 		return ""
 	}

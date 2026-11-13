@@ -187,8 +187,16 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 	git, gh := orDefault(g.Git, "git"), orDefault(g.GH, "gh")
 	var st LandingState
 
+	// The agent could have repointed the worktree's .git at a git directory
+	// whose config runs a command; git and gh both read it. Inspect nothing
+	// rather than run that (ark:rein#152).
+	if err := wt.CheckGitLink(ctx, git); err != nil {
+		st.Problems = append(st.Problems, err.Error())
+		return st
+	}
+
 	if wt.BaseSHA != "" {
-		out, err := g.runIn(ctx, wt.Dir, git, "rev-list", "--count", wt.BaseSHA+"..HEAD")
+		out, err := g.runIn(ctx, wt.Dir, git, worktree.SafeGit("rev-list", "--count", wt.BaseSHA+"..HEAD")...)
 		if n, convErr := strconv.Atoi(strings.TrimSpace(out)); err == nil && convErr == nil {
 			st.Commits, st.CommitsKnown = n, true
 		} else {
@@ -196,7 +204,7 @@ func (g GitHubLanding) Inspect(ctx context.Context, wt *worktree.Worktree) Landi
 		}
 	}
 
-	out, err := g.runIn(ctx, wt.Dir, git, "ls-remote", "--heads", "origin", "refs/heads/"+wt.Branch)
+	out, err := g.runIn(ctx, wt.Dir, git, worktree.SafeGit("ls-remote", "--heads", "origin", "refs/heads/"+wt.Branch)...)
 	if err != nil {
 		st.Problems = append(st.Problems, "could not read origin: "+errLine(err, out))
 	} else {

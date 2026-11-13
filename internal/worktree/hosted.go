@@ -33,7 +33,7 @@ func (m *Manager) Clone(ctx context.Context, repo, runID string, env map[string]
 	}
 	red := secretenv.NewRedactor(env)
 	run := func(args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, m.git(), args...)
+		cmd := exec.CommandContext(ctx, m.git(), SafeGit(args...)...)
 		cmd.Env = secretenv.Filter(os.Environ())
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)

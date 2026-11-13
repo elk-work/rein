@@ -600,7 +600,7 @@ func (m *Manager) assertRepo(ctx context.Context, repo string) error {
 func (m *Manager) run(ctx context.Context, dir string, args ...string) error {
 	full := append([]string{"-C", dir}, args...)
 	m.log("worktree: git %s", strings.Join(full, " "))
-	cmd := exec.CommandContext(ctx, m.git(), full...)
+	cmd := exec.CommandContext(ctx, m.git(), SafeGit(full...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, trimOutput(out))
@@ -612,7 +612,7 @@ func (m *Manager) run(ctx context.Context, dir string, args ...string) error {
 // the probes where failure is an answer rather than an error.
 func (m *Manager) output(ctx context.Context, dir string, args ...string) string {
 	full := append([]string{"-C", dir}, args...)
-	out, err := exec.CommandContext(ctx, m.git(), full...).Output()
+	out, err := exec.CommandContext(ctx, m.git(), SafeGit(full...)...).Output()
 	if err != nil {
 		return ""
 	}
