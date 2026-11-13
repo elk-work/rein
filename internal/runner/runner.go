@@ -255,6 +255,10 @@ type Options struct {
 	// should need to.
 	ReclaimInterval time.Duration
 
+	// ClaimRetryBackoff overrides [DefaultClaimRetryBackoff] as the wait
+	// before a claim that may have landed is asked again. Tests shorten it.
+	ClaimRetryBackoff time.Duration
+
 	// SetupRecheckInterval overrides [DefaultSetupRecheckInterval] as how
 	// often a queue whose agent setup failed checks it again on a heartbeat
 	// (ark:rein#94). Tests shorten it; nothing else should need to.
@@ -754,6 +758,11 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 // behind a build under review, in particular. The concurrency in the loop is
 // otherwise between queues.
 type queueRunner struct {
+	// lookForHeld makes the next claim take back any run Elk already holds
+	// for this queue (claim_retry.go). Set at startup and whenever a claim
+	// may have landed without its reply; cleared by a clear answer that
+	// listed nothing left to take back. Only the serve goroutine touches it.
+	lookForHeld     bool
 	hostedSubmitted bool
 	hostedDeadline  time.Time
 	r               *Runner
@@ -930,6 +939,11 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	}
 
 	qr.resumeReviews(ctx)
+	// A runner starting up may hold runs from a process that died, and a
+	// run whose claim reply was lost is held the same way (claim_retry.go).
+	// Not a hosted container: it starts fresh for one run, and a run its queue
+	// holds is another container's, live, not this one's to take.
+	qr.lookForHeld = !qr.r.opts.Hosted
 
 	// The zero value makes the first poll claim whatever the depth says. A
 	// runner starting up is a runner that may just have crashed, and its own
@@ -1001,7 +1015,11 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 		//     One extra round trip per queue per 15 minutes, bounded and
 		//     cheap, and the only thing that recovers a lapsed run.
 		sweepDue := time.Since(lastClaim) >= qr.reclaimInterval()
-		wantClaim := qr.r.opts.Once || !known || depth > 0 || sweepDue
+		// A claim that may have landed without its reply leaves a run held
+		// for this queue that the depth does not count (it is not waiting),
+		// so the loop asks again rather than waiting a lease for the sweep
+		// (Elk #1772).
+		wantClaim := qr.r.opts.Once || !known || depth > 0 || sweepDue || qr.lookForHeld
 
 		// Back off while the subscription is exhausted (ark:rein#40). Every
 		// run claimed now would start an agent that fails on its first
@@ -1238,7 +1256,7 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	}
 	defer qr.r.endClaim()
 
-	wo, err := qr.elk.ClaimRun(ctx, elk.ClaimRequest{Workspace: qr.workspace, Queue: qr.q.Name})
+	wo, err := qr.claimRun(ctx)
 	switch {
 	case errors.Is(err, elk.ErrNoWork):
 		return false, strings.TrimPrefix(err.Error(), elk.ErrNoWork.Error()+": "), nil
@@ -1257,7 +1275,11 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	for _, n := range wo.Notices {
 		qr.logf("workspace notice: %s", n)
 	}
-	qr.logf("claimed run %s — %s", wo.RunID, firstLine(wo.Direction))
+	if wo.Rehanded {
+		qr.logf("took back run %s, which Elk already held for this queue — %s", wo.RunID, firstLine(wo.Direction))
+	} else {
+		qr.logf("claimed run %s — %s", wo.RunID, firstLine(wo.Direction))
+	}
 	if prio == prioWrangler && !wranglerCycle(qr.q, wo.RequiredCapabilities) {
 		// The front of the line was spent on a build. Lend it back until
 		// another claim on this machine has had a slot, so a queue that is
@@ -1355,6 +1377,9 @@ func claimFailure(err error) string {
 		hErr *elk.HTTPError
 	)
 	switch {
+	case elk.ClaimMayHaveLanded(err):
+		return "claim_run gave no answer in time and may have claimed a run; Rein asks again: " +
+			clip(claimTimeoutReason(err), 300)
 	case errors.As(err, &tier):
 		return fmt.Sprintf("claim_run refused this queue's token: it is %s, and claim_run needs %s — re-enrol the queue",
 			tier.Held, tier.Required)
