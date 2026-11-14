@@ -61,9 +61,21 @@ maps) becomes the queue's `repo`. With a single `--repo` and no
 re-enrolment with `--force` keeps the repositories the queue already had, and
 re-pointing an existing `[repos]` name at another path needs `--force`.
 
-Because a list scopes the whole config, enrol refuses — before Elk is called,
-when the workspace is known — a declaration that would take a repository or a
-default from any other queue on the machine, and names the queue.
+Because a list scopes the whole config, a declaration would otherwise take
+repositories away from the other queues on the machine — a worker set up by
+hand with no list would lose all of them the moment a second agent joined with
+one. So enrol gives each such queue an explicit `repos` list of what it serves
+today (and, when it relied on `default_repo`, the matching `[repos]` name as
+its `repo`), backs the file up to `config.toml.bak`, and says which queues it
+kept. A second agent joins with no hand edit. What that cannot save — a
+`default_repo` that no `[repos]` name maps, say — is still refused before Elk
+is called, naming the queue.
+
+`rein enrol --revoke` does the same for the queues left behind: lists in one
+workspace combine, so a queue may reach a repository only through the list of
+the queue being revoked. Each one keeps what it served, and a running service
+reloads into the file, because a queue taken out of config.toml on purpose is
+not a stranding (a file with no queue left still is).
 
 An enrolment without either flag still works, but prints `repos NONE`, and
 `rein status` and `rein config check` warn about any queue with no repository

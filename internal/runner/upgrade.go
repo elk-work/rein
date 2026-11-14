@@ -157,7 +157,7 @@ func (r *Runner) baselineConfig() {
 // therefore no longer costs whatever is running.
 //
 // The upgrade's config-check refusal applies too. A file this build cannot
-// load, or one that would drop a queue, take a repository from a queue or
+// load, or one that would drop every queue, take a repository from a queue or
 // leave one with no default where it has one now, is not restarted into: the
 // daemon keeps serving on the config it has, logs why once, and looks again
 // when the file changes again. Unreadable or missing config.toml leaves the
@@ -183,13 +183,37 @@ func (r *Runner) checkConfigChange() {
 	if next.Error != "" {
 		r.logf("config: cannot load the changed config.toml: %s", next.Error)
 	}
-	if stranded := StrandedBy(cur, next); len(stranded) > 0 {
+	if stranded := StrandedBy(withoutRemoved(cur, next), next); len(stranded) > 0 {
 		r.logf("config: NOT restarting into the changed config.toml; staying on the one loaded at start. Under it: %s. "+
 			"Fix config.toml (`rein config check` shows how it is read) and this runner restarts on its next check.",
 			strings.Join(stranded, "; "))
 		return
 	}
 	r.drainFor("config: config.toml changed")
+}
+
+// withoutRemoved drops from cur the queues a loadable next no longer lists,
+// as long as next still lists one. The same build reads both, so a queue
+// missing from the changed file was taken out of it on purpose (`rein enrol
+// --revoke`), and serving one queue fewer is what was asked for, not a
+// stranding; a file with no queue left is still refused. An upgrade compares
+// two builds and keeps the full check: a new build dropping a queue is a loss.
+func withoutRemoved(cur, next ConfigReport) ConfigReport {
+	if next.Error != "" || len(next.Queues) == 0 {
+		return cur
+	}
+	listed := make(map[[2]string]bool, len(next.Queues))
+	for _, q := range next.Queues {
+		listed[[2]string{q.Workspace, q.Name}] = true
+	}
+	kept := make([]QueueReport, 0, len(cur.Queues))
+	for _, q := range cur.Queues {
+		if listed[[2]string{q.Workspace, q.Name}] {
+			kept = append(kept, q)
+		}
+	}
+	cur.Queues = kept
+	return cur
 }
 
 // tryUpgrade drains onto an installed version unless its config check says

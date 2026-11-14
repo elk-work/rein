@@ -98,22 +98,30 @@ func TestUpgradeLogOnlyModes(t *testing.T) {
 func TestConfigChangeDrains(t *testing.T) {
 	const base = "workspace = \"Scout\"\n\n[repos]\nscout = \"/dev/scout\"\n\n[[queues]]\nname = \"mac-claude\"\nagent_kind = \"claude\"\nrepo = \"scout\"\n"
 	off := false
+	const two = base + "\n[[queues]]\nname = \"mac-codex\"\nagent_kind = \"codex\"\nrepo = \"scout\"\n"
 	for _, tc := range []struct {
 		name    string
 		rewrite string
 		opts    Options
 		drain   bool
+		start   string
 	}{
-		{"unchanged", base, Options{UnderService: true}, false},
-		{"a queue added", base + "\n[[queues]]\nname = \"mac-codex\"\nagent_kind = \"codex\"\nrepo = \"scout\"\n", Options{UnderService: true}, true},
-		{"a file that does not load", "this is [not toml", Options{UnderService: true}, false},
-		{"a queue dropped", "workspace = \"Scout\"\n", Options{UnderService: true}, false},
-		{"opt-out", base + "\n# changed\n", Options{UnderService: true, Config: config.Config{SelfRestart: &off}}, false},
-		{"interactive", base + "\n# changed\n", Options{}, false},
+		{"unchanged", base, Options{UnderService: true}, false, ""},
+		{"a queue added", base + "\n[[queues]]\nname = \"mac-codex\"\nagent_kind = \"codex\"\nrepo = \"scout\"\n", Options{UnderService: true}, true, ""},
+		{"a file that does not load", "this is [not toml", Options{UnderService: true}, false, ""},
+		// A revoke takes one queue out on purpose; the other keeps its repositories.
+		{"one of two queues dropped", base, Options{UnderService: true}, true, two},
+		{"every queue dropped", "workspace = \"Scout\"\n", Options{UnderService: true}, false, ""},
+		{"opt-out", base + "\n# changed\n", Options{UnderService: true, Config: config.Config{SelfRestart: &off}}, false, ""},
+		{"interactive", base + "\n# changed\n", Options{}, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := t.TempDir() + "/config.toml"
-			if err := os.WriteFile(path, []byte(base), 0600); err != nil {
+			start := base
+			if tc.start != "" {
+				start = tc.start
+			}
+			if err := os.WriteFile(path, []byte(start), 0600); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := config.LoadFile(path)
