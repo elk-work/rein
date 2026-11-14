@@ -73,7 +73,9 @@ is called, naming the queue.
 
 `rein enrol --revoke` does the same for the queues left behind: lists in one
 workspace combine, so a queue may reach a repository only through the list of
-the queue being revoked. Each one keeps what it served, and a running service
+the queue being revoked. Each one keeps what it served — and when the revoked
+queue held the last list, each keeps exactly that, so the config stays scoped
+rather than handing every queue all of `[repos]`. A running service
 reloads into the file, because a queue taken out of config.toml on purpose is
 not a stranding (a file with no queue left still is).
 

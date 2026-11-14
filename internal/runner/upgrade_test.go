@@ -111,6 +111,8 @@ func TestConfigChangeDrains(t *testing.T) {
 		{"a file that does not load", "this is [not toml", Options{UnderService: true}, false, ""},
 		// A revoke takes one queue out on purpose; the other keeps its repositories.
 		{"one of two queues dropped", base, Options{UnderService: true}, true, two},
+		// A mistyped workspace is not a revoke: the queue moves, and loses its repository.
+		{"a workspace renamed with a queue dropped", "workspace = \"Scuot\"\n\n[[queues]]\nname = \"mac-claude\"\nagent_kind = \"claude\"\n", Options{UnderService: true}, false, two},
 		{"every queue dropped", "workspace = \"Scout\"\n", Options{UnderService: true}, false, ""},
 		{"opt-out", base + "\n# changed\n", Options{UnderService: true, Config: config.Config{SelfRestart: &off}}, false, ""},
 		{"interactive", base + "\n# changed\n", Options{}, false, ""},

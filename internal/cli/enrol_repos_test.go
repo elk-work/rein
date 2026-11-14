@@ -292,3 +292,38 @@ func TestEnrolAndStatusWarnWhenAQueueHasNoRepository(t *testing.T) {
 		t.Errorf("status did not warn:\n%s", out)
 	}
 }
+
+// Revoking the queue that held the last list must not fall back to unscoped
+// and hand every queue all of [repos], another workspace's checkouts included.
+func TestRevokeOfTheLastListWidensNothing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	a, b, c := checkout(t, "a"), checkout(t, "b"), checkout(t, "c")
+	cfg := config.Config{Workspace: "X", HostID: "mac", DefaultRepo: c,
+		Repos: map[string]string{"a": a, "b": b, "c": c},
+		Queues: []config.Queue{
+			{Name: "qa", AgentKind: "claude", Repos: []string{"a"}},
+			{Name: "qb", AgentKind: "codex"},
+			{Name: "qz", AgentKind: "codex", Workspace: "Y"},
+		}}
+	if err := cfg.SaveFile(filepath.Join(home, config.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	store := keyring.NewFileStore(filepath.Join(home, keyring.FileName))
+	if err := store.Set("X", "qa", "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if out, errb, code := run(t, "enrol", "--revoke", "--queue", "qa"); code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int{"qb": 1, "qz": 0} {
+		q, _ := after.Queue(name)
+		if got := after.RepositoriesFor(q); len(got) != want {
+			t.Errorf("%s serves %v after the revoke, want %d repositories", name, got, want)
+		}
+	}
+}

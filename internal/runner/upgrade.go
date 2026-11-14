@@ -192,8 +192,8 @@ func (r *Runner) checkConfigChange() {
 	r.drainFor("config: config.toml changed")
 }
 
-// withoutRemoved drops from cur the queues a loadable next no longer lists,
-// as long as next still lists one. The same build reads both, so a queue
+// withoutRemoved drops from cur the queues a loadable next no longer lists in
+// a workspace it still serves, as long as next still lists one. The same build reads both, so a queue
 // missing from the changed file was taken out of it on purpose (`rein enrol
 // --revoke`), and serving one queue fewer is what was asked for, not a
 // stranding; a file with no queue left is still refused. An upgrade compares
@@ -203,12 +203,17 @@ func withoutRemoved(cur, next ConfigReport) ConfigReport {
 		return cur
 	}
 	listed := make(map[[2]string]bool, len(next.Queues))
+	workspaces := map[string]bool{}
 	for _, q := range next.Queues {
 		listed[[2]string{q.Workspace, q.Name}] = true
+		workspaces[q.Workspace] = true
 	}
 	kept := make([]QueueReport, 0, len(cur.Queues))
 	for _, q := range cur.Queues {
-		if listed[[2]string{q.Workspace, q.Name}] {
+		// Only a queue whose workspace is still served counts as removed: a
+		// renamed (or mistyped) workspace moves every queue in it, and that
+		// is checked in full.
+		if listed[[2]string{q.Workspace, q.Name}] || !workspaces[q.Workspace] {
 			kept = append(kept, q)
 		}
 	}

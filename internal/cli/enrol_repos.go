@@ -330,7 +330,31 @@ func planRevoke(cfg config.Config, workspace, queue string) (config.Config, []st
 	next.Queues = append([]config.Queue(nil), cfg.Queues...)
 	next.RemoveQueue(workspace + "/" + queue)
 	skip := queueKey{workspace, queue}
+	var held []string
+	if before.RepositoryMode() == "scoped" && next.RepositoryMode() != "scoped" {
+		// The revoked queue held the last list, so the config would fall back
+		// to unscoped and every queue would reach all of [repos] — another
+		// workspace's checkouts included. Each queue that served something
+		// keeps exactly that as its own list, which keeps the config scoped.
+		next.Queues = append([]config.Queue(nil), next.Queues...)
+		for i, q := range next.Queues {
+			was, _ := before.QueueIn(next.WorkspaceFor(q), q.Name)
+			served := make([]string, 0)
+			for name := range before.RepositoriesFor(was) {
+				served = append(served, name)
+			}
+			if len(served) == 0 {
+				continue
+			}
+			sort.Strings(served)
+			next.Queues[i].Repos = served
+			held = append(held, next.QueueLabel(q))
+		}
+	}
 	next, pinned := keepOthersServed(before, next, skip)
+	for _, label := range held {
+		pinned = appendOnce(pinned, label)
+	}
 	if err := checkReposStrandNothing(before, next, skip); err != nil {
 		return cfg, nil, err
 	}
