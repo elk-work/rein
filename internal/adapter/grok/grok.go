@@ -122,8 +122,9 @@ func (a *Adapter) Manifest() adapter.Manifest {
 			"apparently from the developer's own permission rules. Rein therefore " +
 			"cannot claim to control Grok's approvals, so `ask` and `accept_edits` " +
 			"fail closed and the usable modes are read_only and full. " +
-			"worktree is `yes`: full uses a private workspace-derived sandbox " +
-			"with narrow grants for this checkout's git metadata and session state. " +
+			"worktree is `yes`: full runs in the checkout; macOS uses no OS sandbox, " +
+			"like Codex full, so CLI sign-ins can reach the login Keychain. " +
+			"Other platforms use a workspace-derived sandbox with Git metadata grants. " +
 			"mcp is `yes` — a Rein-supplied server reached session/new and was " +
 			"counted in the agent's connection tally — but ACP MCP here is http and " +
 			"sse only, no stdio, and Start rejects a server config that is neither " +
@@ -321,7 +322,7 @@ type permissionMode struct {
 // permissionSettings maps Rein's modes onto what `grok agent` actually offers.
 //
 //	read_only → GROK_SANDBOX=read-only, yoloMode        the OS refuses the writes
-//	full      → GROK_SANDBOX=rein-worktree, yoloMode   auto-approved inside the sandbox
+//	full      → off on macOS, rein-worktree elsewhere; yoloMode
 //	ask, accept_edits → refused
 //
 // `read_only` sets yoloMode deliberately, and the reasoning matters: with
@@ -340,7 +341,7 @@ func permissionSettings(m adapter.PermissionMode) (permissionMode, error) {
 	case adapter.PermissionReadOnly:
 		return permissionMode{sandboxProfile: sandboxReadOnly, yolo: true}, nil
 	case adapter.PermissionFull:
-		return permissionMode{sandboxProfile: sandboxWorktree, yolo: true}, nil
+		return permissionMode{sandboxProfile: fullSandbox(runtime.GOOS), yolo: true}, nil
 	case adapter.PermissionAsk, adapter.PermissionAcceptEdits:
 		return permissionMode{}, fmt.Errorf(
 			"%w: grok declares approvals `partial`, so %q cannot be served; see docs/adapter-grok.md",
@@ -348,6 +349,16 @@ func permissionSettings(m adapter.PermissionMode) (permissionMode, error) {
 	default:
 		return permissionMode{}, fmt.Errorf("grok: permission mode %q is not one this adapter maps", string(m))
 	}
+}
+
+// fullSandbox matches Codex full on macOS: a workspace Seatbelt profile can
+// prevent credential helpers from reaching the login Keychain. Directory grants
+// cannot grant Keychain IPC. Keep the workspace profile on other platforms.
+func fullSandbox(goos string) string {
+	if goos == "darwin" {
+		return "off"
+	}
+	return sandboxWorktree
 }
 
 // specWithSandbox makes the permission boundary authoritative over caller env.
@@ -437,6 +448,12 @@ func (a *Adapter) spawnProcess(ctx context.Context, spec adapter.RunSpec) (*proc
 		return nil, err
 	}
 	args := agentArgs(spec)
+
+	// Do this before allocating session state or starting an agent/model turn.
+	// Preflight() has no worktree; Ark needs this run's repository remote.
+	if err := preflightSignIns(ctx, spec); err != nil {
+		return nil, err
+	}
 
 	// Every session gets a GROK_HOME of its own, so the developer's
 	// config.toml — the Elk MCP connector above all — does not reach the

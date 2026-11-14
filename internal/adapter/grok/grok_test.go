@@ -3,6 +3,7 @@ package grok
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -80,7 +81,7 @@ func TestPermissionSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("full: %v", err)
 	}
-	if full.sandboxProfile != sandboxWorktree || !full.yolo {
+	if full.sandboxProfile != fullSandbox(runtime.GOOS) || !full.yolo {
 		t.Errorf("full → %+v, want yolo inside the worktree sandbox", full)
 	}
 	for _, mode := range []adapter.PermissionMode{adapter.PermissionAsk, adapter.PermissionAcceptEdits} {
@@ -168,7 +169,7 @@ func TestStartRefusesRatherThanDegrades(t *testing.T) {
 			PermissionMode: adapter.PermissionAsk}, adapter.ErrCapability},
 		{"tool allow list", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
 			PermissionMode: adapter.PermissionFull, AllowedTools: []string{"bash"}}, adapter.ErrNotSupported},
-		{"sandbox bypass", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi", PermissionMode: adapter.PermissionFull, Env: map[string]string{sandboxEnv: "off"}}, adapter.ErrNotSupported},
+		{"read-only sandbox bypass", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi", PermissionMode: adapter.PermissionReadOnly, Env: map[string]string{sandboxEnv: "off"}}, adapter.ErrNotSupported},
 		{"conflicting stricter sandbox", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi", PermissionMode: adapter.PermissionFull, Env: map[string]string{sandboxEnv: "strict"}}, adapter.ErrNotSupported},
 		{"stdio mcp", adapter.RunSpec{WorktreeDir: "/tmp/x", Prompt: "hi",
 			PermissionMode: adapter.PermissionFull,
@@ -253,5 +254,17 @@ func TestMergeEnvOverrides(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Errorf("mergeEnv kept a shadowed entry: %v", got)
+	}
+}
+
+func TestFullSandboxByPlatform(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		want := sandboxWorktree
+		if goos == "darwin" {
+			want = "off"
+		}
+		if got := fullSandbox(goos); got != want {
+			t.Fatalf("%s: %s != %s", goos, got, want)
+		}
 	}
 }
