@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/runner"
 )
 
@@ -128,17 +129,93 @@ func TestEnrolRefusesABadRepositoryBeforeCallingElk(t *testing.T) {
 	}
 }
 
-// The first repos list scopes the whole config, so declaring one must not
-// silently take the repositories away from a queue that already had them.
-func TestEnrolRefusesToStrandAnotherQueue(t *testing.T) {
+// The first repos list scopes the whole config. A worker set up by hand with
+// no list must keep every repository it served when a second agent joins with
+// one — without the person editing config.toml (Casey's Mac, Nov 13: adding
+// Gemini beside an unscoped Claude worker was refused).
+func TestEnrolKeepsAHandSetUpQueueOnItsRepositories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	s := enrolServer(t)
+	elk, scout, website := checkout(t, "elk"), checkout(t, "scout"), checkout(t, "website")
+	path := filepath.Join(home, config.FileName)
+	cfg := config.Config{Workspace: "Elk Scout", HostID: "mac",
+		Repos:  map[string]string{"elk": elk, "scout": scout, "website": website},
+		Queues: []config.Queue{{Name: "worker-5", AgentKind: "claude"}}}
+	if err := cfg.SaveFile(path); err != nil {
+		t.Fatal(err)
+	}
+	original, _ := os.ReadFile(path)
+
+	out, errb, code := run(t, "enrol", "--workspace", "Elk Scout", "--agent-kind", "gemini", "--queue", "mac-claude",
+		"--token", enrolToken, "--mcp-url", s.URL, "--repo", "elk-work/pulse="+checkout(t, "pulse"))
+	if code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _ := cfg.Queue("worker-5")
+	if got := strings.Join(old.Repos, ","); got != "elk,scout,website" {
+		t.Errorf("worker-5 repos = %q, want what it served before", got)
+	}
+	// The test Elk files every enrolment as mac-claude.
+	for _, name := range []string{"worker-5", "mac-claude"} {
+		q, _ := cfg.Queue(name)
+		served := cfg.RepositoriesFor(q)
+		for _, want := range []string{"elk", "scout", "website", "elk-work/pulse"} {
+			if _, ok := served[want]; !ok {
+				t.Errorf("%s does not serve %s: %v", name, want, served)
+			}
+		}
+	}
+	if rep := runner.CheckConfig(cfg, ""); !rep.OK {
+		t.Errorf("config check after enrol = %+v", rep)
+	}
+	if !strings.Contains(out, "kept    worker-5") {
+		t.Errorf("enrol did not say it kept worker-5:\n%s", out)
+	}
+	if backup, err := os.ReadFile(path + ".bak"); err != nil || string(backup) != string(original) {
+		t.Errorf("no backup of the original config (%v)", err)
+	}
+}
+
+// A queue that relied on the machine-wide default_repo keeps a default once a
+// list scopes the config, because default_repo stops applying.
+func TestEnrolKeepsAnotherQueuesDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.EnvHome, home)
 	registerAs(t, "codex")
 	s := enrolServer(t)
 	old := checkout(t, "old")
-	cfg := config.Config{Workspace: "Elk Scout", HostID: "mac",
+	cfg := config.Config{Workspace: "Elk Scout", HostID: "mac", DefaultRepo: old,
 		Repos:  map[string]string{"old": old},
-		Queues: []config.Queue{{Name: "mac-claude", AgentKind: "claude", Repo: "old"}}}
+		Queues: []config.Queue{{Name: "mac-old", AgentKind: "claude"}}}
+	if err := cfg.SaveFile(filepath.Join(home, config.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	out, errb, code := run(t, "enrol", "--workspace", "Elk Scout", "--agent-kind", "codex", "--queue", "mac-claude",
+		"--token", enrolToken, "--mcp-url", s.URL, "--repo", "new="+checkout(t, "new"))
+	if code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	cfg, _ = config.Load()
+	q, _ := cfg.Queue("mac-old")
+	if res, err := runner.ResolveRepo(cfg, q, "**Direction:** tidy up"); err != nil || res.Path != old {
+		t.Errorf("mac-old default = %+v, %v; want %s", res, err, old)
+	}
+}
+
+// What pinning cannot save is still refused, before Elk is called: here the
+// machine-wide default is a checkout [repos] does not map.
+func TestEnrolRefusesToStrandAnotherQueue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	registerAs(t, "codex")
+	s := enrolServer(t)
+	cfg := config.Config{Workspace: "Elk Scout", HostID: "mac", DefaultRepo: checkout(t, "unmapped"),
+		Queues: []config.Queue{{Name: "mac-claude", AgentKind: "claude"}}}
 	if err := cfg.SaveFile(filepath.Join(home, config.FileName)); err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +226,52 @@ func TestEnrolRefusesToStrandAnotherQueue(t *testing.T) {
 	}
 	if n := len(s.CallsTo("connect_executor")); n != 0 {
 		t.Errorf("Elk was called for a refused enrolment")
+	}
+}
+
+// Removing one queue never shrinks another (Casey's laptop, Nov 13): worker-5
+// listed short names and reached the full ones only through worker-11's list,
+// so revoking worker-11 left it with the short names and the running service
+// refused to reload.
+func TestRevokeKeepsTheOtherQueuesRepositories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	elk, bridge, website := checkout(t, "elk"), checkout(t, "bridge"), checkout(t, "website")
+	path := filepath.Join(home, config.FileName)
+	cfg := config.Config{Workspace: "Elk Scout", HostID: "mac",
+		Repos: map[string]string{"elk": elk, "elk-work/bridge": bridge, "elk-work/website": website},
+		Queues: []config.Queue{
+			{Name: "worker-5", AgentKind: "claude", Repos: []string{"elk"}, Repo: "elk"},
+			{Name: "worker-11", AgentKind: "codex", Repos: []string{"elk-work/bridge", "elk-work/website"}},
+		}}
+	if err := cfg.SaveFile(path); err != nil {
+		t.Fatal(err)
+	}
+	store := keyring.NewFileStore(filepath.Join(home, keyring.FileName))
+	if err := store.Set("Elk Scout", "worker-11", "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errb, code := run(t, "enrol", "--revoke", "--queue", "worker-11")
+	if code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after.Queue("worker-11"); ok {
+		t.Error("worker-11 is still in the config")
+	}
+	if lost := runner.StrandedBy(runner.CheckConfig(cfg, ""), runner.CheckConfig(after, "")); len(lost) != 1 || !strings.Contains(lost[0], "worker-11 would not be served") {
+		t.Errorf("revoke stranded %v, want only worker-11 gone", lost)
+	}
+	q, _ := after.Queue("worker-5")
+	if got := strings.Join(q.Repos, ","); got != "elk,elk-work/bridge,elk-work/website" || q.Repo != "elk" {
+		t.Errorf("worker-5 repos = %q, repo = %q", got, q.Repo)
+	}
+	if !strings.Contains(out, "kept    worker-5") {
+		t.Errorf("revoke did not say it kept worker-5:\n%s", out)
 	}
 }
 
@@ -167,5 +290,40 @@ func TestEnrolAndStatusWarnWhenAQueueHasNoRepository(t *testing.T) {
 	out, _, _ = run(t, "status")
 	if !strings.Contains(out, "WARNING: queue mac-claude has no repository") {
 		t.Errorf("status did not warn:\n%s", out)
+	}
+}
+
+// Revoking the queue that held the last list must not fall back to unscoped
+// and hand every queue all of [repos], another workspace's checkouts included.
+func TestRevokeOfTheLastListWidensNothing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	a, b, c := checkout(t, "a"), checkout(t, "b"), checkout(t, "c")
+	cfg := config.Config{Workspace: "X", HostID: "mac", DefaultRepo: c,
+		Repos: map[string]string{"a": a, "b": b, "c": c},
+		Queues: []config.Queue{
+			{Name: "qa", AgentKind: "claude", Repos: []string{"a"}},
+			{Name: "qb", AgentKind: "codex"},
+			{Name: "qz", AgentKind: "codex", Workspace: "Y"},
+		}}
+	if err := cfg.SaveFile(filepath.Join(home, config.FileName)); err != nil {
+		t.Fatal(err)
+	}
+	store := keyring.NewFileStore(filepath.Join(home, keyring.FileName))
+	if err := store.Set("X", "qa", "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if out, errb, code := run(t, "enrol", "--revoke", "--queue", "qa"); code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	after, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]int{"qb": 1, "qz": 0} {
+		q, _ := after.Queue(name)
+		if got := after.RepositoriesFor(q); len(got) != want {
+			t.Errorf("%s serves %v after the revoke, want %d repositories", name, got, want)
+		}
 	}
 }

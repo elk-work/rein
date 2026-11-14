@@ -148,27 +148,121 @@ func defaultRepoName(cfg config.Config, def string) (string, error) {
 	return "", fmt.Errorf("--default-repo %q is neither a repository name from --repo or [repos] nor a git checkout", def)
 }
 
+// keepOthersServed returns after with every queue but skip given an explicit
+// repos list wide enough to keep serving what it served under before, and
+// the labels of the queues it changed.
+//
+// The first repos list on a machine scopes the whole config, and lists in one
+// workspace combine, so declaring a list for one queue or dropping a queue
+// that had one changes what the OTHER queues see (docs/workspace-repositories.md).
+// A worker set up by hand with no list would lose every repository the moment
+// a second agent joined with one; a worker whose short names only reached the
+// full ones through a peer's list would lose those when the peer was revoked.
+// Pinning each such queue to what it serves today is the edit a person would
+// otherwise have had to make in config.toml by hand. It only ever adds.
+func keepOthersServed(before, after config.Config, skip queueKey) (config.Config, []string) {
+	after.Queues = append([]config.Queue(nil), after.Queues...)
+	var changed []string
+	for i, q := range after.Queues {
+		key := queueKey{after.WorkspaceFor(q), q.Name}
+		if key == skip {
+			continue
+		}
+		was, ok := before.QueueIn(key.workspace, key.name)
+		if !ok {
+			continue
+		}
+		served := after.RepositoriesFor(q)
+		var missing []string
+		for name := range before.RepositoriesFor(was) {
+			if _, have := served[name]; !have {
+				if _, declared := after.Repos[name]; declared {
+					missing = append(missing, name)
+				}
+			}
+		}
+		sort.Strings(missing)
+		pinned := q
+		pinned.Repos = append([]string(nil), q.Repos...)
+		for _, name := range missing {
+			pinned.Repos = appendOnce(pinned.Repos, name)
+		}
+		// default_repo stops applying once the config is scoped, so a queue
+		// that relied on it gets its checkout as its own repo.
+		if res, err := runner.ResolveRepo(before, was, ""); err == nil && q.Repo == "" {
+			if _, err := runner.ResolveRepo(after, pinned, ""); err != nil {
+				if name := repoKeyFor(after, res.Path); name != "" {
+					pinned.Repo = name
+					pinned.Repos = appendOnce(pinned.Repos, name)
+				}
+			}
+		}
+		if len(pinned.Repos) == len(q.Repos) && pinned.Repo == q.Repo {
+			continue
+		}
+		after.Queues[i] = pinned
+		// Each list added widens its workspace for the queues already looked
+		// at, so the loop never needs a second pass: it only ever adds.
+		changed = append(changed, after.QueueLabel(pinned))
+	}
+	return after, changed
+}
+
+type queueKey struct{ workspace, name string }
+
+// repoKeyFor is the [repos] key that maps path, or "".
+func repoKeyFor(cfg config.Config, path string) string {
+	keys := make([]string, 0, len(cfg.Repos))
+	for k := range cfg.Repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if filepath.Clean(expandHome(cfg.Repos[k])) == filepath.Clean(path) {
+			return k
+		}
+	}
+	return ""
+}
+
 // checkReposStrandNothing refuses a change to the repository declarations
-// that would take a repository or a default away from any OTHER queue — the
-// first repos list on a machine ends unscoped mode for every queue at once.
-// The queue being enrolled is exempt: its declaration is what was asked for.
-func checkReposStrandNothing(before, after config.Config, workspace, queue string) error {
+// that would still take a repository or a default away from any OTHER queue
+// once [keepOthersServed] has done what it can. The queue being enrolled or
+// revoked is exempt: its change is what was asked for.
+func checkReposStrandNothing(before, after config.Config, skip queueKey) error {
 	cur := runner.CheckConfig(before, "")
 	next := runner.CheckConfig(after, "")
 	kept := cur.Queues[:0:0]
 	for _, q := range cur.Queues {
-		if q.Workspace == workspace && q.Name == queue {
+		if q.Workspace == skip.workspace && q.Name == skip.name {
 			continue
 		}
 		kept = append(kept, q)
 	}
 	cur.Queues = kept
 	if lost := runner.StrandedBy(cur, next); len(lost) > 0 {
-		return fmt.Errorf("declaring these repositories would scope this machine's config, and then %s.\n"+
-			"       Give every other queue its own repos list first (see docs/workspace-repositories.md), then enrol again",
+		return fmt.Errorf("this would change what other queues on this machine can work in, and then %s.\n"+
+			"       Nothing was changed. `rein config check` shows how each queue reads the config",
 			strings.Join(lost, "; "))
 	}
 	return nil
+}
+
+// backupConfig copies the config file beside itself before Rein edits a
+// queue the person did not name, so the edit can be undone by hand.
+func backupConfig(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	backup := path + ".bak"
+	if err := os.WriteFile(backup, data, 0o600); err != nil {
+		return "", fmt.Errorf("could not back up %s before changing other queues: %w", path, err)
+	}
+	return backup, nil
 }
 
 func appendOnce(list []string, v string) []string {
@@ -191,10 +285,12 @@ func expandHome(p string) string {
 
 // planEnrolment is the config and queue an enrolment will write: the queue
 // filed under workspace with its agent kind, keeping every local setting a
-// re-enrolment had, plus the requested repositories. It is computed once
-// before Elk is called, when the workspace is known, so a bad --repo stops
-// the enrolment before anything is bound, and again with Elk's answer.
-func planEnrolment(cfg config.Config, workspace, queue, agentKind string, req enrolRepos, force bool) (config.Config, config.Queue, error) {
+// re-enrolment had, plus the requested repositories, and every other queue
+// pinned to what it already serves (the labels of those come back too). It
+// is computed once before Elk is called, when the workspace is known, so a bad
+// --repo stops the enrolment before anything is bound, and again with Elk's
+// answer.
+func planEnrolment(cfg config.Config, workspace, queue, agentKind string, req enrolRepos, force bool) (config.Config, config.Queue, []string, error) {
 	cfg.Workspace = firstNonEmpty(cfg.Workspace, workspace)
 	cfg.Queues = append([]config.Queue(nil), cfg.Queues...)
 	before := cfg
@@ -206,19 +302,76 @@ func planEnrolment(cfg config.Config, workspace, queue, agentKind string, req en
 	}
 	next, q, err := applyEnrolRepos(cfg, q, req, force)
 	if err != nil {
-		return cfg, q, err
+		return cfg, q, nil, err
 	}
 	next.Queues = append([]config.Queue(nil), next.Queues...)
 	next.SetQueue(q)
+	var pinned []string
 	if !req.empty() {
-		if err := checkReposStrandNothing(before, next, workspace, queue); err != nil {
-			return cfg, q, err
+		skip := queueKey{workspace, queue}
+		next, pinned = keepOthersServed(before, next, skip)
+		if err := checkReposStrandNothing(before, next, skip); err != nil {
+			return cfg, q, nil, err
 		}
 		if err := next.Validate(); err != nil {
-			return cfg, q, err
+			return cfg, q, nil, err
 		}
 	}
-	return next, q, nil
+	return next, q, pinned, nil
+}
+
+// planRevoke is the config a revoke writes: the queue gone, and every other
+// queue pinned to what it served with it there, so dropping one queue never
+// shrinks another (a revoke once left a queue with only its short repository
+// names, and the running service refused to reload).
+func planRevoke(cfg config.Config, workspace, queue string) (config.Config, []string, error) {
+	before := cfg
+	next := cfg
+	next.Queues = append([]config.Queue(nil), cfg.Queues...)
+	next.RemoveQueue(workspace + "/" + queue)
+	skip := queueKey{workspace, queue}
+	var held []string
+	if before.RepositoryMode() == "scoped" && next.RepositoryMode() != "scoped" {
+		// The revoked queue held the last list, so the config would fall back
+		// to unscoped and every queue would reach all of [repos] — another
+		// workspace's checkouts included. Each queue that served something
+		// keeps exactly that as its own list, which keeps the config scoped.
+		next.Queues = append([]config.Queue(nil), next.Queues...)
+		for i, q := range next.Queues {
+			was, _ := before.QueueIn(next.WorkspaceFor(q), q.Name)
+			served := make([]string, 0)
+			for name := range before.RepositoriesFor(was) {
+				served = append(served, name)
+			}
+			if len(served) == 0 {
+				continue
+			}
+			sort.Strings(served)
+			next.Queues[i].Repos = served
+			held = append(held, next.QueueLabel(q))
+		}
+	}
+	next, pinned := keepOthersServed(before, next, skip)
+	for _, label := range held {
+		pinned = appendOnce(pinned, label)
+	}
+	if err := checkReposStrandNothing(before, next, skip); err != nil {
+		return cfg, nil, err
+	}
+	return next, pinned, nil
+}
+
+// printPinned says which other queues an enrolment or revoke gave an explicit
+// repos list, and where the file was before.
+func printPinned(out io.Writer, pinned []string, backup string) {
+	if len(pinned) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "kept    %s on the repositories they already work in (each now lists them in config.toml)\n",
+		strings.Join(pinned, ", "))
+	if backup != "" {
+		fmt.Fprintf(out, "backup  %s\n", backup)
+	}
 }
 
 // printEnrolRepos says what a run on the queue can be cut from, and says it

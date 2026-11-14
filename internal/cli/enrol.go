@@ -71,13 +71,15 @@ names no checkout path ends stuck:
   --repo elk-work/scout=~/dev/scout   repeatable; each must be a git checkout
   --default-repo elk-work/scout       where a run that names none is cut from
 
-Both only add to what a re-enrolment already had. See
-docs/workspace-repositories.md.
+Both only add to what a re-enrolment already had. The first list scopes the
+whole config, so any other queue that would lose a repository by it is given
+an explicit repos list of what it serves today (config.toml is backed up to
+config.toml.bak first). See docs/workspace-repositories.md.
 
   rein enrol --revoke --queue mac-claude
 
 forgets a queue locally: it deletes the keychain entry first, then drops the
-queue from the config. It does not revoke the credential in Elk — an admin does
+queue from the config. Every other queue keeps the repositories it served. It does not revoke the credential in Elk — an admin does
 that with Stop on its card on Elk's Agents page.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -227,7 +229,7 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	if workspace != "" {
 		// Checked now, before Elk binds anything, and declared too: the
 		// repositories are capabilities Pace routes on.
-		planCfg, planQ, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
+		planCfg, planQ, _, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
 		if err != nil {
 			return err
 		}
@@ -332,9 +334,15 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 	// config row without a token is visible in `rein status` as
 	// "missing — run `rein enrol`" and costs one re-run.
 	_, replaced := cfg.QueueIn(workspace, queue)
-	cfg, q, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
+	cfg, q, pinned, err := planEnrolment(cfg, workspace, queue, agentKind, repos, force)
 	if err != nil {
 		return fmt.Errorf("Elk bound queue %q, but nothing was written here: %w", queue, err)
+	}
+	var backup string
+	if len(pinned) > 0 {
+		if backup, err = backupConfig(path); err != nil {
+			return fmt.Errorf("Elk bound queue %q, but nothing was written here: %w", queue, err)
+		}
 	}
 	// Only when the flag is given, so a re-enrol keeps the person's choice.
 	if f.Changed("personal-folders") {
@@ -359,6 +367,7 @@ func runEnrolConnect(cmd *cobra.Command, path string, cfg config.Config, store k
 		fmt.Fprintf(out, "declared %s\n", strings.Join(declared, ", "))
 	}
 	printEnrolRepos(out, cfg, q)
+	printPinned(out, pinned, backup)
 	// Who may send work here. Only on the self-connect path: a claim exchange
 	// takes the inviting person's choice, which Rein never learns — Elk's own
 	// reply above is the authority there, and it says so when --shared was
@@ -485,6 +494,19 @@ func runRevoke(cmd *cobra.Command, path string, cfg config.Config, store keyring
 		return fmt.Errorf("queue %q names no workspace; pass --workspace", queue)
 	}
 
+	// Planned before anything is deleted, so a revoke that would strand
+	// another queue changes nothing.
+	next, pinned, err := planRevoke(cfg, workspace, queue)
+	if err != nil {
+		return fmt.Errorf("refusing to drop queue %q: %w", queue, err)
+	}
+	var backup string
+	if len(pinned) > 0 {
+		if backup, err = backupConfig(path); err != nil {
+			return err
+		}
+	}
+
 	// Keychain first, config second — the exact reverse of enrolment, and for
 	// the same reason. The OS keychain cannot be enumerated, so this config
 	// entry is the only record that a token for (workspace, queue) exists.
@@ -494,13 +516,13 @@ func runRevoke(cmd *cobra.Command, path string, cfg config.Config, store keyring
 		return fmt.Errorf("refusing to drop queue %q from the config: its token could not be deleted (%w) "+
 			"and the config is the only record that it exists", queue, err)
 	}
-	cfg.RemoveQueue(workspace + "/" + queue)
-	if err := cfg.SaveFile(path); err != nil {
+	if err := next.SaveFile(path); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(out, "Forgot queue %q in workspace %q: token deleted from the %s keyring, queue dropped from %s.\n",
 		queue, workspace, store.Name(), path)
+	printPinned(out, pinned, backup)
 	fmt.Fprintln(out, "This is local only. The credential still exists in Elk until someone presses Stop on")
 	fmt.Fprintln(out, "its card on Elk's Agents page.")
 	return nil
