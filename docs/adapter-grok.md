@@ -62,7 +62,7 @@ tests have to replay in request order rather than in file order; see
 | Rein mode | How | Usable |
 |---|---|---|
 | `read_only` | `GROK_SANDBOX=read-only` on the child process, plus `_meta.yoloMode` | yes |
-| `full` | `GROK_SANDBOX=rein-worktree`, plus `_meta.yoloMode: true` | yes |
+| `full` | `GROK_SANDBOX=off` on macOS, `rein-worktree` elsewhere; `_meta.yoloMode: true` | yes |
 | `ask` | — | **no**: fails closed on `approvals: partial` |
 | `accept_edits` | — | **no**: same |
 
@@ -135,7 +135,28 @@ deliberately, because that day is good news and should not pass unnoticed.
 
 ### `worktree: yes` — linked checkout commits inside the sandbox
 
-`full` selects `rein-worktree`, written to the run-private `sandbox.toml`.
+On macOS, `full` now selects `off`, matching Codex's `danger-full-access`.
+The former workspace profile added a credential-access boundary that Codex
+full does not have: filesystem grants do not grant Keychain IPC. This removes
+that startup difference; a real mac-grok push and Ark comment after rollout
+are still required to confirm the diagnosis. Full mode on macOS therefore
+has no kernel write isolation, just like Codex full. Read-only stays sandboxed.
+
+Both adapters preserve `HOME`, inherit the same scoped environment, and use
+private vendor homes (`GROK_HOME` / `CODEX_HOME`). Grok additionally sets
+`GROK_SANDBOX` and disables Claude/Cursor configuration discovery. Neither
+adapter starts a new login/security session. The workspace profile allows
+network access; a blanket network denial is not the suspected cause.
+
+Before spawning Grok, each run checks `gh auth status` and
+`ark credential list` with the run's environment and working directory.
+Each check has a 15-second deadline. Missing binaries, unavailable service,
+expired login, and timeout fail with `ErrPreflight` naming the sign-in; command
+output is discarded. `ark status` is insufficient because it is local-only.
+This happens in startup rather than the adapter-wide `Preflight`, which lacks
+the repository needed to select Ark's remote. It does not prove write access.
+
+Other platforms' `full` selects `rein-worktree`, written to the run-private `sandbox.toml`.
 It uses Grok’s [custom profile format](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/18-sandbox.md).
 It extends `workspace` and grants the checkout's Git directory (index and HEAD),
 plus the common repository's `objects`, `refs` and `logs/refs` directories.
