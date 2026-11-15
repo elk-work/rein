@@ -62,7 +62,7 @@ tests have to replay in request order rather than in file order; see
 | Rein mode | How | Usable |
 |---|---|---|
 | `read_only` | `GROK_SANDBOX=read-only` on the child process, plus `_meta.yoloMode` | yes |
-| `full` | `GROK_SANDBOX=off` on macOS, `rein-worktree` elsewhere; `_meta.yoloMode: true` | yes |
+| `full` | Rein Seatbelt profile on macOS, `rein-worktree` elsewhere; `_meta.yoloMode: true` | yes |
 | `ask` | — | **no**: fails closed on `approvals: partial` |
 | `accept_edits` | — | **no**: same |
 
@@ -135,18 +135,34 @@ deliberately, because that day is good news and should not pass unnoticed.
 
 ### `worktree: yes` — linked checkout commits inside the sandbox
 
-On macOS, `full` now selects `off`, matching Codex's `danger-full-access`.
-The former workspace profile added a credential-access boundary that Codex
-full does not have: filesystem grants do not grant Keychain IPC. This removes
-that startup difference; a real mac-grok push and Ark comment after rollout
-are still required to confirm the diagnosis. Full mode on macOS therefore
-has no kernel write isolation, just like Codex full. Read-only stays sandboxed.
+On macOS, `full` selects Rein's native `rein-macos` boundary. Rein writes
+`sandbox.sb` into the private Grok home and launches the entire agent through
+`/usr/bin/sandbox-exec -f`. Failure to load the profile prevents the agent from
+executing. The existing `sandboxFailed` guard also remains in place.
 
-Both adapters preserve `HOME`, inherit the same scoped environment, and use
-private vendor homes (`GROK_HOME` / `CODEX_HOME`). Grok additionally sets
-`GROK_SANDBOX` and disables Claude/Cursor configuration discovery. Neither
-adapter starts a new login/security session. The workspace profile allows
-network access; a blanket network denial is not the suspected cause.
+The profile denies filesystem writes except to the checkout, its linked Git
+metadata (the worktree index/HEAD, common `objects`, `refs`, and `logs/refs`),
+the private Grok home, and Rein's own Grok session archive. `TMPDIR`, `TMP`,
+and `TEMP` point at private scratch under that home: there is no blanket
+`/tmp` or macOS user-temp write grant. Global configuration, hook sources,
+the profile itself and the login link remain write-protected. `/dev/null`
+and `/dev/tty` are the only writable device exceptions.
+
+This is a filesystem write boundary: normal reads, network and IPC remain
+available, including Keychain IPC used by Git credential helpers. Grok's TOML
+profiles cannot express IPC allowances. Consequently **only inside this native
+wrapper**, Rein sets the vendor's `GROK_SANDBOX=off`; stacking its built-in
+sandbox would reintroduce the Keychain denial. This is not an unprotected
+launch: sandbox-exec applies the irreversible kernel policy first, and children
+inherit it. An explicit caller request for `off` is still rejected.
+
+`TestMacSandboxCommitPushAndDeny` runs in the ordinary macOS test suite without
+a login or model call. It creates a throwaway linked worktree and a local HTTP
+Git server, commits, then pushes through a synthetic credential helper. It
+checks the remote's resulting commit and refuses sibling, Git-config, profile
+and symlink-escape writes, including from the helper. It does not exercise a
+real login Keychain or use real credentials. `TestMacSandboxInvalidProfileFailsClosed`
+checks that an invalid native profile never executes its child.
 
 Before spawning Grok, each run checks `gh auth status` and
 `ark credential list` with the run's environment and working directory.
@@ -161,7 +177,7 @@ It uses Grok’s [custom profile format](https://github.com/xai-org/grok-build/b
 It extends `workspace` and grants the checkout's Git directory (index and HEAD),
 plus the common repository's `objects`, `refs` and `logs/refs` directories.
 Git resolves both directories with `rev-parse`; no other worktree's index,
-repository configuration or hooks directory is granted. The linked session
+repository configuration or hooks directory is granted. The Rein-owned session
 archive gets its own narrow grant so ACP sessions can start and resume.
 Non-Git working directories need no extra Git grants. Temporary directories
 remain writable, as in the underlying workspace profile; this is write
@@ -224,10 +240,11 @@ reviewed, so it was never re-reviewed and could not be accepted
 `GROK_HOME` is the switch that exists, and `_x.ai/mcp/servers_updated` now
 arrives empty.
 
-**What is carried across**, by symlink: `auth.json` (the login — verified, a
-private home with only this link still reports the account logged in, and
-without it reports "You are not authenticated") and `sessions/` (session state,
-so `session/load` still resumes).
+**What is carried across**, by symlink: `auth.json` (the vendor login).
+`sessions/` instead links to `$REIN_HOME/grok/sessions`, matching Rein's ownership
+of its Codex history. New sessions survive private-home cleanup and can resume;
+old sessions stored in the developer's Grok history are not migrated or exposed.
+This keeps the writable session archive inside Rein's own storage.
 
 **Foreign configuration imports are disabled.** `GROK_HOME` isolates native
 configuration, while the adapter sets all ten confirmed Claude/Cursor switches
