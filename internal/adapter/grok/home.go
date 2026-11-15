@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/elk-work/rein/internal/adapter"
+	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -61,8 +62,9 @@ import (
 //     act from Rein handling the token. Verified: `grok models` under a private
 //     home with only this link still reports the account logged in, and without
 //     it reports "You are not authenticated."
-//   - `sessions/` — session state. `session/load` reads it, and `resume` is a
-//     declared capability, so it has to survive a home that does not.
+//
+// Session state belongs to Rein under $REIN_HOME/grok/sessions, not to the
+// developer’s Grok home. It survives a private home for session/load.
 //
 // Plugins are enumerated and disabled before the agent starts; see configure.
 type privateHome struct {
@@ -79,7 +81,6 @@ type privateHome struct {
 // the agent belongs here.
 var carried = []string{
 	"auth.json", // the login
-	"sessions",  // session state, for session/load
 }
 
 // realGrokHome is where Grok keeps the developer's configuration and login.
@@ -157,6 +158,20 @@ func newPrivateHome(runID string) (*privateHome, error) {
 			h.remove()
 			return nil, fmt.Errorf("grok: linking %s into the private home: %w", target, err)
 		}
+	}
+	reinHome, err := config.Dir()
+	if err != nil {
+		h.remove()
+		return nil, err
+	}
+	sessions := filepath.Join(reinHome, "grok", "sessions")
+	if err := os.MkdirAll(sessions, 0700); err != nil {
+		h.remove()
+		return nil, err
+	}
+	if err := os.Symlink(sessions, filepath.Join(dir, "sessions")); err != nil {
+		h.remove()
+		return nil, err
 	}
 	return h, nil
 }

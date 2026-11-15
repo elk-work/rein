@@ -507,13 +507,15 @@ var initStopRE = regexp.MustCompile(`(?m)^elk-init-stop: (\S+) ?(.*)$`)
 
 // Reap removes a worktree.
 //
-// The run's BRANCH goes with it (ark:rein#97). A reaped run has submitted or
+// The run’s branch goes with it only when its tip is unchanged or known on a
+// remote-tracking ref. Unpushed commits retain their branch (ark:rein#171).
+// A reaped run has submitted or
 // been discarded: its work is merged, sits on a pushed branch in a PR, or was
 // thrown away, and a source clone that keeps every `rein/run-*` branch grew
 // to 1,173 of them. `git worktree remove --force` also discards uncommitted
 // changes — the trade a v0 that reaps immediately after submit is making, and
 // the reason `rein run --keep-worktrees` exists. The tip is logged when the
-// branch is deleted, so a commit nobody pushed can still be found.
+// branch is deleted; unpushed work remains reachable by its branch name.
 //
 // Every `.ark` link is removed FIRST. Neither git nor os.RemoveAll follows a
 // symlink — that was checked before this design was adopted — but the target is
@@ -560,8 +562,20 @@ func (m *Manager) deleteBranch(ctx context.Context, wt *Worktree) {
 	if wt.Branch == "" || wt.Detached || wt.Repo == "" {
 		return
 	}
-	tip := m.output(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
+	tip := strings.TrimSpace(m.output(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch))
 	if tip == "" {
+		return
+	}
+	// A failed push must not turn committed work into an unreachable object.
+	// Only delete an unchanged branch, or a tip present in a remote-tracking
+	// ref. Unknown state (including a missing base) conservatively keeps it.
+	safe := wt.BaseSHA != "" && tip == wt.BaseSHA
+	if !safe {
+		refs := m.output(ctx, wt.Repo, "for-each-ref", "--format=%(refname)", "--contains="+tip, "refs/remotes/")
+		safe = strings.TrimSpace(refs) != ""
+	}
+	if !safe {
+		m.log("worktree: kept branch %s (at %s): commits are not known to be pushed", wt.Branch, tip)
 		return
 	}
 	if err := m.run(ctx, wt.Repo, "branch", "-D", wt.Branch); err != nil {

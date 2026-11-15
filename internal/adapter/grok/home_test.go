@@ -36,6 +36,7 @@ func fakeRealHome(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv("GROK_HOME", dir)
+	t.Setenv("REIN_HOME", t.TempDir())
 	return dir
 }
 
@@ -51,6 +52,10 @@ func TestPrivateHomeLeavesTheDevelopersConfigBehind(t *testing.T) {
 	// The config.toml is where the Elk connector lived. Its absence is the fix.
 	if _, err := os.Lstat(filepath.Join(h.dir, "config.toml")); !os.IsNotExist(err) {
 		t.Fatal("the private home carried config.toml across; that is the bug this exists to prevent")
+	}
+
+	if target, err := os.Readlink(filepath.Join(h.dir, "sessions")); err != nil || target != filepath.Join(os.Getenv("REIN_HOME"), "grok", "sessions") {
+		t.Fatalf("sessions must belong to Rein, got %q: %v", target, err)
 	}
 
 	entries, err := os.ReadDir(h.dir)

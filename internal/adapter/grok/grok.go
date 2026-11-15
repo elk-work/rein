@@ -122,8 +122,8 @@ func (a *Adapter) Manifest() adapter.Manifest {
 			"apparently from the developer's own permission rules. Rein therefore " +
 			"cannot claim to control Grok's approvals, so `ask` and `accept_edits` " +
 			"fail closed and the usable modes are read_only and full. " +
-			"worktree is `yes`: full runs in the checkout; macOS uses no OS sandbox, " +
-			"like Codex full, so CLI sign-ins can reach the login Keychain. " +
+			"worktree is `yes`: macOS full uses Rein’s Seatbelt write sandbox, " +
+			"preserving Keychain IPC for credential helpers. " +
 			"Other platforms use a workspace-derived sandbox with Git metadata grants. " +
 			"mcp is `yes` — a Rein-supplied server reached session/new and was " +
 			"counted in the agent's connection tally — but ACP MCP here is http and " +
@@ -322,7 +322,7 @@ type permissionMode struct {
 // permissionSettings maps Rein's modes onto what `grok agent` actually offers.
 //
 //	read_only → GROK_SANDBOX=read-only, yoloMode        the OS refuses the writes
-//	full      → off on macOS, rein-worktree elsewhere; yoloMode
+//	full      → Rein Seatbelt on macOS, rein-worktree elsewhere; yoloMode
 //	ask, accept_edits → refused
 //
 // `read_only` sets yoloMode deliberately, and the reasoning matters: with
@@ -351,12 +351,12 @@ func permissionSettings(m adapter.PermissionMode) (permissionMode, error) {
 	}
 }
 
-// fullSandbox matches Codex full on macOS: a workspace Seatbelt profile can
-// prevent credential helpers from reaching the login Keychain. Directory grants
-// cannot grant Keychain IPC. Keep the workspace profile on other platforms.
+// macOS uses Rein's native profile: Grok's TOML format cannot grant Keychain IPC.
+const sandboxMacOS = "rein-macos"
+
 func fullSandbox(goos string) string {
 	if goos == "darwin" {
-		return "off"
+		return sandboxMacOS
 	}
 	return sandboxWorktree
 }
@@ -471,9 +471,13 @@ func (a *Adapter) spawnProcess(ctx context.Context, spec adapter.RunSpec) (*proc
 
 	// Deliberately not a CommandContext: cancelling the ctx passed to Start
 	// must not stop the session — only Session.Interrupt does.
-	cmd := exec.Command(path, args...)
+	cmd, err := home.sandboxCommand(ctx, path, args, spec)
+	if err != nil {
+		home.remove()
+		return nil, err
+	}
 	cmd.Dir = spec.WorktreeDir
-	cmd.Env = home.runEnv(spec.InheritedEnv(), spec.Env)
+	cmd.Env = home.commandEnv(spec)
 
 	stdin, stdout, stderr, err := pipes(cmd)
 	if err != nil {

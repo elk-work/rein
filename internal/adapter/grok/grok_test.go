@@ -261,7 +261,7 @@ func TestFullSandboxByPlatform(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux", "windows"} {
 		want := sandboxWorktree
 		if goos == "darwin" {
-			want = "off"
+			want = sandboxMacOS
 		}
 		if got := fullSandbox(goos); got != want {
 			t.Fatalf("%s: %s != %s", goos, got, want)
