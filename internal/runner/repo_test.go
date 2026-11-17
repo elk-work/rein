@@ -276,3 +276,24 @@ func TestScopedQueueMatchesTheCheckoutsOriginRemote(t *testing.T) {
 		t.Error("an undeclared checkout satisfied the hint through its origin")
 	}
 }
+
+// Elk Scout #465 (2026-11-17): a work order's bare "repo: pulse" on a scoped
+// queue that declares "elk-work/pulse" is that repository when exactly one
+// declared name ends in it; two that do, or none, still refuse.
+func TestScopedQueueTakesAUniqueShortName(t *testing.T) {
+	pulse, a, b := t.TempDir(), t.TempDir(), t.TempDir()
+	q := config.Queue{Name: "worker-4", Repos: []string{"elk-work/pulse", "elk-work/site", "other/site"}}
+	cfg := config.Config{Workspace: "Scout", Repos: map[string]string{
+		"elk-work/pulse": pulse, "elk-work/site": a, "other/site": b}, Queues: []config.Queue{q}}
+	for _, text := range []string{"repo: pulse", "repo: Pulse"} {
+		got, err := runner.ResolveRepo(cfg, q, text)
+		if err != nil || got.Path != pulse {
+			t.Errorf("%q = %+v, %v; want %s", text, got, err, pulse)
+		}
+	}
+	for _, text := range []string{"repo: site", "repo: scout", "repo: evil/pulse"} {
+		if _, err := runner.ResolveRepo(cfg, q, text); err == nil || !strings.Contains(err.Error(), "not declared") {
+			t.Errorf("%q resolved: %v", text, err)
+		}
+	}
+}

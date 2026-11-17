@@ -253,6 +253,22 @@ func lookupRepoScoped(cfg config.Config, name string, scoped bool) (string, bool
 				return expand(cfg.Repos[k]), true
 			}
 		}
+		// A bare name ("pulse") is the one declared owner/name ending in it,
+		// when exactly one does (Elk Scout #465). Two or none still refuse.
+		if !strings.Contains(name, "/") {
+			match := ""
+			for _, k := range repoNames(cfg) {
+				if strings.EqualFold(lastSegment(k), name) {
+					if match != "" {
+						return "", false
+					}
+					match = k
+				}
+			}
+			if match != "" {
+				return expand(cfg.Repos[match]), true
+			}
+		}
 		return "", false
 	}
 	if p, ok := cfg.Repos[name]; ok {
