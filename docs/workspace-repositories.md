@@ -86,6 +86,22 @@ and no default: every run it claims that names no checkout path ends stuck.
 A queue's `repo` may be a `[repos]` name or a path, scoped or not; a name is
 looked up in the table rather than used as a relative path (`ark:rein#61`).
 
+## Changing a queue's repositories later
+
+`rein repos add owner/name --path <checkout>` adds a repository to a queue,
+and `--clone` downloads it first (from `https://github.com/owner/name.git` into
+`~/Developer/name`, or `--from` and `--into`; a checkout already there is
+reused). `rein repos remove owner/name` takes one off. `--queue` names the
+queue when the machine has several. Both write config.toml the way an
+enrolment's `--repo` does: every other queue keeps what it serves, and
+config.toml is backed up first when another queue's list has to be written.
+
+A running service picks up an added repository between tasks, and its next
+heartbeat declares it to Elk. A removed one is not picked up: the service
+refuses to restart into a config that takes a repository from a queue (see
+`checkConfigChange`), so it keeps the old list until `rein service stop` and
+`rein service start`. A queue's last repository cannot be removed.
+
 ## Configs written before lists
 
 Before v0.8.4 there were no lists, so a machine serving several workspaces had
