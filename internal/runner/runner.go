@@ -1157,7 +1157,7 @@ func (qr *queueRunner) heartbeat(ctx context.Context) (depth int, known bool) {
 		qr.noteBeat()
 		qr.noteHeartbeatReply(hb.Text)
 		qr.absorbElkModel(hb)
-		qr.applySettings(hb.Settings)
+		qr.applySettings(ctx, hb.Settings)
 		qr.noteReconnect(hb)
 		return hb.Waiting, true
 	case ctx.Err() != nil:

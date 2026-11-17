@@ -2,12 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -47,7 +45,7 @@ unless --from or --into say otherwise; a checkout already there is reused).`,
 			case path != "" && clone:
 				return fmt.Errorf("pass --path or --clone, not both")
 			case path != "":
-				dir, err = checkoutPath(path)
+				dir, err = runner.CheckoutPath(path)
 			case clone:
 				from, _ := cmd.Flags().GetString("from")
 				into, _ := cmd.Flags().GetString("into")
@@ -136,9 +134,9 @@ func changeRepos(cmd *cobra.Command, edit func(config.Config, config.Queue) (con
 	}
 	next.Queues = append([]config.Queue(nil), next.Queues...)
 	next.SetQueue(q)
-	skip := queueKey{next.WorkspaceFor(q), q.Name}
-	next, pinned := keepOthersServed(before, next, skip)
-	if err := checkReposStrandNothing(before, next, skip); err != nil {
+	skip := runner.QueueKey{Workspace: next.WorkspaceFor(q), Name: q.Name}
+	next, pinned := runner.KeepOthersServed(before, next, skip)
+	if err := runner.CheckReposStrandNothing(before, next, skip); err != nil {
 		return err
 	}
 	if err := next.Validate(); err != nil {
@@ -187,27 +185,9 @@ func pickQueue(cmd *cobra.Command, cfg config.Config) (config.Queue, error) {
 // cloneRepo downloads name into into/<last segment>, or reuses the checkout
 // already there.
 func cloneRepo(cmd *cobra.Command, name, from, into string) (string, error) {
-	if from == "" {
-		if strings.Count(name, "/") != 1 {
-			return "", fmt.Errorf("--clone needs owner/name to know where to download from, or --from")
-		}
-		from = "https://github.com/" + name + ".git"
+	dir, cloned, err := runner.CloneRepo(cmd.Context(), name, from, into, true)
+	if cloned {
+		fmt.Fprintf(cmd.OutOrStdout(), "cloned  %s into %s\n", firstNonEmpty(from, "https://github.com/"+name+".git"), dir)
 	}
-	dest := filepath.Join(expandHome(into), lastPathSegment(name))
-	if _, err := os.Stat(dest); err == nil {
-		return checkoutPath(dest)
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
-	c := exec.CommandContext(cmd.Context(), "git", "clone", "--quiet", from, dest)
-	if out, err := c.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git clone %s: %v\n%s", from, err, strings.TrimSpace(string(out)))
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "cloned  %s into %s\n", from, dest)
-	return checkoutPath(dest)
-}
-
-func lastPathSegment(name string) string {
-	return name[strings.LastIndex(name, "/")+1:]
+	return dir, err
 }

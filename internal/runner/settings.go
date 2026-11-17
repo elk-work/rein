@@ -1,10 +1,13 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	geminiadapter "github.com/elk-work/rein/internal/adapter/gemini"
 	"github.com/elk-work/rein/internal/config"
@@ -98,6 +101,62 @@ func ApplyElkSettings(cfg config.Config, workspace, queue string, s elk.WorkerSe
 	return out, true, nil
 }
 
+// AddElkRepos gives one queue each repository (owner/name) the worker's person
+// chose for it in the Elk app (ark:rein#160). It only ever adds: a repository
+// missing from wanted is never taken away. For each one the queue does not
+// already serve, a [repos] entry for it is used when there is one (its key, or
+// a checkout whose origin it is); otherwise clone fetches it and it is declared
+// as owner/name. A clone that fails skips that repository alone; clone
+// reports it. Every queue keeps what it served, so a running service will
+// restart into the result.
+func AddElkRepos(cfg config.Config, workspace, queue string, wanted []string, clone func(name string) (string, error)) (config.Config, bool, error) {
+	q, ok := cfg.QueueIn(workspace, queue)
+	if !ok {
+		return cfg, false, fmt.Errorf("no queue %s/%s in the config", workspace, queue)
+	}
+	served := cfg
+	served.Repos = cfg.RepositoriesFor(q)
+	next, nq := cfg, q
+	nq.Repos = append([]string(nil), q.Repos...)
+	var cloned []NamedRepo
+	for _, name := range wanted {
+		name = strings.TrimSpace(name)
+		if strings.Count(name, "/") != 1 {
+			continue
+		}
+		if _, ok := lookupRepoScoped(served, name, true); ok {
+			continue
+		}
+		if path, ok := lookupRepoScoped(cfg, name, true); ok {
+			nq.Repos = appendOnce(nq.Repos, repoKeyFor(cfg, path))
+			continue
+		}
+		if slices.ContainsFunc(cloned, func(r NamedRepo) bool { return strings.EqualFold(r.Name, name) }) {
+			continue
+		}
+		if dir, err := clone(name); err == nil {
+			cloned = append(cloned, NamedRepo{Name: name, Path: dir})
+		}
+	}
+	next, nq, err := AddRepos(next, nq, cloned, false)
+	if err != nil {
+		return cfg, false, err
+	}
+	if len(nq.Repos) == len(q.Repos) {
+		return cfg, false, nil
+	}
+	next.Queues = append([]config.Queue(nil), cfg.Queues...)
+	next.SetQueue(nq)
+	next, _ = KeepOthersServed(cfg, next, QueueKey{})
+	if err := CheckReposStrandNothing(cfg, next, QueueKey{}); err != nil {
+		return cfg, false, err
+	}
+	if err := next.Validate(); err != nil {
+		return cfg, false, fmt.Errorf("the repositories chosen in Elk would not load here: %w", err)
+	}
+	return next, true, nil
+}
+
 func sameSecrets(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
@@ -123,14 +182,19 @@ func settingsSignature(s elk.WorkerSettings) string {
 	if s.Permission != nil {
 		perm = *s.Permission
 	}
-	return land + "|" + perm + "|" + strings.Join(names, ",")
+	repos := append([]string(nil), s.Repos...)
+	sort.Strings(repos)
+	return land + "|" + perm + "|" + strings.Join(names, ",") + "|" + strings.Join(repos, ",")
 }
 
 // applySettings writes Elk's settings for this queue into config.toml. The
 // file change is what takes effect: under the service, checkConfigChange
 // drains the runner and the service manager restarts it on the new file
 // between tasks, exactly as for an enrolment (ark:rein#66).
-func (qr *queueRunner) applySettings(s *elk.WorkerSettings) {
+//
+// Repositories chosen in the app are added after the other settings, and a
+// missing one is cloned into ~/Developer here, which holds up this beat.
+func (qr *queueRunner) applySettings(ctx context.Context, s *elk.WorkerSettings) {
 	path := qr.r.opts.ConfigPath
 	if s == nil || path == "" {
 		return
@@ -141,31 +205,78 @@ func (qr *queueRunner) applySettings(s *elk.WorkerSettings) {
 	if qr.settingsSeen == sig {
 		return
 	}
-	cfg, err := config.LoadFile(path)
-	if err != nil {
-		qr.logf("settings: cannot read %s to apply the Elk app's settings: %v", path, err)
-		qr.settingsSeen = sig
-		return
-	}
-	next, changed, err := ApplyElkSettings(cfg, qr.workspace, qr.q.Name, *s)
 	qr.settingsSeen = sig
-	switch {
-	case err != nil:
-		qr.logf("settings: not applying the Elk app's settings: %v", err)
-	case !changed:
-	default:
-		if err := next.SaveFile(path); err != nil {
-			qr.logf("settings: could not save the Elk app's settings: %v", err)
-			qr.settingsSeen = ""
+	// A clone is remembered for the second pass below, which re-reads the
+	// file: a clone takes long enough for `rein enrol` or `rein repos add` to
+	// have written it meanwhile, and their change must not be lost.
+	type result struct {
+		dir string
+		err error
+	}
+	clones := map[string]result{}
+	clone := func(name string) (string, error) {
+		if r, ok := clones[name]; ok {
+			return r.dir, r.err
+		}
+		// Its own bound: a clone that waits on a credential prompt must not
+		// hold every queue's settings forever.
+		cctx, cancel := context.WithTimeout(ctx, cloneTimeout)
+		defer cancel()
+		dir, cloned, err := CloneRepo(cctx, name, "", "~/Developer", false)
+		switch {
+		case err != nil:
+			qr.logf("settings: queue %s: could not add %s, skipping it: %v", qr.q.Name, name, err)
+		case cloned:
+			qr.logf("settings: queue %s: cloned %s into %s", qr.q.Name, name, dir)
+		}
+		clones[name] = result{dir, err}
+		return dir, err
+	}
+	var next config.Config
+	var changed bool
+	for pass := 0; pass < 2; pass++ {
+		cloned := len(clones)
+		cfg, err := config.LoadFile(path)
+		if err != nil {
+			qr.logf("settings: cannot read %s to apply the Elk app's settings: %v", path, err)
 			return
 		}
-		qr.logf("settings: took the Elk app's settings for %s (finishes by: %s; permission: %s; %d secret(s))",
-			qr.q.Name, landOf(next, qr.workspace, qr.q.Name), permissionOf(next, qr.workspace, qr.q.Name), len(s.Secrets))
-		if !qr.r.canSelfRestart() {
-			qr.logf("settings: restart Rein to use them (it is not running as the service)")
+		next, changed, err = ApplyElkSettings(cfg, qr.workspace, qr.q.Name, *s)
+		if err != nil {
+			if pass == 0 {
+				qr.logf("settings: not applying the Elk app's settings: %v", err)
+			}
+			next = cfg
+		}
+		withRepos, added, err := AddElkRepos(next, qr.workspace, qr.q.Name, s.Repos, clone)
+		switch {
+		case err != nil:
+			qr.logf("settings: not adding the repositories chosen in Elk to queue %s: %v", qr.q.Name, err)
+		case added:
+			next, changed = withRepos, true
+		}
+		if len(clones) == cloned {
+			break
 		}
 	}
+	if !changed {
+		return
+	}
+	if err := next.SaveFile(path); err != nil {
+		qr.logf("settings: could not save the Elk app's settings: %v", err)
+		qr.settingsSeen = ""
+		return
+	}
+	q, _ := next.QueueIn(qr.workspace, qr.q.Name)
+	qr.logf("settings: took the Elk app's settings for %s (finishes by: %s; permission: %s; %d secret(s); repositories: %s)",
+		qr.q.Name, landOf(next, qr.workspace, qr.q.Name), permissionOf(next, qr.workspace, qr.q.Name), len(s.Secrets), strings.Join(q.Repos, ", "))
+	if !qr.r.canSelfRestart() {
+		qr.logf("settings: restart Rein to use them (it is not running as the service)")
+	}
 }
+
+// cloneTimeout bounds one clone of a repository chosen in the Elk app.
+const cloneTimeout = 10 * time.Minute
 
 func landOf(cfg config.Config, workspace, name string) string {
 	q, _ := cfg.QueueIn(workspace, name)

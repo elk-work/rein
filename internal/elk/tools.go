@@ -1134,11 +1134,14 @@ type Heartbeat struct {
 // WorkerSettings is a worker's landing policy and secret names as chosen in
 // the app. Land and Permission nil mean "leave this computer's own setting";
 // Permission is read_only or full. Secrets are
-// variable NAMES only: a value never passes through Elk.
+// variable NAMES only: a value never passes through Elk. Repos are the GitHub
+// repositories (owner/name) the person wants the queue to serve; Rein only
+// ever adds them, so an empty list removes nothing.
 type WorkerSettings struct {
 	Land       *string  `json:"land"`
 	Permission *string  `json:"permission"`
 	Secrets    []string `json:"secrets"`
+	Repos      []string `json:"repos"`
 }
 
 var (
