@@ -24,7 +24,7 @@ type enrolRepos struct {
 	Default string
 }
 
-type namedRepo struct{ Name, Path string }
+type namedRepo = runner.NamedRepo
 
 func (r enrolRepos) empty() bool { return len(r.Repos) == 0 && r.Default == "" }
 
@@ -42,7 +42,7 @@ func parseEnrolRepos(flags []string, def string) (enrolRepos, error) {
 		if strings.ContainsAny(name, " \t\n\"") {
 			return enrolRepos{}, fmt.Errorf("--repo %q: a repository name has no spaces or quotes", f)
 		}
-		abs, err := checkoutPath(path)
+		abs, err := runner.CheckoutPath(path)
 		if err != nil {
 			return enrolRepos{}, fmt.Errorf("--repo %s: %w", name, err)
 		}
@@ -51,35 +51,11 @@ func parseEnrolRepos(flags []string, def string) (enrolRepos, error) {
 		}
 		if _, dup := seen[name]; !dup {
 			seen[name] = abs
-			out.Repos = append(out.Repos, namedRepo{name, abs})
+			out.Repos = append(out.Repos, namedRepo{Name: name, Path: abs})
 		}
 	}
 	out.Default = strings.TrimSpace(def)
 	return out, nil
-}
-
-// checkoutPath turns a flag's path into an absolute one and insists it is a
-// git checkout: a worktree is cut from it, and nothing else will do.
-func checkoutPath(p string) (string, error) {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	fi, err := os.Stat(abs)
-	if err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("%s is not a directory", abs)
-	}
-	if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
-		return "", fmt.Errorf("%s is not a git checkout (no .git)", abs)
-	}
-	return abs, nil
 }
 
 // applyEnrolRepos returns cfg and q with the requested repositories declared:
@@ -94,20 +70,9 @@ func applyEnrolRepos(cfg config.Config, q config.Queue, req enrolRepos, force bo
 	if req.empty() {
 		return cfg, q, nil
 	}
-	repos := make(map[string]string, len(cfg.Repos)+len(req.Repos))
-	for k, v := range cfg.Repos {
-		repos[k] = v
-	}
-	cfg.Repos = repos
-	q.Repos = append([]string(nil), q.Repos...)
-
-	for _, r := range req.Repos {
-		if have, ok := cfg.Repos[r.Name]; ok && filepath.Clean(expandHome(have)) != r.Path && !force {
-			return cfg, q, fmt.Errorf("--repo %s: [repos] already maps %s to %s, and other queues may use it; pass --force to point it at %s",
-				r.Name, r.Name, have, r.Path)
-		}
-		cfg.Repos[r.Name] = r.Path
-		q.Repos = appendOnce(q.Repos, r.Name)
+	cfg, q, err := runner.AddRepos(cfg, q, req.Repos, force)
+	if err != nil {
+		return cfg, q, err
 	}
 
 	switch def := req.Default; {
@@ -132,7 +97,7 @@ func defaultRepoName(cfg config.Config, def string) (string, error) {
 	if _, ok := cfg.Repos[def]; ok {
 		return def, nil
 	}
-	if abs, err := checkoutPath(def); err == nil {
+	if abs, err := runner.CheckoutPath(def); err == nil {
 		keys := make([]string, 0, len(cfg.Repos))
 		for k := range cfg.Repos {
 			keys = append(keys, k)
@@ -146,106 +111,6 @@ func defaultRepoName(cfg config.Config, def string) (string, error) {
 		return "", fmt.Errorf("--default-repo %s is not mapped to a name; declare it too with --repo <name>=%s", abs, abs)
 	}
 	return "", fmt.Errorf("--default-repo %q is neither a repository name from --repo or [repos] nor a git checkout", def)
-}
-
-// keepOthersServed returns after with every queue but skip given an explicit
-// repos list wide enough to keep serving what it served under before, and
-// the labels of the queues it changed.
-//
-// The first repos list on a machine scopes the whole config, and lists in one
-// workspace combine, so declaring a list for one queue or dropping a queue
-// that had one changes what the OTHER queues see (docs/workspace-repositories.md).
-// A worker set up by hand with no list would lose every repository the moment
-// a second agent joined with one; a worker whose short names only reached the
-// full ones through a peer's list would lose those when the peer was revoked.
-// Pinning each such queue to what it serves today is the edit a person would
-// otherwise have had to make in config.toml by hand. It only ever adds.
-func keepOthersServed(before, after config.Config, skip queueKey) (config.Config, []string) {
-	after.Queues = append([]config.Queue(nil), after.Queues...)
-	var changed []string
-	for i, q := range after.Queues {
-		key := queueKey{after.WorkspaceFor(q), q.Name}
-		if key == skip {
-			continue
-		}
-		was, ok := before.QueueIn(key.workspace, key.name)
-		if !ok {
-			continue
-		}
-		served := after.RepositoriesFor(q)
-		var missing []string
-		for name := range before.RepositoriesFor(was) {
-			if _, have := served[name]; !have {
-				if _, declared := after.Repos[name]; declared {
-					missing = append(missing, name)
-				}
-			}
-		}
-		sort.Strings(missing)
-		pinned := q
-		pinned.Repos = append([]string(nil), q.Repos...)
-		for _, name := range missing {
-			pinned.Repos = appendOnce(pinned.Repos, name)
-		}
-		// default_repo stops applying once the config is scoped, so a queue
-		// that relied on it gets its checkout as its own repo.
-		if res, err := runner.ResolveRepo(before, was, ""); err == nil && q.Repo == "" {
-			if _, err := runner.ResolveRepo(after, pinned, ""); err != nil {
-				if name := repoKeyFor(after, res.Path); name != "" {
-					pinned.Repo = name
-					pinned.Repos = appendOnce(pinned.Repos, name)
-				}
-			}
-		}
-		if len(pinned.Repos) == len(q.Repos) && pinned.Repo == q.Repo {
-			continue
-		}
-		after.Queues[i] = pinned
-		// Each list added widens its workspace for the queues already looked
-		// at, so the loop never needs a second pass: it only ever adds.
-		changed = append(changed, after.QueueLabel(pinned))
-	}
-	return after, changed
-}
-
-type queueKey struct{ workspace, name string }
-
-// repoKeyFor is the [repos] key that maps path, or "".
-func repoKeyFor(cfg config.Config, path string) string {
-	keys := make([]string, 0, len(cfg.Repos))
-	for k := range cfg.Repos {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if filepath.Clean(expandHome(cfg.Repos[k])) == filepath.Clean(path) {
-			return k
-		}
-	}
-	return ""
-}
-
-// checkReposStrandNothing refuses a change to the repository declarations
-// that would still take a repository or a default away from any OTHER queue
-// once [keepOthersServed] has done what it can. The queue being enrolled or
-// revoked is exempt: its change is what was asked for.
-func checkReposStrandNothing(before, after config.Config, skip queueKey) error {
-	cur := runner.CheckConfig(before, "")
-	next := runner.CheckConfig(after, "")
-	kept := cur.Queues[:0:0]
-	for _, q := range cur.Queues {
-		if q.Workspace == skip.workspace && q.Name == skip.name {
-			continue
-		}
-		kept = append(kept, q)
-	}
-	cur.Queues = kept
-	if lost := runner.StrandedBy(cur, next); len(lost) > 0 {
-		return fmt.Errorf("this would change what other queues on this machine can work in, and then %s.\n"+
-			"       Nothing was changed. `rein config check` shows how each queue reads the config",
-			strings.Join(lost, "; "))
-	}
-	return nil
 }
 
 // backupConfig copies the config file beside itself before Rein edits a
@@ -308,9 +173,9 @@ func planEnrolment(cfg config.Config, workspace, queue, agentKind string, req en
 	next.SetQueue(q)
 	var pinned []string
 	if !req.empty() {
-		skip := queueKey{workspace, queue}
-		next, pinned = keepOthersServed(before, next, skip)
-		if err := checkReposStrandNothing(before, next, skip); err != nil {
+		skip := runner.QueueKey{Workspace: workspace, Name: queue}
+		next, pinned = runner.KeepOthersServed(before, next, skip)
+		if err := runner.CheckReposStrandNothing(before, next, skip); err != nil {
 			return cfg, q, nil, err
 		}
 		if err := next.Validate(); err != nil {
@@ -329,7 +194,7 @@ func planRevoke(cfg config.Config, workspace, queue string) (config.Config, []st
 	next := cfg
 	next.Queues = append([]config.Queue(nil), cfg.Queues...)
 	next.RemoveQueue(workspace + "/" + queue)
-	skip := queueKey{workspace, queue}
+	skip := runner.QueueKey{Workspace: workspace, Name: queue}
 	var held []string
 	if before.RepositoryMode() == "scoped" && next.RepositoryMode() != "scoped" {
 		// The revoked queue held the last list, so the config would fall back
@@ -351,11 +216,11 @@ func planRevoke(cfg config.Config, workspace, queue string) (config.Config, []st
 			held = append(held, next.QueueLabel(q))
 		}
 	}
-	next, pinned := keepOthersServed(before, next, skip)
+	next, pinned := runner.KeepOthersServed(before, next, skip)
 	for _, label := range held {
 		pinned = appendOnce(pinned, label)
 	}
-	if err := checkReposStrandNothing(before, next, skip); err != nil {
+	if err := runner.CheckReposStrandNothing(before, next, skip); err != nil {
 		return cfg, nil, err
 	}
 	return next, pinned, nil

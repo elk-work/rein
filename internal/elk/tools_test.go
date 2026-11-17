@@ -418,7 +418,7 @@ func TestHeartbeatCarriesTheElkAppsSettings(t *testing.T) {
 	s := elktest.New(t, testToken)
 	s.Reply("heartbeat_executor", elktest.Reply{
 		Text:       `Heartbeat recorded for queue "mac-claude". You are online for the next 15 minutes. Nothing is waiting for you.`,
-		Structured: map[string]any{"settings": map[string]any{"land": "pr", "secrets": []string{"POSTHOG_API_KEY"}}},
+		Structured: map[string]any{"settings": map[string]any{"land": "pr", "secrets": []string{"POSTHOG_API_KEY"}, "repos": []string{"acme/app"}}},
 	})
 	c := newClient(t, s)
 	hb, err := c.HeartbeatExecutor(context.Background(), elk.HeartbeatRequest{Workspace: "Elk Scout", Queue: "mac-claude"})
@@ -426,7 +426,8 @@ func TestHeartbeatCarriesTheElkAppsSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if hb.Settings == nil || hb.Settings.Land == nil || *hb.Settings.Land != "pr" ||
-		len(hb.Settings.Secrets) != 1 || hb.Settings.Secrets[0] != "POSTHOG_API_KEY" {
+		len(hb.Settings.Secrets) != 1 || hb.Settings.Secrets[0] != "POSTHOG_API_KEY" ||
+		len(hb.Settings.Repos) != 1 || hb.Settings.Repos[0] != "acme/app" {
 		t.Fatalf("settings = %+v", hb.Settings)
 	}
 

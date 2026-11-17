@@ -102,6 +102,15 @@ refuses to restart into a config that takes a repository from a queue (see
 `checkConfigChange`), so it keeps the old list until `rein service stop` and
 `rein service start`. A queue's last repository cannot be removed.
 
+A repository chosen for a worker in the Elk app arrives on the heartbeat reply
+(`settings.repos`, owner/name) and Rein adds it the same way: a `[repos]` entry
+already on the machine is used (its key, or a checkout whose origin is that
+repository), otherwise it is cloned into `~/Developer/name`. Every queue,
+this one included, keeps what it serves, so the service restarts into it
+between tasks. Elk's list only adds: a repository missing from it is never
+removed. A clone that fails is logged with the queue and skipped until the
+list changes or Rein restarts.
+
 ## Configs written before lists
 
 Before v0.8.4 there were no lists, so a machine serving several workspaces had
