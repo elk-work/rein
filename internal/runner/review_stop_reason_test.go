@@ -16,6 +16,11 @@ func TestReviewStopReasonNamesTheCause(t *testing.T) {
 		{"deploy", "Deploy the elk-mcp function through the workflow and link the run.", "a rule conflict", "agent_rules"},
 		{"ci running", "The pull request's checks are still running and the lab proof is pending; resubmit when green.",
 			"CI was still running", ""},
+		// The word alone is not a rule conflict: a review that wants proof in
+		// production while checks run is about CI.
+		{"production as a place", "Verify the fix in production once the checks are still running finish.",
+			"CI was still running", ""},
+		{"touch production", "Touch production yourself and repair the rows.", "a rule conflict", "agent_rules"},
 		{"missing tool", "Read the failed run with Signal; this session exposes no Signal read tool, so get one.",
 			"a missing tool", ""},
 		{"other", "The note never names the price: add the tier prices from the camp summary.",

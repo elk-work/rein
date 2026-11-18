@@ -32,7 +32,8 @@ func reviewStopReason(verdict string) (sentence, code string) {
 
 var (
 	reRuleConflict = regexp.MustCompile(`(?is)\b(apply|applying|applied|dispatch|run)\b.{0,60}\bmigrations?\b|` +
-		`\bmigration-apply\b|\bdeploy-functions\b|\bdeploy(ing)?\b.{0,40}\b(edge )?functions?\b|\bproduction\b`)
+		`\bmigration-apply\b|\bdeploy-functions\b|\bdeploy(ing)?\b.{0,40}\b(edge )?functions?\b|` +
+		`\b(touch|touching|change|changing|modify|modifying|write to|writing to)\b.{0,15}\bproduction\b`)
 	reCIRunning = regexp.MustCompile(`(?is)\b(ci|checks?|workflows?|builds?|tests?|lab (proof|run))\b.{0,50}` +
 		`\b(still running|running|pending|in progress|queued|not (yet )?(green|finished|complete|done))\b|` +
 		`\bwait(ing)? (for|until) (the )?(ci|checks?|build|tests?|workflow)`)
