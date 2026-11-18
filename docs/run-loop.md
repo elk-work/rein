@@ -281,8 +281,22 @@ On a revision request Rein starts the agent again with Elk's verdict as the
 direction: **resuming** where the adapter declares `resume`, so the agent still
 has the work in its head, and otherwise cold with the original work order
 attached for context. Bounded to `--max-review-rounds` (3), after which it
-submits `stuck` carrying the last verdict — a request that has not been
-satisfied in three attempts is one a person should read.
+submits `stuck` carrying the last verdict and a sentence naming why it stopped
+(`internal/runner/review_stop_reason.go`), never only "a person should look at
+this":
+
+| The review's last ask | The stop says | Stop code |
+|---|---|---|
+| apply a migration, deploy a function, touch production | a rule conflict: the runner may not take that step, and Elk's going-live step does it after merge | `agent_rules`, so Elk keeps the task with agents |
+| results from CI, checks or a lab run still running | CI was still running; send the run again once it finishes | none |
+| something the agent has no tool or access for | a missing tool; the task needs an agent that has it | none |
+| anything else | the review kept asking for changes the agent did not make | none |
+
+The title stays "Elk's review still wants changes after N rounds", which Elk
+reads, and no line of the reason opens "Needs you:", which would put the task
+on a person's To do. Since November 2026 Elk's review accepts a correctly refused migration apply or
+deploy (scout's `harness/prompts/review-deliverable.md`), so a rule-conflict
+stop should now be rare.
 
 **Approval is heard on the next poll.** An approved run has its `auto_review`
 cleared and stays `ready`, and Elk's reply to the poll then says "It is with the

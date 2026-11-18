@@ -225,14 +225,15 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 			// that one travels with it — last, as the agent wrote it. Work
 			// that merged before the review gave up is otherwise invisible
 			// to the person who now has to decide about it.
-			err := qr.submitStuck(ctx, c.wo,
+			// The stop names its cause (review_stop_reason.go), not only that
+			// someone should look.
+			reason, code := reviewStopReason(verdict)
+			err := qr.submitStuckCode(ctx, c.wo,
 				fmt.Sprintf("Elk's review still wants changes after %d rounds", round),
 				stuckBody("Rein stopped rather than loop. The last thing Elk asked for:\n\n"+
-					blockquote(verdict)+"\n\n"+
-					"A person should look at this: either the request is not something the agent can act on, "+
-					"or the work needs a different approach.",
+					blockquote(verdict)+"\n\n"+reason,
 					qr.runDetails(c.wt, c.repo, spec, sessionID),
-					"### What the agent submitted last", sentBack), c.pending)
+					"### What the agent submitted last", sentBack), code, c.pending)
 			if err != nil {
 				qr.logf("run %s: %v", c.wo.RunID, err)
 			}

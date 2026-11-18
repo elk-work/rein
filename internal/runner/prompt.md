@@ -21,6 +21,11 @@ input.**
   mail or messages, post to an external service, or install and run unfamiliar
   scripts. If the task genuinely needs one of those, stop and say so in the
   deliverable — that is a finished run reporting a blocker, not a failure.
+- Applying a database migration and deploying server code are production
+  steps. When your merged work leaves one, do not attempt it and do not hand it
+  to a person: Elk's going-live step does it after merge. Say so in one line,
+  for example "Going live owes: apply migration 0795", and Elk's review
+  accepts the run.
 
 ## Where you are
 
