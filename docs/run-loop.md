@@ -435,6 +435,19 @@ with no list on any queue resolves by the rules above, on one workspace or
 several — on several, that is compatibility mode, and Rein warns at every
 start. See [workspace repository configuration](workspace-repositories.md).
 
+### A repository folder Rein may not read
+
+`ark:rein#172 (01M7F28YHCTZGDD47RDPNNKKFJ)`. macOS keeps a background program
+out of `~/Documents`, `~/Desktop` and `~/Downloads` without Full Disk Access,
+and a launchd agent cannot ask, so `git worktree add` fails with *Operation not
+permitted*. Elk has no way to give a claim back, so the serve loop checks
+before every claim (`repo_access.go`): a queue whose default repository, or
+every repository it can reach when it has no default, cannot be listed claims
+nothing. Its runs stay queued for another agent, the log says why once, and
+every beat carries it as `waiting_on`. A run claimed anyway, naming some other
+unreadable folder, stops before its worktree with stop code `worktree_init`,
+which Elk's mechanical recovery restarts on another ready queue.
+
 ## The worktree
 
 `git worktree add -B rein/run-<id> <work_dir>/<id> <base>`, then the Ark link,
@@ -917,6 +930,7 @@ has no run id Rein knows, so the reason rides the queue's **heartbeat** as
 | Elk cannot answer | `claim_run failed: Elk answered error -32603: …`, or `… could not be reached` |
 | the beat counted runs the claim would not hand over | `Elk's heartbeat counted 2 waiting on this queue, but claim_run handed none over: Queue "mac-grok" is clear: …` |
 | a newer Rein is installed | `not claiming: a newer Rein is installed, …` |
+| the queue's repository folder cannot be read | `not claiming: Rein cannot read the repository folder …`, with the Full Disk Access fix |
 
 It is absent when nothing is waiting, and while `exhausted_until` holds, which
 already says why. The session `state` stays `idle` (or `running`): the apps
