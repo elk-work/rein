@@ -1061,10 +1061,11 @@ heartbeat, and Elk refuses to raise a workspace's production level for a
 Wrangler that does not declare it. Deleting the line withdraws the consent on
 the next heartbeat. `production = true` on a queue that is not a Wrangler is
 refused at load, and `production` cannot be listed under `capabilities`. The
-queue's Wrangler cycles are also told to ask Elk's `wrangler_production_step`
-before any production step and to treat a workspace whose work order names no
-production level as Hold. Setting the line on a real queue is the owner's step;
-Rein does not do it.
+queue's Wrangler cycles follow the workspace's documented go-live path. Elk
+Scout's merged migrations and server functions go live at merge, so cycles leave
+no routine apply/deploy handoff. In a customer workspace, they name its go-live
+path or the exact step a person must take. Setting the line on a real queue is
+the owner's step; Rein does not do it.
 
 `pm = true` and `pm_connector_account` are the old spellings and are still
 accepted, with identical behaviour; a config that uses them needs no change.
@@ -1122,9 +1123,12 @@ order governs the workspace's own procedures: how it applies migrations, deploys
 and rolls back. Rein's rule adds what holds everywhere. A cycle never
 force-pushes or rewrites history, never sends mail or messages, never runs
 unfamiliar scripts, never applies a migration whose header has a line starting
-`-- HOLD:`, and sends every production step (apply, deploy, re-run, roll back,
-flag change, data job, release) to Elk's `wrangler_production_step`, doing only
-what it allows. Wrangler cycles follow elk `docs/wrangler.md`. Other queues, and
+`-- HOLD:`, and respects the playbook's gates. Elk Scout's merged migrations and
+server functions go live through its `go-live` workflow: cycles leave no routine
+apply/deploy handoff, and report only an actual hold, failure or person's step.
+For a customer workspace, they name its documented go-live path or the exact
+step a person must take. Scout's [go-live runbook](https://github.com/elk-work/scout/blob/main/supabase/README.md#going-live-at-merge-go-liveyml)
+describes the automatic path and its holds. Other queues, and
 other runs on a Wrangler queue, retain their existing prompt and MCP allow-list
 behavior.
 

@@ -240,9 +240,11 @@ Elk reads the missing name as consent withdrawn, so deleting the line is the
 whole withdrawal. The name is reserved: `capabilities` lists and the host
 environment cannot declare it, and `production = true` on a queue that is not a
 Wrangler fails `Validate`. Like `pm`, it is declared for routing by the queue's
-opt-in; the per-run rule is separate: a Wrangler cycle's prompt sends every
-production step to Elk's `wrangler_production_step` and holds the step when the
-work order names no production level, and no other run is told about it.
+opt-in; the per-run rule is separate. Elk Scout's merged migrations and server
+functions go live at merge, so a cycle leaves no routine apply/deploy handoff.
+It reports only an actual hold, failure or person's step. For a customer
+workspace, it names the documented go-live path or the exact step a person must
+take, following the work order's gates. Other runs keep their ordinary prompt.
 
 ## Elk's auto-review pass
 

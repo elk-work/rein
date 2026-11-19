@@ -95,22 +95,24 @@ func TestAScopedWranglerCycleGetsTheRuleAndTheScopedParagraph(t *testing.T) {
 	}
 }
 
-// The production rule: a Wrangler cycle is told to ask Elk's door before any
-// production step, and an ordinary run on the same queue is not. Scoped
-// Wrangler cycles get it too.
-func TestWranglerCycleSendsProductionStepsToTheDoor(t *testing.T) {
+// Only cycles receive the workspace's go-live instructions. Scoped cycles
+// retain both those instructions and their credential boundary.
+func TestWranglerCycleUsesTheWorkspaceGoLivePath(t *testing.T) {
 	q := config.Queue{Wrangler: true, Production: true}
-	for _, want := range []string{"wrangler_production_step", "Before any production step", "treat the workspace as Hold"} {
+	for _, want := range []string{"For Elk Scout", "go live at merge", "no routine apply/deploy handoff", "In a customer workspace", "the exact step a person must take"} {
 		if !strings.Contains(runSystemPrompt(q, true), want) {
 			t.Errorf("Wrangler cycle prompt is missing %q", want)
 		}
 	}
-	if strings.Contains(runSystemPrompt(q, false), "wrangler_production_step") {
-		t.Error("an ordinary run on a Wrangler queue was told about the production door")
+	if strings.Contains(runSystemPrompt(q, false), "go live at merge") {
+		t.Error("an ordinary run on a Wrangler queue received the cycle's go-live instructions")
+	}
+	if strings.Contains(runSystemPrompt(q, true), "wrangler_production_step") {
+		t.Error("a cycle was told to call the nonexistent production tool")
 	}
 	scoped := config.Queue{Wrangler: true, AgentKind: "claude", ScopedSecrets: true, Secrets: map[string]string{"POSTHOG_API_KEY": "acme/posthog"}}
 	p := runSystemPrompt(scoped, true)
-	if !strings.Contains(p, "wrangler_production_step") || !strings.Contains(p, "This queue's credentials are scoped") {
+	if !strings.Contains(p, "go live at merge") || !strings.Contains(p, "This queue's credentials are scoped") {
 		t.Error("a scoped Wrangler cycle must get the production rule and the scoped paragraph")
 	}
 }
