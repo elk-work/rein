@@ -209,6 +209,11 @@ capabilities = ["xcode"]        # added to the list above, not replacing it
 built-ins and the config still apply — for a sandbox or CI box where shelling
 out is slow and pointless.
 
+`withhold_capabilities = ["xcode"]`, machine-wide or per queue, removes names
+after all three sources: a withheld name is neither declared to Elk nor
+matched against a packet. It is how a machine with Xcode installed stops being
+offered app builds; see [`rein.md`](rein.md).
+
 `rein status` prints the list with how each entry was established, because it
 is the invisible half: the adapter's declaration is in the code, while this one
 depends on what happens to be installed and logged in.

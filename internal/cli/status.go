@@ -191,6 +191,9 @@ func printAdapters(out io.Writer) {
 func printHostCapabilities(cmd *cobra.Command, out io.Writer, cfg config.Config) {
 	host := runner.DetectHostCapabilities(cmdContext(cmd), cfg)
 	fmt.Fprintf(out, "host caps %s\n", strings.Join(host.Describe(), ", "))
+	if len(cfg.WithholdCapabilities) > 0 {
+		fmt.Fprintf(out, "withheld  %s (config.toml withhold_capabilities)\n", strings.Join(cfg.WithholdCapabilities, ", "))
+	}
 }
 
 // printMachine shows the `host` half of the fleet reading this machine sends

@@ -300,7 +300,22 @@ func withConfig(h *HostCapabilities, cfg config.Config, extra []string) *HostCap
 	for _, n := range extra {
 		h.add(n, "config.toml, this queue")
 	}
+	h.withhold(cfg.WithholdCapabilities)
 	return h
+}
+
+// withhold drops names this machine holds but will not offer
+// (`withhold_capabilities` in config.toml). It runs last, after every source
+// has had its say, so a withheld name is neither declared to Elk nor matched
+// against a packet — and a packet that requires it goes unclaimed here rather
+// than run. A name the host never held is ignored.
+//
+// Withholding is a person's ruling, not a fact the probes could overturn, so
+// it wins over detection, REIN_HOST_CAPABILITIES and `capabilities` alike.
+func (h *HostCapabilities) withhold(names []string) {
+	for _, n := range names {
+		delete(h.how, canonicalCapability(n))
+	}
 }
 
 // SplitRequirements routes a packet's `required_capabilities` to the list that
@@ -587,11 +602,12 @@ func (h *HostCapabilities) ForQueue(cfg config.Config, q config.Queue) *HostCapa
 			delete(out.how, name)
 		}
 	}
-	if cfg.Hosted.Enabled {
-		return out
+	if !cfg.Hosted.Enabled {
+		for _, name := range RepoCapabilities(context.Background(), cfg.RepositoriesFor(q)) {
+			out.add(name, "workspace configured checkout")
+		}
 	}
-	for _, name := range RepoCapabilities(context.Background(), cfg.RepositoriesFor(q)) {
-		out.add(name, "workspace configured checkout")
-	}
+	out.withhold(cfg.WithholdCapabilities)
+	out.withhold(q.WithholdCapabilities)
 	return out
 }

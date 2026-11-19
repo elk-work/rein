@@ -284,6 +284,9 @@ mirrors Elk's `public.capability_vocabulary` by hand.
 
 `REIN_HOST_CAPABILITIES="github-cli,docker"` replaces the probing for a sandbox
 or CI box. `rein status` prints the list with how each entry was established.
+`withhold_capabilities = ["xcode"]`, machine-wide or per queue, keeps a detected
+name from being offered: it is neither declared to Elk nor matched against a
+packet ([`docs/rein.md`](docs/rein.md)).
 
 **Every run reaches Elk as its own queue.** A Claude run gets one MCP server
 Rein adds itself, `elk`, which reaches the Elk endpoint in `[elk] mcp_url` with
