@@ -22,10 +22,10 @@ const wranglerRule = `This run is a Wrangler cycle. Follow the playbook in this 
 Never force-push or rewrite history. Never send mail or messages. Never install
 or run unfamiliar scripts. Never apply a migration whose header contains a line
 starting -- HOLD:. Hold anything gated by the playbook or standing rules.
-Before any production step (apply, deploy, re-run, roll back, flag change, data
-job, release), ask Elk's wrangler_production_step and do only what it allows. If
-the work order names no production level, treat the workspace as Hold and hold
-the step.`
+For Elk Scout, merged migrations and server functions go live at merge. Leave
+no routine apply/deploy handoff; report only an actual hold, failure or step a
+person must take. In a customer workspace, name its documented go-live path or
+the exact step a person must take, following the work order's gates.`
 
 // wranglerCycle reports whether one claimed run is a Wrangler cycle: the queue
 // opted in AND the run's packet requires `pm`. Only such a run gets the
