@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -183,6 +184,10 @@ type Config struct {
 	// heartbeat. See internal/runner/telemetry.go.
 	Telemetry Telemetry `toml:"telemetry"`
 
+	// Stride configures the spans Rein sends Signal for a task's time: the
+	// machine's side of the task's trace. See internal/tasktrace.
+	Stride Stride `toml:"stride"`
+
 	// MCPServers defines the MCP servers a queue may allow its runs, by name.
 	// A definition alone reaches no run: a queue must name it in its own
 	// `mcp_servers` list (ark:rein#40).
@@ -305,6 +310,37 @@ type Telemetry struct {
 	// struct with no tri-state would turn telemetry off for everybody who
 	// never wrote the block.
 	Disabled bool `toml:"disabled"`
+}
+
+// Stride is the [Config] block for the task-time spans Rein sends Signal:
+//
+//	[stride]
+//	ingest_url  = "https://<signal receiver>/r/<signal>"
+//	token       = "stride-elk-token"   # a keychain ITEM, never the token
+//	environment = "production"
+//
+// With no ingest_url, or no token to be found, nothing is sent and nothing is
+// attempted. The environment variables STRIDE_INGEST_URL, STRIDE_TOKEN and
+// STRIDE_ENVIRONMENT, the names every other Stride emitter reads, win over
+// the block: they are how a hosted container, which has no keychain, is
+// configured.
+type Stride struct {
+	// IngestURL is the Signal receiver's base for one Stride Signal; the SDK
+	// appends /v1/observations:batch.
+	IngestURL string `toml:"ingest_url,omitempty"`
+
+	// Token names the keychain item holding the Signal's bearer token, as
+	// "<service>" or "<service>/<account>" — the same spelling a queue's
+	// secrets map uses. It is a name: the token itself never goes in this
+	// file.
+	Token string `toml:"token,omitempty"`
+
+	// Environment is the Stride source environment. Empty means "production".
+	Environment string `toml:"environment,omitempty"`
+
+	// Disabled turns the spans off whatever else is set, the environment
+	// variables included.
+	Disabled bool `toml:"disabled,omitempty"`
 }
 
 // Duration is a [time.Duration] that reads and writes as TOML text — "60s",
@@ -1098,6 +1134,20 @@ func (c Config) Validate() error {
 	// one up to its own floor rather than refusing a config over it.
 	if c.Telemetry.Interval < 0 {
 		return fmt.Errorf("telemetry.interval %s: must not be negative", c.Telemetry.Interval.Duration())
+	}
+	if u := strings.TrimSpace(c.Stride.IngestURL); u != "" {
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return fmt.Errorf("stride.ingest_url: must be an http(s) URL")
+		}
+		if parsed.User != nil || parsed.RawQuery != "" {
+			return fmt.Errorf("stride.ingest_url: must carry no credentials and no query; the token is a keychain item named by stride.token")
+		}
+	}
+	if t := strings.TrimSpace(c.Stride.Token); t != "" {
+		if _, _, err := ParseSecretItem(t); err != nil {
+			return fmt.Errorf("stride.token: %w", err)
+		}
 	}
 	for _, name := range c.Capabilities {
 		if reservedCapability(name) {

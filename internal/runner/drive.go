@@ -395,6 +395,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 			st.cur.reapAdapter(a, wo.RunID, &spec)
 		}
 	})
+	qr.trace.worktreeReady()
 	spec.WorktreeDir = wt.Dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) + "\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") + "\n\n" + deliveryInstructions(wt, wo, qr.q.LandOrDefault())
 	if !qr.r.opts.Hosted {
@@ -451,6 +452,8 @@ func (qr *queueRunner) driveWithoutRepo(ctx context.Context, a adapter.Adapter, 
 			st.cur.reapAdapter(a, wo.RunID, &spec)
 		}
 	})
+	// No worktree, but the same moment: the run's folder exists.
+	qr.trace.worktreeReady()
 	spec.WorktreeDir = dir
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) +
 		"\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") +
@@ -865,6 +868,7 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			return sessionResult{done: true}, qr.stuck(ctx, wo, title,
 				stuckBody(err.Error(), qr.runDetails(wt, repo, spec, ""), "", ""))
 		}
+		qr.trace.agentStarted()
 		if spec.ResumeID != "" {
 			qr.log.Runner(runlog.KindSession, "restarted %s, resuming session %s", a.Name(), spec.ResumeID)
 		} else {
@@ -2011,6 +2015,7 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 	} else {
 		qr.logStatus = runlog.StatusSubmitted
 	}
+	qr.trace.deliverableSent()
 	qr.hostedSubmitted = true
 	if qr.r.opts.Hosted && s.Status == elk.StatusStuck && s.Title != "The run hit the hosted run cap" {
 		if s.Title == notAPITitle {

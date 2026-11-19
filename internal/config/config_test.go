@@ -888,3 +888,63 @@ withhold_capabilities = ["docker"]
 		}
 	}
 }
+
+// The [stride] block names where task-time spans go and the keychain ITEM
+// holding the token. The token itself has no place in the file.
+func TestStrideBlock(t *testing.T) {
+	const src = `
+host_id = "mac"
+
+[stride]
+ingest_url  = "https://signal.example/r/elk-stride"
+token       = "stride-elk-token/rein"
+environment = "staging"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, config.FileName)
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.Stride{IngestURL: "https://signal.example/r/elk-stride", Token: "stride-elk-token/rein", Environment: "staging"}
+	if got.Stride != want {
+		t.Errorf("stride = %#v, want %#v", got.Stride, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Errorf("a good [stride] block was refused: %v", err)
+	}
+}
+
+func TestStrideBlockRefusesWhatCannotBeRight(t *testing.T) {
+	for name, s := range map[string]config.Stride{
+		"not a url":            {IngestURL: "signal.example/r/elk-stride"},
+		"credentials in a url": {IngestURL: "https://user:secret@signal.example/r/elk-stride"},
+		"a query on the url":   {IngestURL: "https://signal.example/r/elk-stride?token=secret"},
+		"rein's own tokens":    {Token: "rein/mac-claude"},
+		"an empty account":     {Token: "stride-elk-token/"},
+	} {
+		c := config.Config{HostID: "mac", Stride: s}
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Errorf("%s: the refusal repeats what was in the URL: %v", name, err)
+		}
+	}
+}
+
+// No block is spans off, not a refusal.
+func TestStrideDefaultsToOffAndValid(t *testing.T) {
+	c := config.Config{HostID: "mac"}
+	if c.Stride != (config.Stride{}) {
+		t.Error("a config with no [stride] block has one")
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("%v", err)
+	}
+}

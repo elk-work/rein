@@ -630,6 +630,58 @@ No new dependency for any of it: `release.yml` disables cgo so the darwin
 binaries cross-build, so every measurement is a `golang.org/x/sys` syscall, a
 file read, or the one subprocess macOS free memory has always needed.
 
+### Telling Signal how long the machine took
+
+Elk sends every phase of a task's time to Signal as a span, one trace per task
+(`elk-work/scout` `docs/stride.md`, "A task's time: one trace per task"). It
+can only send its own side: queued, claimed, in review, finished. Rein sends
+the machine's side into the same trace, so a slow handover can be seen. Four
+spans per run, under service `rein`, each one the stretch that ends at the
+moment it is named for:
+
+| Operation | From | To |
+|---|---|---|
+| `elk.task.rein.claim_received` | Rein asked `claim_run` | its reply arrived |
+| `elk.task.rein.worktree_ready` | the reply arrived | the run's folder existed |
+| `elk.task.rein.agent_started` | the folder existed | the agent process started |
+| `elk.task.rein.deliverable_sent` | the agent started | Elk took the deliverable |
+
+The trace id is the task's id from the claim. Every span carries `run_id`,
+`queue` and `agent_kind`; `task_number` when the claim carries one; and `round`
+on the agent start and the deliverable, which are sent again for each round
+Elk's review sends back. Ids and counts only: never a title, a direction or
+report text. A run stopped before a moment sends no span for it. The gap
+between the end of Elk's `elk.task.waiting` and the end of `claim_received` is
+the handover.
+
+It is off until it is configured, and it fails open: with no endpoint or no
+token nothing is attempted, and a Signal that is slow, down or refusing never
+slows or fails a run. Spans wait up to twenty seconds in memory and are sent in
+the background; what cannot be sent is dropped.
+
+```toml
+[stride]
+ingest_url  = "https://<signal receiver>/r/<signal>"  # Rein appends /v1/observations:batch
+token       = "stride-elk-token"   # the keychain ITEM holding the token, never the token
+# environment = "production"       # the default
+# disabled    = true               # off, whatever else is set
+```
+
+`token` names a keychain item as a queue's `secrets` map does: `"<service>"`
+(account `rein`) or `"<service>/<account>"`. Store it once, typing the value at
+the prompt so it is in no shell history:
+
+```sh
+security add-generic-password -s stride-elk-token -a rein -w
+```
+
+The environment variables `STRIDE_INGEST_URL`, `STRIDE_TOKEN` and
+`STRIDE_ENVIRONMENT`, the names every other Stride emitter reads, win over the
+block; they are how a hosted container, which has no keychain, is configured.
+A run is handed none of them unless a queue's `inherit_env` names one. `rein
+run` says at start-up whether spans are being sent and, when they are not, why.
+The code is `internal/tasktrace` and `internal/runner/tasktrace.go`.
+
 ### Subscription headroom, and backing off
 
 Every queue runs on a person's own subscription, and a subscription has a
@@ -774,6 +826,10 @@ mcp_url = "https://<project>.supabase.co/functions/v1/elk-mcp"
 [telemetry]                 # the fleet reading; see "Telling Elk what the
 interval = "60s"            # machine looks like" above
 disabled = false
+
+# [stride]                  # optional; the machine's side of each task's time,
+# ingest_url = "https://<signal receiver>/r/<signal>"   # to Signal; see "Telling
+# token      = "stride-elk-token"                       # Signal how long the machine took"
 
 inherit_env = ["SENTRY_ORG"]  # optional; daemon variables every run keeps
 # browser = "rein"           # optional; install Rein's own Chrome for runs at start-up ("none": no Chrome)
