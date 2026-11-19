@@ -3,6 +3,7 @@ package runner_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,15 @@ func unreadableDir(t *testing.T, path string) {
 	}
 }
 
+// fixWords is what the refusal must say to be acted on: on a Mac, that the
+// folder needs Full Disk Access for the Rein service.
+func fixWords() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"Full Disk Access", "Rein service"}
+	}
+	return []string{"read access"}
+}
+
 func TestAQueueThatCannotReadItsRepositoryClaimsNothing(t *testing.T) {
 	h := newHarness(t)
 	path := h.cfg.Repos["scout"]
@@ -58,7 +68,7 @@ func TestAQueueThatCannotReadItsRepositoryClaimsNothing(t *testing.T) {
 		t.Fatalf("only %d beats in the window; the test proves nothing about repetition", beats)
 	}
 	got := lastWaitingOn(h)
-	for _, want := range []string{"not claiming", path, "Full Disk Access", "Rein service", "stay queued"} {
+	for _, want := range append([]string{"not claiming", path, "stay queued"}, fixWords()...) {
 		if !strings.Contains(got, want) {
 			t.Errorf("waiting_on = %q, missing %q", got, want)
 		}
@@ -116,7 +126,7 @@ func TestARunNamingAnUnreadableRepositoryStopsBeforeTheAgent(t *testing.T) {
 		t.Errorf("status %q, stop_code %q", sub.Arg("status"), sub.Arg("stop_code"))
 	}
 	d := sub.Arg("deliverable")
-	for _, want := range []string{h.cfg.Repos["scout"], "Full Disk Access", "Nothing was started"} {
+	for _, want := range append([]string{h.cfg.Repos["scout"], "Nothing was started"}, fixWords()...) {
 		if !strings.Contains(d, want) {
 			t.Errorf("deliverable missing %q:\n%s", want, d)
 		}
