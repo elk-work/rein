@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/elk"
@@ -109,6 +110,7 @@ func (qr *queueRunner) forkReview(runID string) *queueRunner {
 		log:           qr.log,
 		logStatus:     qr.logStatus,
 		resultSummary: qr.resultSummary,
+		trace:         qr.trace,
 		reviewParent:  qr,
 		handedRunID:   runID,
 		subOwner:      qr,
@@ -277,6 +279,12 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		spec = qr.revisionSpec(c.a, spec, c.wo, sessionID, verdict)
 
 		round++
+		if qr.trace == nil {
+			// A review picked up again after Rein restarted: the run's
+			// earlier spans were sent by the process that claimed it.
+			qr.trace = qr.newRunTrace(c.wo, time.Now())
+		}
+		qr.trace.revision(round)
 		qr.logStatus = runlog.StatusInterrupted
 		res, err := qr.runSession(ctx, c.a, spec, c.wo, c.wt, c.repo, c.pending)
 		if err != nil {

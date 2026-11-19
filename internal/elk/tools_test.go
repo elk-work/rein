@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/elk/elktest"
@@ -728,5 +729,46 @@ func TestReportProgressSendsWhyNext(t *testing.T) {
 		if _, present := calls[1].Args[k]; present {
 			t.Errorf("%s sent when empty", k)
 		}
+	}
+}
+
+// The claim's reply is timed on this machine, and a task number is read from
+// its structured content when Elk sends one: both feed the task's trace
+// (internal/tasktrace).
+func TestClaimRunTimesTheReplyAndReadsATaskNumber(t *testing.T) {
+	cases := []struct {
+		name       string
+		structured map[string]any
+		want       string
+	}{
+		{"none sent", nil, ""},
+		{"a number", map[string]any{"task_number": 1987}, "#1987"},
+		{"elk's own spelling", map[string]any{"task_number": "#1987"}, "#1987"},
+		{"digits as text", map[string]any{"task_number": "1987"}, "#1987"},
+		{"zero", map[string]any{"task_number": 0}, ""},
+		{"not a number", map[string]any{"task_number": "Port the due-date sheet"}, ""},
+		{"too long for one", map[string]any{"task_number": "1234567890"}, ""},
+		{"an object", map[string]any{"task_number": map[string]any{"n": 1}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := elktest.New(t, testToken)
+			s.Reply("claim_run", elktest.Reply{Text: workOrder, Structured: tc.structured})
+			c := newClient(t, s)
+
+			before := time.Now()
+			wo, err := c.ClaimRun(context.Background(), elk.ClaimRequest{Workspace: "Elk Scout", Queue: "mac-claude"})
+			after := time.Now()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wo.TaskNumber != tc.want {
+				t.Errorf("task number = %q, want %q", wo.TaskNumber, tc.want)
+			}
+			if wo.Asked.Before(before) || wo.Received.Before(wo.Asked) || wo.Received.After(after) {
+				t.Errorf("asked %s, received %s: not the times around this call (%s to %s)",
+					wo.Asked, wo.Received, before, after)
+			}
+		})
 	}
 }

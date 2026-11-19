@@ -63,6 +63,7 @@ import (
 	"github.com/elk-work/rein/internal/power"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/secretenv"
+	"github.com/elk-work/rein/internal/tasktrace"
 	"github.com/elk-work/rein/internal/worktree"
 )
 
@@ -163,6 +164,13 @@ type Options struct {
 	// queue; a scoped queue's runs then go stuck saying so, rather than
 	// reaching for a keychain nobody configured.
 	Secrets keyring.ItemReader
+
+	// TaskTrace sends the machine's side of each task's time to Signal
+	// (tasktrace.go). Nil sends nothing, which is what tests want: the runner
+	// never builds one from the environment itself, so a `go test` on a
+	// machine that holds the token cannot put a made-up run in a real trace.
+	// `rein run` builds it with [ResolveTaskTrace].
+	TaskTrace *tasktrace.Emitter
 
 	// Queues names the queues to serve. Empty means every queue in the config.
 	Queues []string
@@ -575,6 +583,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	// loop stopping itself.
 	inner, stopInner := context.WithCancel(ctx)
 	defer stopInner()
+	// Last of all: the spans still waiting to be sent, the final deliverable's
+	// among them (tasktrace.go).
+	defer r.closeTaskTrace()
 
 	// The control plane, if one was given. It is served for the life of the
 	// loop and stopped with it: an attachment outliving the runner would be a
@@ -758,6 +769,10 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 // behind a build under review, in particular. The concurrency in the loop is
 // otherwise between queues.
 type queueRunner struct {
+	// trace is the current run's place in its task's trace (tasktrace.go).
+	// Nil when spans are off. Set at the claim; a review continuation takes
+	// its run's with it.
+	trace *runTrace
 	// lookForHeld makes the next claim take back any run Elk already holds
 	// for this queue (claim_retry.go). Set at startup and whenever a claim
 	// may have landed without its reply; cleared by a clear answer that
@@ -1310,6 +1325,7 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		return false, "", nil
 	}
 	hold.setRun(wo.RunID)
+	qr.traceClaim(wo)
 	qr.setWaiting("")
 	for _, n := range wo.Notices {
 		qr.logf("workspace notice: %s", n)

@@ -19,6 +19,7 @@ import (
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/runner"
 	"github.com/elk-work/rein/internal/service"
+	"github.com/elk-work/rein/internal/tasktrace"
 	"github.com/elk-work/rein/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -193,8 +194,14 @@ func runRun(cmd *cobra.Command) error {
 	}
 	fmt.Fprintf(out, "browser: %s\n", runner.ResolveChrome(cfg).Why)
 
+	// The machine's side of each task's time, to Signal (runner/tasktrace.go).
+	// Off, and saying why, unless [stride] or the environment configures it.
+	traceCfg, traceWhy := runner.ResolveTaskTrace(cfg.Stride, items, os.Getenv, cmd.Root().Version)
+	fmt.Fprintln(out, traceWhy)
+
 	r, err := runner.New(runner.Options{
 		Config:          cfg,
+		TaskTrace:       tasktrace.New(traceCfg),
 		Hosted:          flag,
 		ConfigPath:      absPath(path),
 		UnderService:    (asService && !service.Interactive()) || supervised,

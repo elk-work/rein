@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -469,6 +470,13 @@ type WorkOrder struct {
 	// Rehanded reports that Elk handed back a run this caller already held
 	// rather than claiming a new one: a claim whose reply was lost.
 	Rehanded bool
+	// TaskNumber is the task's number as people say it ("#1984"), from the
+	// claim's structured content, or "" from an Elk that does not send one.
+	// It is an id for the task's trace (internal/tasktrace), never a title.
+	TaskNumber string
+	// Asked and Received are when this machine sent the claim_run that
+	// answered with this work order, and when its reply arrived.
+	Asked, Received time.Time
 }
 
 // rehandRE is the sentence Elk puts before a work order it hands back to the
@@ -581,7 +589,9 @@ func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, er
 	putIf(args, "run_id", req.RunID)
 	putIf(args, "group_id", req.GroupID)
 
+	asked := time.Now()
 	res, err := c.call(ctx, ToolClaimRun, args)
+	received := time.Now()
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +608,7 @@ func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, er
 	if m == nil {
 		return nil, fmt.Errorf("elk: claim_run answered something Rein does not understand: %s", firstLine(res.Text))
 	}
-	wo := &WorkOrder{RunID: m[1], Text: res.Text, Notices: res.Notices, Rehanded: rehanded}
+	wo := &WorkOrder{RunID: m[1], Text: res.Text, Notices: res.Notices, Rehanded: rehanded, Asked: asked, Received: received}
 	if a := actionIDRE.FindStringSubmatch(res.Text); a != nil {
 		wo.ActionID = a[1]
 	}
@@ -613,7 +623,37 @@ func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, er
 	if json.Unmarshal(res.Structured, &structured) == nil && structured.Model != nil {
 		wo.Model = strings.TrimSpace(*structured.Model)
 	}
+	wo.TaskNumber = claimTaskNumber(res.Structured)
 	return wo, nil
+}
+
+// claimTaskNumber reads `task_number` from a claim's structured content as
+// "#<digits>", whether Elk sent a number or the "#1984" spelling its own spans
+// carry. Anything else is "": a field Rein cannot read as a task number is not
+// forwarded as one.
+func claimTaskNumber(structured json.RawMessage) string {
+	var s struct {
+		TaskNumber json.RawMessage `json:"task_number"`
+	}
+	if json.Unmarshal(structured, &s) != nil || len(s.TaskNumber) == 0 {
+		return ""
+	}
+	var n int64
+	if json.Unmarshal(s.TaskNumber, &n) == nil {
+		if n <= 0 {
+			return ""
+		}
+		return "#" + strconv.FormatInt(n, 10)
+	}
+	var text string
+	if json.Unmarshal(s.TaskNumber, &text) != nil {
+		return ""
+	}
+	digits := strings.TrimPrefix(strings.TrimSpace(text), "#")
+	if digits == "" || len(digits) > 9 || strings.Trim(digits, "0123456789") != "" {
+		return ""
+	}
+	return "#" + digits
 }
 
 // requiredCapsHeading is the section Elk renders the packet's
