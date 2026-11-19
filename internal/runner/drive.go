@@ -193,6 +193,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		return qr.stuck(ctx, wo, "This machine does not hold a capability this run requires",
 			"Missing from this machine's environment: **"+strings.Join(missing, ", ")+"**\n\n"+
 				qr.wranglerOnlyNote(cycle, missing)+
+				qr.withheldNote(missing)+
 				capabilityHelp(manifest, host)+
 				"\nIf this machine does hold "+quoteList(missing)+", declare it in this machine's\n"+
 				"`~/.rein/config.toml` — Rein detects what it can, and the config is how you tell it\n"+
@@ -2217,6 +2218,29 @@ func (qr *queueRunner) wranglerOnlyNote(cycle bool, missing []string) string {
 		}
 	}
 	return ""
+}
+
+// withheldNote says which missing names this machine withholds on purpose
+// (`withhold_capabilities`), so the help below — declare it in the config — is
+// not read as the fix: a withheld name stays withheld whatever else is listed.
+func (qr *queueRunner) withheldNote(missing []string) string {
+	withheld := map[string]bool{}
+	for _, n := range append(append([]string(nil), qr.r.opts.Config.WithholdCapabilities...), qr.q.WithholdCapabilities...) {
+		withheld[canonicalCapability(n)] = true
+	}
+	var names []string
+	for _, n := range missing {
+		name := canonicalCapability(n)
+		if withheld[name] || withheld[strings.TrimPrefix(name, "tool:")] {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "This machine withholds " + quoteList(names) + " on purpose (`withhold_capabilities` in\n" +
+		"`~/.rein/config.toml`), so it is not offered to Elk and no run here may use it.\n" +
+		"This work belongs on another machine.\n\n"
 }
 
 // quoteList renders names as the contents of a TOML array: `"a", "b"`.

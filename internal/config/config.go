@@ -120,6 +120,19 @@ type Config struct {
 	// its environment, and nothing more. See internal/runner/hostcap.go.
 	Capabilities []string `toml:"capabilities"`
 
+	// WithholdCapabilities are capability names this machine holds but will
+	// not offer: they are dropped from what Rein declares to Elk and from what
+	// a packet's `required_capabilities` is matched against, however they were
+	// established — detected, built in, or listed above.
+	//
+	//	withhold_capabilities = ["xcode"]
+	//
+	// It is how a person says "Xcode is installed here, but this machine does
+	// not take app builds" without replacing all of Rein's detection with
+	// REIN_HOST_CAPABILITIES. A name the host does not hold anyway is
+	// harmless. See internal/runner/hostcap.go.
+	WithholdCapabilities []string `toml:"withhold_capabilities"`
+
 	// InheritEnv names variables from the daemon's environment that every
 	// run on every queue keeps, beyond the system variables any process needs
 	// (internal/secretenv). Every run is scoped now: a queue inherits only
@@ -379,6 +392,11 @@ type Queue struct {
 	// Capabilities are extra environment capability names available to runs on
 	// this queue, added to [Config.Capabilities] rather than replacing them.
 	Capabilities []string `toml:"capabilities"`
+
+	// WithholdCapabilities are capability names runs on this queue are not
+	// offered, on top of [Config.WithholdCapabilities]. They win over this
+	// queue's own Capabilities.
+	WithholdCapabilities []string `toml:"withhold_capabilities"`
 
 	// BaseRef is the ref runs on this queue are cut from. Empty means resolve
 	// the remote default branch, which is what almost every queue wants — see
@@ -1092,6 +1110,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("capabilities: %s %s", name, meteredWhy)
 		}
 	}
+	if err := validateWithhold("withhold_capabilities", c.WithholdCapabilities); err != nil {
+		return err
+	}
 	if err := validateInheritEnv("config", c.InheritEnv, enabled); err != nil {
 		return err
 	}
@@ -1137,6 +1158,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("queues[%d] (%s): model %q is not a model id", i, q.Name, q.Model)
 		case q.Effort != "" && !effortRE.MatchString(q.Effort):
 			return fmt.Errorf("queues[%d] (%s): effort %q: want one lower-case word such as low, medium or high", i, q.Name, q.Effort)
+		}
+		if err := validateWithhold(fmt.Sprintf("queues[%d] (%s): withhold_capabilities", i, q.Name), q.WithholdCapabilities); err != nil {
+			return err
 		}
 		if err := validateInheritEnv(fmt.Sprintf("queues[%d] (%s)", i, q.Name), q.InheritEnv, enabled); err != nil {
 			return err
@@ -1369,4 +1393,19 @@ func (c Config) QueueLabel(q Queue) string {
 		}
 	}
 	return q.Name
+}
+
+// validateWithhold refuses withholding what Rein provides by construction.
+// elk-connector, git and worktree are how a run happens at all, so a machine
+// that withheld one would still need it for every run it took.
+func validateWithhold(where string, names []string) error {
+	for _, name := range names {
+		switch strings.TrimSpace(name) {
+		case "":
+			return fmt.Errorf("%s: an empty name withholds nothing; remove it", where)
+		case "elk-connector", "git", "worktree":
+			return fmt.Errorf("%s: %s is built into Rein and every run uses it, so it cannot be withheld", where, strings.TrimSpace(name))
+		}
+	}
+	return nil
 }

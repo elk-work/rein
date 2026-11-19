@@ -851,3 +851,40 @@ func TestProductionParsesFromTOML(t *testing.T) {
 		t.Error("production = true did not read back")
 	}
 }
+
+// TestWithholdCapabilities: the setting round-trips machine-wide and per
+// queue, and refuses withholding what every run needs.
+func TestWithholdCapabilities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `withhold_capabilities = ["xcode"]
+
+[[queues]]
+name = "mac-claude"
+agent_kind = "claude"
+withhold_capabilities = ["docker"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.WithholdCapabilities, ",") != "xcode" {
+		t.Errorf("machine-wide withhold_capabilities = %v", got.WithholdCapabilities)
+	}
+	if len(got.Queues) != 1 || strings.Join(got.Queues[0].WithholdCapabilities, ",") != "docker" {
+		t.Errorf("per-queue withhold_capabilities = %+v", got.Queues)
+	}
+
+	for _, name := range []string{"elk-connector", "git", "worktree", " "} {
+		c := config.Config{WithholdCapabilities: []string{name}}
+		if err := c.Validate(); err == nil {
+			t.Errorf("machine-wide withholding %q was accepted", name)
+		}
+		c = config.Config{Queues: []config.Queue{{Name: "mac-claude", AgentKind: "claude", WithholdCapabilities: []string{name}}}}
+		if err := c.Validate(); err == nil {
+			t.Errorf("per-queue withholding %q was accepted", name)
+		}
+	}
+}
