@@ -762,7 +762,13 @@ type queueRunner struct {
 	// for this queue (claim_retry.go). Set at startup and whenever a claim
 	// may have landed without its reply; cleared by a clear answer that
 	// listed nothing left to take back. Only the serve goroutine touches it.
-	lookForHeld     bool
+	lookForHeld bool
+	// declined is the runs this queue was handed and left unstarted because
+	// their repository folder cannot be read, and declineWhy the reason the
+	// last claim gave (repo_access.go, ark:rein#172). Serve goroutine only.
+	declined        map[string]time.Time
+	declineWhy      string
+	declineAt       time.Time
 	hostedSubmitted bool
 	hostedDeadline  time.Time
 	r               *Runner
@@ -1278,12 +1284,23 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	}
 	defer qr.r.endClaim()
 
-	wo, err := qr.claimRun(ctx)
-	switch {
-	case errors.Is(err, elk.ErrNoWork):
-		return false, strings.TrimPrefix(err.Error(), elk.ErrNoWork.Error()+": "), nil
-	case err != nil:
-		return false, "", fmt.Errorf("claim: %w", err)
+	var wo *elk.WorkOrder
+	for tries := 0; ; tries++ {
+		wo, err = qr.claimRun(ctx)
+		switch {
+		case errors.Is(err, elk.ErrNoWork):
+			return false, strings.TrimPrefix(err.Error(), elk.ErrNoWork.Error()+": "), nil
+		case err != nil:
+			return false, "", fmt.Errorf("claim: %w", err)
+		}
+		if !qr.declineUnreadable(wo) {
+			break
+		}
+		// The declined run is held for a minute, so asking again hands over
+		// the next one, if any, rather than leaving it behind this one.
+		if tries >= maxDeclinesPerClaim {
+			return false, "", nil
+		}
 	}
 	if qr.alreadyReviewing(wo.RunID) {
 		// This queue already holds the run, on the review continuation. Driving
@@ -1375,6 +1392,13 @@ func (qr *queueRunner) noteClaimOutcome(claimed bool, clear string, err error, d
 		qr.logf("claim_run is answering again")
 		qr.claimErr = ""
 	}
+	// Elk still counts a declined run as waiting, so its reason stands
+	// until a run is claimed or a lease passes with none declined.
+	if !claimed && qr.declineWhy != "" && time.Since(qr.declineAt) < LeaseDuration {
+		qr.setWaiting(qr.declineWhy)
+		return
+	}
+	qr.declineWhy = ""
 	if !claimed && clear != "" && known && depth > 0 {
 		why := fmt.Sprintf("Elk's heartbeat counted %d waiting on this queue, but claim_run handed none over: %s",
 			depth, clear)

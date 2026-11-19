@@ -440,13 +440,23 @@ start. See [workspace repository configuration](workspace-repositories.md).
 `ark:rein#172 (01M7F28YHCTZGDD47RDPNNKKFJ)`. macOS keeps a background program
 out of `~/Documents`, `~/Desktop` and `~/Downloads` without Full Disk Access,
 and a launchd agent cannot ask, so `git worktree add` fails with *Operation not
-permitted*. Elk has no way to give a claim back, so the serve loop checks
-before every claim (`repo_access.go`): a queue whose default repository, or
-every repository it can reach when it has no default, cannot be listed claims
-nothing. Its runs stay queued for another agent, the log says why once, and
-every beat carries it as `waiting_on`. A run claimed anyway, naming some other
-unreadable folder, stops before its worktree with stop code `worktree_init`,
-which Elk's mechanical recovery restarts on another ready queue.
+permitted*. Two checks keep such a run queued, and neither ends it stuck
+(`repo_access.go`):
+
+- **Before claiming.** A queue whose default repository, or every repository
+  it can reach when it has no default, cannot be listed claims nothing. The log
+  says why once, and every beat carries it as `waiting_on`.
+- **After claiming, before anything names the run.** Elk's `claim_run` only
+  holds a run (scout 0790): it stays `queued` until the runner's first
+  run-scoped call, and an unacknowledged hold lapses in a minute. So a run
+  whose own repository cannot be read is declined by saying nothing about it:
+  no report, no submit. Rein asks for the next run straight away, never takes
+  the declined one back through the held-run sweep (which would restart its
+  hold), and says why on the beat. Elk's router moves a run nobody started to
+  its next choice after thirty minutes (scout 0299). A folder Rein cannot read
+  is not declared as a `repo:` capability, so that choice is a machine that can
+  read it. A run a person bound to this queue is not moved, and waits until the
+  folder can be read.
 
 ## The worktree
 
@@ -931,6 +941,7 @@ has no run id Rein knows, so the reason rides the queue's **heartbeat** as
 | the beat counted runs the claim would not hand over | `Elk's heartbeat counted 2 waiting on this queue, but claim_run handed none over: Queue "mac-grok" is clear: …` |
 | a newer Rein is installed | `not claiming: a newer Rein is installed, …` |
 | the queue's repository folder cannot be read | `not claiming: Rein cannot read the repository folder …`, with the Full Disk Access fix |
+| a claimed run names a folder that cannot be read | `not starting a run: Rein cannot read the repository folder …`, and the run is left queued |
 
 It is absent when nothing is waiting, and while `exhausted_until` holds, which
 already says why. The session `state` stays `idle` (or `running`): the apps

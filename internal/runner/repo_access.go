@@ -7,8 +7,10 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"time"
 
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/elk"
 )
 
 // A queue whose repository folder this process may not read claims nothing
@@ -20,13 +22,65 @@ import (
 // "Unable to read current working directory: Operation not permitted". Before
 // this check every claim on such a queue burned a run — a recurring walk twice
 // in a day on one laptop — and put a stopped run on its owner's Decisions.
-// Elk has no tool to give a claim back, so the only way to leave a run queued
-// for another agent is not to claim it: the serve loop asks [repoAccessBlock]
-// before every claim and, while it answers, claims nothing and says why on the
-// queue's beat. A run that is claimed anyway — one naming a repository other
-// than the queue's default — stops before its worktree with the same sentence
-// and the worktree_init stop code, which Elk's mechanical recovery restarts on
-// another ready queue.
+// Two checks keep such a run queued, neither of which ends it stuck:
+//
+//   - Before claiming, the serve loop asks [repoAccessBlock]: a queue whose
+//     default folder (or every folder, with no default) cannot be read claims
+//     nothing and says why on the queue's beat.
+//   - After claiming, [queueRunner.declineUnreadable] resolves the run's own
+//     repository before anything names the run. Elk's claim_run only HOLDS a
+//     run (scout 0790): it stays `queued` until the runner's first run-scoped
+//     call, and a hold nobody acknowledges lapses in a minute and the run is
+//     offered again. So a run whose folder cannot be read is declined by
+//     saying nothing about it. Elk's router moves a run nobody has started to
+//     its next choice after thirty minutes (scout 0299), and the repo:
+//     capability for an unreadable folder is not declared (hostcap.go), so the
+//     router's next choice is a machine that can read it.
+
+// maxDeclinesPerClaim bounds how many unreadable runs one claim passes over
+// before giving up until the next poll.
+const maxDeclinesPerClaim = 3
+
+// declineUnreadable reports whether wo names a repository this process may
+// not read, and if so leaves it unstarted: it makes no call that names the
+// run, so Elk's hold lapses and the run stays queued for another agent. It
+// must run before anything reports on the run.
+func (qr *queueRunner) declineUnreadable(wo *elk.WorkOrder) bool {
+	if qr.r.opts.Hosted {
+		return false
+	}
+	repo, err := ResolveRepo(qr.r.opts.Config, qr.q, wo.Text)
+	if err != nil {
+		return false
+	}
+	ok, rerr := repoReadable(repo.Path)
+	if ok {
+		return false
+	}
+	why := "not starting a run: " + repoAccessMessage(repo.Path, rerr) +
+		" Runs that need this folder are left queued for another agent."
+	if qr.declined == nil {
+		qr.declined = map[string]time.Time{}
+	}
+	for id, at := range qr.declined {
+		if time.Since(at) > 24*time.Hour {
+			delete(qr.declined, id)
+		}
+	}
+	if _, seen := qr.declined[wo.RunID]; !seen {
+		qr.logf("left run %s queued: %s", wo.RunID, why)
+	}
+	qr.declined[wo.RunID] = time.Now()
+	qr.declineWhy, qr.declineAt = why, time.Now()
+	return true
+}
+
+// isDeclined reports whether this queue left runID unstarted for an
+// unreadable repository.
+func (qr *queueRunner) isDeclined(runID string) bool {
+	_, ok := qr.declined[runID]
+	return ok
+}
 
 // repoReadable reports whether this process may list path. Only a permission
 // refusal counts as unreadable: a folder that does not exist is a different
@@ -81,8 +135,7 @@ func notClaiming(why string) string {
 }
 
 // repoAccessMessage says, in words a person can act on, why Rein cannot use
-// the folder at path. It goes in the log, the queue's beat and, for a run
-// claimed anyway, its stuck report.
+// the folder at path. It goes in the log and on the queue's beat.
 func repoAccessMessage(path string, err error) string {
 	cause := "permission denied"
 	var pe *fs.PathError

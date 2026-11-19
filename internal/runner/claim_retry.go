@@ -53,7 +53,9 @@ func (qr *queueRunner) claimRun(ctx context.Context) (*elk.WorkOrder, error) {
 		return wo, err
 	}
 	for _, id := range clear.Held {
-		if qr.alreadyReviewing(id) {
+		if qr.alreadyReviewing(id) || qr.isDeclined(id) {
+			// Taking back a declined run would restart its hold and keep it
+			// from returning to the queue (repo_access.go).
 			continue
 		}
 		qr.logf("Elk holds run %s for this queue and nothing here is working it; asking for its work order again", id)
