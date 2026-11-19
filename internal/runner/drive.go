@@ -341,6 +341,18 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		return qr.stuck(ctx, wo, "Rein could not tell which repository this run is in", err.Error())
 	}
 	qr.logf("run %s: repository %s", wo.RunID, repo)
+	if !qr.r.opts.Hosted {
+		// The serve loop keeps a queue whose default folder is unreadable
+		// from claiming at all; this catches a run that named another one.
+		// worktree_init is a stop Elk restarts on another ready queue
+		// (repo_access.go, ark:rein#172).
+		if ok, rerr := repoReadable(repo.Path); !ok {
+			msg := repoAccessMessage(repo.Path, rerr)
+			qr.setPreflightState("Could not create a worktree")
+			return qr.stuckCode(ctx, wo, "Rein cannot read this run's repository folder", msg+
+				"\n\nNothing was started and no worktree was created.", "worktree_init")
+		}
+	}
 	if qr.r.opts.Hosted {
 		clone := qr.r.opts.HostedClone
 		if clone == nil {

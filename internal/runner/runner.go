@@ -958,6 +958,10 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	// says so once per hold rather than on every poll.
 	var heldLogged time.Time
 
+	// repoBlockLogged is the unreadable-repository reason last logged, so it
+	// is written once and again only when it changes or clears.
+	var repoBlockLogged string
+
 	for {
 		// Headroom before the beat, so the beat carries it: an adapter that
 		// can read its subscription window without a turn does so here, when
@@ -1046,6 +1050,24 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 		if loginRequired {
 			wantClaim = false
 			qr.setWaiting("not claiming: agent authentication required")
+		}
+
+		// A repository folder this process may not read would stop every
+		// run it claimed before the agent started. Leave them queued for
+		// another agent and say why, once in the log and on every beat
+		// (repo_access.go, ark:rein#172).
+		if wantClaim && !qr.r.opts.Hosted {
+			block := repoAccessBlock(qr.r.opts.Config, qr.q)
+			if block != "" {
+				wantClaim = false
+				qr.setWaiting(block)
+				if block != repoBlockLogged {
+					qr.logf("%s", block)
+				}
+			} else if repoBlockLogged != "" {
+				qr.logf("the repository folder can be read again; claiming")
+			}
+			repoBlockLogged = block
 		}
 
 		var (
