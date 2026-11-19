@@ -558,6 +558,11 @@ func repoIdentity(ctx context.Context, key, path string) (string, bool) {
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
+	// A folder this process may not read cannot serve a run, so it is not
+	// offered to Elk's router either (repo_access.go, ark:rein#172).
+	if ok, _ := repoReadable(path); !ok {
+		return "", false
+	}
 	identity := key
 	if !strings.Contains(key, "/") {
 		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
