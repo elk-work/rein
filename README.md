@@ -46,6 +46,16 @@ press Allow. Rein enrols this computer as your private worker and starts its
 service. No token, link or invite is copied. It needs the server side of
 Elk #1401 lane 7 (scout migration 0596 and the `worker-pair` function).
 
+`rein setup --queue <name>` joins under a name you choose instead of the
+default `<host-id>-<agent-kind>`. A queue name is at most 12 characters
+(letters, digits and hyphens), and so is `--display-name`. A name that is too
+long, or already taken in the workspace, is refused before the computer joins;
+it is never cut or numbered to fit. This needs scout migration 0791 and the
+`worker-pair` function that goes with it; against an Elk without them, setup
+stops before showing a code. Running `rein setup` again on a computer that is
+already joined does not pair a second time: it says which queue the computer
+has and makes sure the service is running.
+
 Or connect a queue by hand with a claim code from the Elk app (**Agents** →
 **Connect an agent**), and run it as a service:
 

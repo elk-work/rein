@@ -49,6 +49,17 @@ that starts when you sign in, which needs no password).
 Before joining, Rein says which workspace and which person allowed it, and
 asks you to confirm when you are at the keyboard (--yes skips the question).
 
+--queue picks the queue name this computer joins as, instead of the default
+<host-id>-<agent-kind>. It is at most 12 characters: letters, digits and
+hyphens, starting and ending with a letter or digit. --display-name, the name
+on Elk's Agents page, is at most 12 characters too. A name over a limit, or one
+already taken in the workspace, is refused and never cut or numbered to fit.
+
+A computer that is already joined is not paired a second time: setup says
+which queue it has and makes sure its service is running. To add another queue
+here, pass --queue with a new name. A computer that lost its connection uses
+Reconnect on its card on Elk's Agents page.
+
 The code lives ten minutes and works once. Only a computer holding the secret
 Rein made for it can collect the answer, and nothing exists to collect until
 someone signed in to Elk presses Allow.`,
@@ -72,6 +83,7 @@ someone signed in to Elk presses Allow.`,
 // pairStart and pairPoll are the worker-pair edge function's two answers.
 type pairStart struct {
 	Code      string    `json:"code"`
+	QueueName string    `json:"queue_name"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Interval  int       `json:"interval"`
 	Error     string    `json:"error"`
@@ -82,6 +94,7 @@ type pairPoll struct {
 	Workspace  string `json:"workspace"`
 	ApprovedBy string `json:"approved_by"`
 	QueueName  string `json:"queue_name"`
+	Reason     string `json:"reason"`
 	Error      string `json:"error"`
 }
 
@@ -163,13 +176,23 @@ func runSetup(cmd *cobra.Command) error {
 		}
 		_ = f.Set("agent-kind", kind)
 	}
-	hint := ""
-	{
-		c := cfg
-		if v, _ := f.GetString("host-id"); v != "" {
-			c.HostID = v
+	hostCfg := cfg
+	if v, _ := f.GetString("host-id"); v != "" {
+		hostCfg.HostID = v
+	}
+	// A name the person asked for is checked here, before any code exists,
+	// and sent as queue_name, which Elk uses exactly or refuses. Without one
+	// Rein only hints its usual name, which Elk may cut or number.
+	asked, _ := f.GetString("queue")
+	asked = strings.TrimSpace(asked)
+	if f.Changed("queue") {
+		if err := checkAskedQueueName(asked); err != nil {
+			return err
 		}
-		if n, ok := c.SuggestQueueName(kind); ok {
+	}
+	hint := ""
+	if asked == "" {
+		if n, ok := hostCfg.SuggestQueueName(kind); ok {
 			hint = n
 		}
 	}
@@ -187,6 +210,22 @@ func runSetup(cmd *cobra.Command) error {
 		return fmt.Errorf("--display-name %q is %d characters; Elk's cap is %d. Pass a shorter one", v, n, elk.QueueNameMaxRunes)
 	}
 
+	// Already joined: pairing again would add a second queue for the same
+	// computer (Elk numbers a hinted name that is taken: "dav-claude2").
+	if q, ok := joinedQueue(cfg, store, asked, kind); ok {
+		fmt.Fprintf(out, "This computer is already joined to %q as queue %q, so no new code is needed.\n",
+			cfg.WorkspaceFor(q), q.Name)
+		if f.Changed("repo") || f.Changed("default-repo") {
+			fmt.Fprintln(out, "Its repositories were left as they are: change them with `rein repos add`.")
+		}
+		fmt.Fprintln(out, "To add another queue on this computer, pass --queue with a new name.")
+		fmt.Fprintln(out, "If it has lost its connection, press Reconnect on its card on Elk's Agents page.")
+		if noSvc, _ := f.GetBool("no-service"); noSvc {
+			return nil
+		}
+		return startServiceAfterSetup(cmd, out)
+	}
+
 	mcpURL, _ := f.GetString("mcp-url")
 	if mcpURL == "" {
 		mcpURL = firstNonEmpty(cfg.Elk.MCPURL, DefaultMCPURL)
@@ -200,15 +239,35 @@ func runSetup(cmd *cobra.Command) error {
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
 
-	var start pairStart
-	if err := postPair(ctx, client, pairURL+"/start", map[string]any{
+	startBody := map[string]any{
 		"secret": secret, "machine_name": name, "agent_kind": kind,
-		"platform": pairPlatform(runtime.GOOS), "queue_hint": hint,
-	}, &start); err != nil {
+		"platform": pairPlatform(runtime.GOOS),
+	}
+	if asked != "" {
+		startBody["queue_name"] = asked
+	} else {
+		startBody["queue_hint"] = hint
+	}
+	cancelPairing := func() {
+		_ = postPair(ctx, client, pairURL+"/cancel", map[string]any{"secret": secret}, &struct{}{})
+	}
+	var start pairStart
+	if err := postPair(ctx, client, pairURL+"/start", startBody, &start); err != nil {
 		return fmt.Errorf("could not get a code from Elk: %w", err)
 	}
 	if len(start.Code) != 8 {
 		return errors.New("Elk answered without a code; try again in a minute")
+	}
+	if asked != "" {
+		// Elk echoes a name it took. An Elk that does not is older than the
+		// queue_name contract and would pick a name of its own at Allow, so
+		// stop here, before anyone is shown a code.
+		if start.QueueName != asked {
+			cancelPairing()
+			return fmt.Errorf("this Elk did not take the queue name %q, so nothing was set up. "+
+				"It may not be updated yet: try again later, or run rein setup without --queue to join under Elk's default name", asked)
+		}
+		fmt.Fprintf(out, "\n  This computer will join as queue %q.\n", asked)
 	}
 
 	fmt.Fprintf(out, "\n  Your code:  %s-%s\n\n", start.Code[:4], start.Code[4:])
@@ -252,13 +311,20 @@ func runSetup(cmd *cobra.Command) error {
 			return errors.New("someone pressed Not my computer, so this computer did not join")
 		case "expired":
 			return errors.New("the code expired. Run rein setup again for a new one")
+		case "refused":
+			return refusedPairing(got, asked)
 		default:
 			return fmt.Errorf("Elk lost this code (%s). Run rein setup again for a new one", got.Status)
 		}
 		break
 	}
+	// A name the person asked for is never swapped for another one.
+	if asked != "" && got.QueueName != "" && got.QueueName != asked {
+		cancelPairing()
+		return askedNameChanged(asked, got.QueueName)
+	}
 	if !confirmJoin(cmd, got) {
-		_ = postPair(ctx, client, pairURL+"/cancel", map[string]any{"secret": secret}, &struct{}{})
+		cancelPairing()
 		return errors.New("not joined. Nothing was set up on this computer")
 	}
 	var claim pairCollect
@@ -276,8 +342,12 @@ func runSetup(cmd *cobra.Command) error {
 	if ws := firstNonEmpty(claim.Workspace, got.Workspace); ws != "" {
 		_ = f.Set("workspace", ws)
 	}
-	if q := firstNonEmpty(claim.QueueName, got.QueueName); q != "" {
+	if q := firstNonEmpty(claim.QueueName, got.QueueName); asked == "" && q != "" {
 		_ = f.Set("queue", q)
+	} else if asked != "" && q != asked {
+		// The claim is already collected, so there is nothing left to cancel;
+		// it is simply never used, and expires.
+		return askedNameChanged(asked, q)
 	}
 	_ = f.Set("mcp-url", mcpURL)
 	if err := runEnrolConnect(cmd, path, cfg, store); err != nil {
@@ -288,6 +358,75 @@ func runSetup(cmd *cobra.Command) error {
 		return nil
 	}
 	return startServiceAfterSetup(cmd, out)
+}
+
+// checkAskedQueueName applies Elk's rule for a queue name a person chose
+// (worker-pair's queue_name): 1 to 12 characters, letters, digits and hyphens,
+// starting and ending with a letter or digit. Checked here so a bad name stops
+// before any network call, with the limit in the message.
+func checkAskedQueueName(name string) error {
+	const rule = "A queue name is at most %d characters: letters, digits and hyphens, starting and ending with a letter or digit"
+	if name == "" {
+		return fmt.Errorf("--queue is empty. "+rule, elk.QueueNameMaxRunes)
+	}
+	if n := utf8.RuneCountInString(name); n > elk.QueueNameMaxRunes {
+		return fmt.Errorf("--queue %q is %d characters; Elk's cap is %d and a longer name is refused, not shortened. Pass a shorter one",
+			name, n, elk.QueueNameMaxRunes)
+	}
+	alnum := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	}
+	for i := 0; i < len(name); i++ {
+		if !alnum(name[i]) && name[i] != '-' {
+			return fmt.Errorf("--queue %q cannot be used. "+rule, name, elk.QueueNameMaxRunes)
+		}
+	}
+	if !alnum(name[0]) || !alnum(name[len(name)-1]) {
+		return fmt.Errorf("--queue %q cannot be used. "+rule, name, elk.QueueNameMaxRunes)
+	}
+	return nil
+}
+
+// joinedQueue finds the enrolment this computer already has: the queue named
+// by --queue when one was passed, otherwise its queue for this agent kind. It
+// counts only when its token is still in the keyring; a queue without one has
+// nothing to keep, and pairing again is how it gets a credential.
+func joinedQueue(cfg config.Config, store keyring.Store, asked, kind string) (config.Queue, bool) {
+	for _, q := range cfg.Queues {
+		if asked != "" && q.Name != asked {
+			continue
+		}
+		if asked == "" && q.AgentKind != kind {
+			continue
+		}
+		if _, err := store.Get(cfg.WorkspaceFor(q), q.Name); err == nil {
+			return q, true
+		}
+	}
+	return config.Queue{}, false
+}
+
+// refusedPairing turns Elk's refusal at Allow into what the person reads.
+// Elk's own sentence is printed as it stands; the fallbacks cover an answer
+// that carries only the reason.
+func refusedPairing(got pairPoll, asked string) error {
+	if msg := strings.TrimSpace(got.Error); msg != "" {
+		// A sentence already, so it is not wrapped or given a second full stop.
+		return errors.New(msg)
+	}
+	name := firstNonEmpty(got.QueueName, asked)
+	if got.Reason == "queue_taken" && name != "" {
+		return fmt.Errorf("the queue name %q is already taken in that workspace, so this computer did not join. "+
+			"Run rein setup again with a different --queue", name)
+	}
+	return fmt.Errorf("Elk refused this pairing (%s), so this computer did not join", firstNonEmpty(got.Reason, "no reason given"))
+}
+
+func askedNameChanged(asked, got string) error {
+	if got == "" {
+		return fmt.Errorf("Elk did not confirm the queue name %q, so this computer did not join. Nothing was set up", asked)
+	}
+	return fmt.Errorf("Elk would have joined this computer as %q, not the %q you asked for, so it did not join. Nothing was set up", got, asked)
 }
 
 // startServiceAfterSetup installs (or refreshes) the service and starts it, so
