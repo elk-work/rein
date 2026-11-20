@@ -154,14 +154,29 @@ func (qr *queueRunner) parallelHold(busy int) string {
 			"config.toml allows (%d). That is the queue's own limit, not the machine's: free slots do not change it",
 			busy, qr.parallel)
 	}
-	if qr.reconnect.wanted.Load() && !time.Now().Before(qr.reconnect.nextTry) {
+	if qr.reconnect.wanted.Load() && !time.Now().Before(qr.reconnect.nextTry) &&
+		!qr.r.opts.Hosted && qr.r.opts.Store != nil {
 		// A new credential ends the old one at its first use, and the runs
 		// being driven hold the old one (reconnect.go). A serial queue is
 		// between runs at every poll; this one has to make the gap.
-		return fmt.Sprintf("not claiming: Elk asked this queue for a new connection, and it takes it once the %d "+
-			"runs it is driving have finished", busy)
+		return fmt.Sprintf("not claiming: Elk asked this queue for a new connection, and it takes it once the %s "+
+			"it is driving finished", map[bool]string{true: "1 run has", false: runs(busy) + " have"}[busy == 1])
 	}
 	return ""
+}
+
+// stoppedClaiming reports whether the queue must not claim right now for a
+// reason a run can discover mid-flight: the agent needs signing in, or the
+// subscription has no headroom.
+func (qr *queueRunner) stoppedClaiming() bool {
+	qr.telMu.Lock()
+	login := qr.loginBlocked
+	qr.telMu.Unlock()
+	if login {
+		return true
+	}
+	_, _, held := qr.holding()
+	return held
 }
 
 // forkRun is a queueRunner that drives one run for this queue: the queue's

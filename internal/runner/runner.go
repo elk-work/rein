@@ -905,7 +905,7 @@ type queueRunner struct {
 	// reviewing is the run ids those continuations still hold. reviewMu
 	// guards it. A claim of one of them is not driven a second time.
 	reviewMu  sync.Mutex
-	reviewing map[string]time.Time
+	reviewing map[string]reviewHeld
 
 	// reviewParent, when set, is the queue runner this one was forked from
 	// to finish a review. handedRunID is that run. Telemetry the fleet reads
@@ -1356,6 +1356,12 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	}
 	if hold.waited >= time.Minute {
 		qr.logf("a slot is free after %s waiting", span(hold.waited))
+	}
+	if qr.parallel > 1 && qr.stoppedClaiming() {
+		// A run driven beside this loop found, while the claim stood in line,
+		// that the queue must stop: the agent needs signing in, or the
+		// subscription is spent. The loop's own checks ran before the wait.
+		return false, "", nil
 	}
 	if !qr.r.beginClaim() {
 		return false, "", nil

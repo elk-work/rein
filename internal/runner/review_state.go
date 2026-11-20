@@ -161,7 +161,7 @@ func (qr *queueRunner) resumeReviews(ctx context.Context) {
 				child.finishArkRuns(ctx, c.wt)
 			}
 		})
-		untrack := qr.trackReview(c.wo.RunID)
+		untrack := qr.trackReview(c.wo.RunID, child)
 		qr.reviews.Add(1)
 		go func() { defer qr.reviews.Done(); defer untrack(); child.continueReview(ctx, c) }()
 	}

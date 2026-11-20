@@ -97,9 +97,9 @@ func (r *Runner) status() control.Status {
 			q.Runs = append(q.Runs, control.RunActivity{RunID: w.runID, State: ActivityRevisionWait, Since: w.since, Detail: reason})
 		}
 		qr.reviewMu.Lock()
-		for id, since := range qr.reviewing {
+		for id, held := range qr.reviewing {
 			if !seen[id] {
-				q.Runs = append(q.Runs, control.RunActivity{RunID: id, State: ActivityReview, Since: since})
+				q.Runs = append(q.Runs, control.RunActivity{RunID: id, State: ActivityReview, Since: held.since})
 			}
 		}
 		qr.reviewMu.Unlock()

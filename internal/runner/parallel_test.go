@@ -386,6 +386,41 @@ func TestAParallelQueueDoesNotStarveAnotherQueue(t *testing.T) {
 	}
 }
 
+// The same when the other queue's work arrives late, with the parallel queue
+// already holding every slot and a line of its own behind them.
+func TestAQueueArrivingLateIsNotStarvedByAParallelQueue(t *testing.T) {
+	h := twoQueues(t)
+	h.cfg.Queues[0].Parallel = 2
+	h.agent.Script = slowScript(6)
+	h.agent.Delay = 40 * time.Millisecond
+	b := newBook()
+	b.add(queue, "c-1", "c-2", "c-3", "c-4", "c-5", "c-6")
+	b.install(h)
+
+	late := false
+	ok, err := h.runLoopUntil(roomyOptions(2), 30*time.Second, func() bool {
+		if !late && len(b.claimed()) >= 2 {
+			late = true
+			b.add(other, "x-1")
+		}
+		return submits(h) >= 7
+	})
+	if err != nil || !ok {
+		t.Fatalf("the seven runs did not finish: %v\nlog:\n%s", err, h.log)
+	}
+	order := b.claimed()
+	pos := map[string]int{}
+	for i, id := range order {
+		pos[id] = i
+	}
+	if pos["x-1"] > pos["c-5"] {
+		t.Errorf("the late queue's run waited behind the parallel queue's whole line (%v)", order)
+	}
+	if peak, at := overlap(h.elk.Calls()); peak > 2 {
+		t.Fatalf("%d runs were being worked at once (%v) on a two-slot machine", peak, at)
+	}
+}
+
 // A run Elk's review sends back is worked again while the queue drives other
 // runs, takes a slot like any session, and is never started twice at once.
 func TestARevisionOnAParallelQueueCountsAgainstTheMachinesSlots(t *testing.T) {
@@ -734,8 +769,10 @@ func TestStatusTellsAgentSessionsFromReviewWaits(t *testing.T) {
 		}
 	}
 
-	st := wait("run-a with an agent session", func(st control.Status) bool {
-		return find(st, "run-a") == runner.ActivitySession
+	// Slots in use are part of each condition, not read after it: a claim
+	// that is asking Elk whether there is more holds a slot while it asks.
+	st := wait("run-a with an agent session and one slot in use", func(st control.Status) bool {
+		return find(st, "run-a") == runner.ActivitySession && st.SlotsUsed == 1
 	})
 	if st.SlotsUsed != 1 || st.SlotsCeiling != 4 {
 		t.Errorf("slots used=%d ceiling=%d while one agent works, want 1 and 4", st.SlotsUsed, st.SlotsCeiling)
@@ -746,8 +783,8 @@ func TestStatusTellsAgentSessionsFromReviewWaits(t *testing.T) {
 
 	// Parked with Elk's review: still this queue's run, but no slot and no
 	// agent, and no longer counted against what the queue may drive.
-	st = wait("run-a with Elk's review", func(st control.Status) bool {
-		return find(st, "run-a") == runner.ActivityReview
+	st = wait("run-a with Elk's review and no slot in use", func(st control.Status) bool {
+		return find(st, "run-a") == runner.ActivityReview && st.SlotsUsed == 0
 	})
 	if st.SlotsUsed != 0 {
 		t.Errorf("slots used = %d while the only run is with Elk's review, want 0", st.SlotsUsed)
@@ -760,7 +797,7 @@ func TestStatusTellsAgentSessionsFromReviewWaits(t *testing.T) {
 	b.add(queue, "run-b", "run-c")
 	st = wait("run-b and run-c in session beside the review", func(st control.Status) bool {
 		return find(st, "run-b") == runner.ActivitySession && find(st, "run-c") == runner.ActivitySession &&
-			find(st, "run-a") == runner.ActivityReview
+			find(st, "run-a") == runner.ActivityReview && st.SlotsUsed == 2
 	})
 	if st.SlotsUsed != 2 || st.Queues[0].Driving != 2 {
 		t.Errorf("slots used=%d driving=%d with two agents at work, want 2 and 2", st.SlotsUsed, st.Queues[0].Driving)
