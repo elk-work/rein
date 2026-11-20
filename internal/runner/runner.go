@@ -352,9 +352,12 @@ type Runner struct {
 	upgradeMu sync.Mutex
 	// settingsMu serialises queues writing the Elk app's settings into
 	// config.toml (settings.go), so two beats cannot interleave a rewrite.
-	settingsMu     sync.Mutex
-	draining       bool
-	inFlight       int
+	settingsMu sync.Mutex
+	draining   bool
+	inFlight   int
+	// qrsMu guards qrs against the one reader that can arrive while Run is
+	// still building it: `rein status`, over the control plane (activity.go).
+	qrsMu          sync.Mutex
 	upgradeDone    chan struct{}
 	upgradeStarted chan struct{}
 	// refusal is the installed version this runner would not restart into,
@@ -592,7 +595,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// person talking to a process that is not there.
 	if ln := r.opts.ControlListener; ln != nil {
 		go func() {
-			if err := control.Serve(inner, ln, r.sessions, r.logf); err != nil && inner.Err() == nil {
+			if err := control.Serve(inner, ln, controlHandler{r.sessions, r}, r.logf); err != nil && inner.Err() == nil {
 				r.logf("attach: the control plane stopped: %v", err)
 			}
 		}()
@@ -644,7 +647,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			errs[i] = err
 			continue
 		}
+		r.qrsMu.Lock()
 		r.qrs = append(r.qrs, qr)
+		r.qrsMu.Unlock()
 		wg.Add(1)
 		go func(i int, qr *queueRunner) {
 			defer wg.Done()
@@ -747,7 +752,8 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 		// credential names, and each name in its map (secrets.go).
 		host = host.scopedTo(q)
 	}
-	qr := &queueRunner{r: r, q: q, workspace: ws, elk: client, elkToken: token, mode: mode, host: host, mcp: mcp}
+	qr := &queueRunner{r: r, q: q, workspace: ws, elk: client, elkToken: token, mode: mode, host: host, mcp: mcp,
+		parallel: r.parallelFor(q), driveEnded: make(chan struct{}, 1)}
 	if len(qr.mcp.declared) > 0 {
 		qr.host = qr.host.withExtra("config.toml mcp_servers, this queue", qr.mcp.declared...)
 	}
@@ -761,13 +767,21 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 
 // queueRunner serves one queue.
 //
-// The serve loop claims and drives one run at a time, which is what lets the
-// current run's event log live in a field. A run that has been submitted and
-// is waiting on Elk's review is the exception (review_detach.go, ark:rein#65):
-// that wait runs on its own goroutine, with its own copy of the per-run
-// fields, so the loop can claim the queue's next run — a Wrangler cycle
-// behind a build under review, in particular. The concurrency in the loop is
-// otherwise between queues.
+// By default the serve loop claims and drives one run at a time, on its own
+// goroutine, which is what lets the current run's event log live in a field.
+// Two things run beside the loop, each on a fork of this struct that owns one
+// run's mutable fields and shares the machine (the gate, the Elk client, the
+// subscription):
+//
+//   - a run that has been submitted and is waiting on Elk's review
+//     (review_detach.go, ark:rein#65), so the loop can claim the queue's next
+//     run — a Wrangler cycle behind a build under review, in particular;
+//   - every run of a queue whose config says `parallel` is more than one
+//     (parallel.go): the loop claims, hands the run to a fork, and goes back
+//     to claiming while fewer than `parallel` of them are being driven.
+//
+// A fork's owner is the queue's own runner, the one the loop and the heartbeat
+// read. What belongs to the queue rather than to a run is kept there.
 type queueRunner struct {
 	// trace is the current run's place in its task's trace (tasktrace.go).
 	// Nil when spans are off. Set at the claim; a review continuation takes
@@ -866,8 +880,8 @@ type queueRunner struct {
 
 	// slot is the concurrency slot the current run holds — nil between runs,
 	// and released (but still set) while Elk's review pass has the run
-	// (drive.go, retakeSlot). Like log, it lives in a field because this
-	// queue drives one run at a time.
+	// (drive.go, retakeSlot). Like log, it lives in a field because each
+	// queueRunner, the queue's own or a fork, drives one run at a time.
 	slot *slotHold
 
 	// lent and lentAt are a Wrangler queue lending its place at the front of
@@ -891,7 +905,7 @@ type queueRunner struct {
 	// reviewing is the run ids those continuations still hold. reviewMu
 	// guards it. A claim of one of them is not driven a second time.
 	reviewMu  sync.Mutex
-	reviewing map[string]struct{}
+	reviewing map[string]time.Time
 
 	// reviewParent, when set, is the queue runner this one was forked from
 	// to finish a review. handedRunID is that run. Telemetry the fleet reads
@@ -905,6 +919,25 @@ type queueRunner struct {
 	// A revision that learns the window is spent has to stop the queue that
 	// claims, which is the parent.
 	subOwner *queueRunner
+
+	// owner, when set, is the queue's own runner, and this one is a fork that
+	// drives one run for it: a review continuation or a parallel run
+	// (parallel.go). See [queueRunner.root].
+	owner *queueRunner
+
+	// parallel is how many runs this queue's loop may have being driven at
+	// once: config.toml's `parallel`, never more than the machine's slot
+	// ceiling, and 1 under --once and in a hosted container (parallel.go).
+	parallel int
+
+	// driving is the runs this queue handed to a fork and is still driving,
+	// by run id; drives waits for them as serve exits; driveEnded wakes the
+	// loop when one finishes. Only a queue with parallel > 1 uses them.
+	// drivingMu guards driving.
+	drivingMu  sync.Mutex
+	driving    []drivenRun
+	drives     sync.WaitGroup
+	driveEnded chan struct{}
 }
 
 // logf writes one line to the daemon's log, through the current run's
@@ -919,6 +952,9 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	// --once must wait for Elk, and shutdown must finish persisting its
 	// pending review. Between claims the loop does not wait.
 	defer qr.reviews.Wait()
+	// Declared after, so it runs first: a parallel run still being driven
+	// may yet hand its own review wait to the group above (parallel.go).
+	defer qr.drives.Wait()
 	if !qr.r.opts.Hosted {
 		qr.checkAgentSetup(ctx)
 	}
@@ -954,6 +990,7 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	if qr.q.IsWrangler() {
 		qr.logf("Wrangler queue: its claims take the next free slot on this machine ahead of build claims")
 	}
+	qr.logf("%s", qr.parallelLine())
 
 	if qr.r.opts.DryRun {
 		return qr.dryRun(ctx)
@@ -1004,8 +1041,12 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 		// which means one call answers both "am I visible" and "is there
 		// anything".
 		depth, known := qr.heartbeat(ctx)
-		// Here and nowhere else: this loop holds no run at this point.
-		qr.applyReconnect(ctx)
+		// Here and nowhere else: this loop holds no run at this point. A
+		// queue driving runs beside the loop waits until they are finished.
+		busy := qr.drivingCount()
+		if busy == 0 {
+			qr.applyReconnect(ctx)
+		}
 
 		// Say so in the log. A daemon that writes three lines at startup and
 		// then nothing for a week is indistinguishable from a daemon that
@@ -1091,6 +1132,18 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 			repoBlockLogged = block
 		}
 
+		// What the queue allows, as distinct from what the machine can
+		// afford: a queue already driving as many runs as its `parallel`
+		// says claims nothing more, whatever slots are free (parallel.go).
+		if wantClaim && busy > 0 {
+			if why := qr.parallelHold(busy); why != "" {
+				wantClaim = false
+				if (!known || depth > 0) && qr.setWaiting(why) {
+					qr.logf("%s", why)
+				}
+			}
+		}
+
 		var (
 			claimed bool
 			err     error
@@ -1126,6 +1179,9 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 			return nil
 		case <-qr.r.upgradeDone:
 			return nil
+		case <-qr.driveEnded:
+			// A run this queue was driving beside the loop has finished, so
+			// there may be room under `parallel` again: ask now.
 		case <-time.After(wait):
 		}
 	}
@@ -1285,7 +1341,14 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		return false, "", nil
 	}
 	qr.slot = hold
-	defer qr.releaseSlot()
+	// handed is set when the run, its slot and its place in the drain count
+	// go to a fork that drives it beside this loop (parallel.go).
+	handed := false
+	defer func() {
+		if !handed {
+			qr.releaseSlot()
+		}
+	}()
 	if logged {
 		// The slot wait is over. Any other reason stands until the claim
 		// says something new (noteClaimOutcome).
@@ -1297,7 +1360,11 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	if !qr.r.beginClaim() {
 		return false, "", nil
 	}
-	defer qr.r.endClaim()
+	defer func() {
+		if !handed {
+			qr.r.endClaim()
+		}
+	}()
 
 	var wo *elk.WorkOrder
 	for tries := 0; ; tries++ {
@@ -1324,6 +1391,11 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		qr.logf("run %s is already with Elk's review on this queue; not starting it again", wo.RunID)
 		return false, "", nil
 	}
+	if qr.alreadyDriving(wo.RunID) {
+		// The same, for a run a fork of this queue is driving right now.
+		qr.logf("run %s is already being driven on this queue; not starting it again", wo.RunID)
+		return false, "", nil
+	}
 	hold.setRun(wo.RunID)
 	qr.traceClaim(wo)
 	qr.setWaiting("")
@@ -1340,9 +1412,25 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		// another claim on this machine has had a slot, so a queue that is
 		// both the Wrangler and a busy build queue cannot take every turn.
 		qr.lent, qr.lentAt = true, hold.grant
-		qr.logf("run %s is not a Wrangler cycle; this queue's next claim waits its turn behind other queues", wo.RunID)
+		qr.logf("run %s is not a Wrangler cycle; %s", wo.RunID, qr.lentLine())
+	}
+	if qr.parallel > 1 {
+		handed = true
+		qr.driveBeside(ctx, wo, hold)
+		return true, "", nil
 	}
 	return true, "", qr.drive(ctx, wo)
+}
+
+// lentLine says what lending the front of the line means for this queue's
+// next claim. On a machine serving one queue there is no other queue to go
+// first, and the line used to say there was.
+func (qr *queueRunner) lentLine() string {
+	if len(qr.r.queues) < 2 {
+		return "this queue's next claim stands in line as an ordinary claim, not at the front. " +
+			"No other queue is served on this machine, so only a run of its own that Elk's review sent back can go ahead of it"
+	}
+	return "this queue's next claim stands in line as an ordinary claim, so another queue's waiting claim can go first"
 }
 
 // claimPriority is where this queue's next claim stands in line for a slot

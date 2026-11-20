@@ -104,6 +104,9 @@ type elkModelState struct {
 
 // modelChoice is the model and effort the next run on this queue uses.
 func (qr *queueRunner) modelChoice() ModelChoice {
+	// What Elk set is kept on the queue's own runner, where the heartbeat
+	// puts it; a fork driving one run has none of its own.
+	qr = qr.root()
 	qr.telMu.Lock()
 	defer qr.telMu.Unlock()
 	return ResolveModel(qr.q, qr.elkModel.model, qr.elkModel.effort)
@@ -112,10 +115,11 @@ func (qr *queueRunner) modelChoice() ModelChoice {
 // runModelChoice captures the same effort that drive passes to the adapter.
 // Later heartbeat choices apply to the next run, not this session's telemetry.
 func (qr *queueRunner) runModelChoice() ModelChoice {
-	qr.telMu.Lock()
-	defer qr.telMu.Unlock()
-	c := ResolveModel(qr.q, qr.elkModel.model, qr.elkModel.effort)
-	qr.tel.effort = c.Effort
+	root := qr.root()
+	root.telMu.Lock()
+	defer root.telMu.Unlock()
+	c := ResolveModel(root.q, root.elkModel.model, root.elkModel.effort)
+	root.tel.effort = c.Effort
 	return c
 }
 

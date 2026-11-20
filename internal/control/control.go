@@ -85,6 +85,12 @@ const (
 	// OpPermission answers a permission request the session raised.
 	OpPermission Op = "permission"
 
+	// OpStatus asks what every queue is doing: which runs have an agent at
+	// work, which are parked with Elk's review, and what is in line for a
+	// slot. Like [OpList] it needs no attachment and changes nothing. A
+	// runner from before it existed answers "unknown op".
+	OpStatus Op = "status"
+
 	// OpDetach releases the attachment early. Closing the connection does the
 	// same thing; this exists so a clean detach is distinguishable from a
 	// dropped one in the log.
@@ -121,6 +127,9 @@ type Response struct {
 	// Runs answers [OpList].
 	Runs []RunInfo `json:"runs,omitempty"`
 
+	// Status answers [OpStatus].
+	Status *Status `json:"status,omitempty"`
+
 	// Note is anything else worth saying to the person.
 	Note string `json:"note,omitempty"`
 }
@@ -145,6 +154,71 @@ type RunInfo struct {
 	// Attached is whether somebody already is.
 	Attached bool `json:"attached"`
 }
+
+// Status is what the runner is doing right now, queue by queue. It keeps
+// apart the two limits that decide whether another run starts: the slots the
+// machine can afford, and how many runs each queue's `parallel` setting lets
+// it drive at once.
+type Status struct {
+	// Version is the Rein that answered.
+	Version string `json:"version,omitempty"`
+
+	// SlotsCeiling is the most runs the machine drives at once
+	// (--max-concurrent). SlotsNow is what it could afford at its last
+	// measurement, 0 before the first. SlotsUsed is how many are held.
+	SlotsCeiling int `json:"slots_ceiling"`
+	SlotsNow     int `json:"slots_now"`
+	SlotsUsed    int `json:"slots_used"`
+
+	// Draining is true when the runner has stopped claiming and restarts
+	// once the runs it holds are finished.
+	Draining bool `json:"draining,omitempty"`
+
+	Queues []QueueStatus `json:"queues"`
+}
+
+// QueueStatus is one queue's part of [Status].
+type QueueStatus struct {
+	Queue string `json:"queue"`
+
+	// Parallel is how many runs this queue may drive at once, and Driving
+	// how many it is driving beside its loop now. A queue with Parallel 1
+	// drives its one run on the loop itself, and Driving stays 0.
+	Parallel int `json:"parallel"`
+	Driving  int `json:"driving"`
+
+	// Runs is every run this queue holds on this machine, oldest first.
+	Runs []RunActivity `json:"runs,omitempty"`
+
+	// ClaimWaiting is what this queue's next claim is in line for a slot
+	// behind, when it is in line.
+	ClaimWaiting      string    `json:"claim_waiting,omitempty"`
+	ClaimWaitingSince time.Time `json:"claim_waiting_since,omitzero"`
+
+	// NotClaiming is why the queue is not starting work Elk counts on it,
+	// for any reason other than waiting for a slot.
+	NotClaiming string `json:"not_claiming,omitempty"`
+}
+
+// RunActivity is one run and what is happening to it.
+type RunActivity struct {
+	RunID string `json:"run_id"`
+
+	// State is a sentence, not a vocabulary: an agent session, a wait on
+	// Elk's review that holds no slot, a wait for a slot.
+	State  string    `json:"state"`
+	Since  time.Time `json:"since"`
+	Detail string    `json:"detail,omitempty"`
+}
+
+// Reporter is the optional half of a [Handler] that answers [OpStatus].
+type Reporter interface {
+	Status(ctx context.Context) (Status, error)
+}
+
+// ErrNoStatus reports a runner that does not answer [OpStatus]: one from
+// before the op existed.
+var ErrNoStatus = errors.New("control: this runner does not report its status")
 
 // Attached is what a successful [OpAttach] hands back.
 type Attached struct {
@@ -255,6 +329,19 @@ func handle(ctx context.Context, conn net.Conn, h Handler) error {
 				err = fail(err)
 			} else {
 				err = reply(Response{OK: true, Runs: runs})
+			}
+			if err != nil {
+				return err
+			}
+
+		case OpStatus:
+			var err error
+			if rep, ok := h.(Reporter); !ok {
+				err = fail(ErrNoStatus)
+			} else if st, sErr := rep.Status(ctx); sErr != nil {
+				err = fail(sErr)
+			} else {
+				err = reply(Response{OK: true, Status: &st})
 			}
 			if err != nil {
 				return err
@@ -399,6 +486,22 @@ func (c *Client) call(req Request) (Response, error) {
 func (c *Client) List() ([]RunInfo, error) {
 	resp, err := c.call(Request{Op: OpList})
 	return resp.Runs, err
+}
+
+// Status asks what every queue is doing. A runner too old to know the
+// question answers [ErrNoStatus].
+func (c *Client) Status() (Status, error) {
+	resp, err := c.call(Request{Op: OpStatus})
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown op") || strings.Contains(err.Error(), ErrNoStatus.Error()) {
+			return Status{}, ErrNoStatus
+		}
+		return Status{}, err
+	}
+	if resp.Status == nil {
+		return Status{}, ErrNoStatus
+	}
+	return *resp.Status, nil
 }
 
 // Attach claims one run. The attachment lasts until [Client.Close].

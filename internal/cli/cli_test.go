@@ -199,7 +199,7 @@ func TestStatusReportsQueuesAndTokenState(t *testing.T) {
 		WorkDir:   filepath.Join(home, "work"),
 		Elk:       config.Elk{MCPURL: "https://example.test/elk-mcp"},
 		Queues: []config.Queue{
-			{Name: "mac-claude", AgentKind: "claude"},
+			{Name: "mac-claude", AgentKind: "claude", Parallel: 3},
 			{Name: "mac-codex", AgentKind: "codex", Land: config.LandBranch},
 		},
 	}
@@ -229,6 +229,25 @@ func TestStatusReportsQueuesAndTokenState(t *testing.T) {
 	}
 	if !strings.Contains(out, "missing — run `rein enrol`") {
 		t.Errorf("status did not flag the queue with no token:\n%s", out)
+	}
+	// How many runs each queue may drive at once, the default spelled out.
+	rows := map[string][]string{}
+	for _, line := range strings.Split(out, "\n") {
+		// The first line a name starts is its row in the queue table.
+		if f := strings.Fields(line); len(f) > 4 && rows[f[0]] == nil {
+			rows[f[0]] = f
+		}
+	}
+	if h := rows["QUEUE"]; len(h) < 5 || h[4] != "PARALLEL" {
+		t.Errorf("status has no PARALLEL column:\n%s", out)
+	}
+	if rows["mac-claude"][4] != "3" || rows["mac-codex"][4] != "1" {
+		t.Errorf("PARALLEL = %q and %q, want 3 and 1:\n%s", rows["mac-claude"][4], rows["mac-codex"][4], out)
+	}
+	// Nothing is running in a test, and status says so rather than leaving
+	// a reader to take the config for what the machine is doing.
+	if !strings.Contains(out, "NOW      no running Rein answered on this machine") {
+		t.Errorf("status does not say that no service answered:\n%s", out)
 	}
 	// status must never print a token.
 	if strings.Contains(out, "secret-token-value") {

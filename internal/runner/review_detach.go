@@ -85,10 +85,14 @@ func (qr *queueRunner) detachReview(ctx context.Context, c reviewCont, st *drive
 	child := qr.forkReview(c.wo.RunID)
 	st.cur = child
 	st.detached = true
-	untrack := qr.trackReview(c.wo.RunID)
-	qr.reviews.Add(1)
+	// On the queue's own runner, which is the one that claims and the one
+	// serve waits on: qr is a fork when the run was driven beside the loop
+	// (parallel.go).
+	root := qr.root()
+	untrack := root.trackReview(c.wo.RunID)
+	root.reviews.Add(1)
 	go func() {
-		defer qr.reviews.Done()
+		defer root.reviews.Done()
 		defer untrack()
 		child.continueReview(ctx, c)
 	}()
@@ -97,7 +101,11 @@ func (qr *queueRunner) detachReview(ctx context.Context, c reviewCont, st *drive
 // forkReview is a queueRunner that owns one run's mutable fields and shares
 // the machine: the gate, the Elk client, the subscription. It must not be a
 // copy of qr — that would copy locks that are already in use.
+//
+// Its parent is the queue's own runner even when qr is itself a fork driving
+// a parallel run: the heartbeat reads the queue, not the fork.
 func (qr *queueRunner) forkReview(runID string) *queueRunner {
+	root := qr.root()
 	child := &queueRunner{
 		r:             qr.r,
 		q:             qr.q,
@@ -111,9 +119,11 @@ func (qr *queueRunner) forkReview(runID string) *queueRunner {
 		logStatus:     qr.logStatus,
 		resultSummary: qr.resultSummary,
 		trace:         qr.trace,
-		reviewParent:  qr,
+		reviewParent:  root,
 		handedRunID:   runID,
-		subOwner:      qr,
+		subOwner:      root,
+		owner:         root,
+		parallel:      1,
 	}
 	child.redact.Store(qr.redact.Load())
 	qr.humanMu.Lock()
@@ -131,9 +141,9 @@ func (qr *queueRunner) forkReview(runID string) *queueRunner {
 func (qr *queueRunner) trackReview(runID string) func() {
 	qr.reviewMu.Lock()
 	if qr.reviewing == nil {
-		qr.reviewing = map[string]struct{}{}
+		qr.reviewing = map[string]time.Time{}
 	}
-	qr.reviewing[runID] = struct{}{}
+	qr.reviewing[runID] = time.Now()
 	qr.reviewMu.Unlock()
 	return func() {
 		qr.reviewMu.Lock()

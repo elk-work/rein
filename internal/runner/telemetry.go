@@ -297,8 +297,16 @@ func (qr *queueRunner) endRun(status runlog.Status) {
 	qr.tel.started = time.Time{}
 	qr.tel.faulted = status == runlog.StatusStuck
 	qr.telMu.Unlock()
-	if qr.reviewParent != nil {
+	switch {
+	case qr.reviewParent != nil:
 		qr.reviewParent.endRunIfCurrent(qr.handedRunID, status)
+	case qr.owner != nil:
+		// A run driven beside the loop (parallel.go). The queue's reading
+		// follows the runs still being driven; how this one ended is what
+		// it says once none are.
+		qr.owner.telMu.Lock()
+		qr.owner.tel.faulted = status == runlog.StatusStuck
+		qr.owner.telMu.Unlock()
 	}
 }
 
@@ -419,6 +427,18 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	tel := qr.tel
 	qr.telMu.Unlock()
 
+	// A queue driving runs beside its loop keeps each run's reading on the
+	// fork that drives it (parallel.go). Elk's reading is one session a
+	// queue, so it describes the run the queue has had longest; how many
+	// runs the machine is driving is the host half's slots_used.
+	beside := qr.oldestDriving()
+	if beside != nil {
+		beside.telMu.Lock()
+		run := beside.tel
+		beside.telMu.Unlock()
+		tel.runID, tel.started, tel.tokens, tel.asked = run.runID, run.started, run.tokens, run.asked
+	}
+
 	if tel.runID == "" {
 		state := StateIdle
 		if tel.faulted {
@@ -462,6 +482,10 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	// Elk's review verdict — the run is still this queue's, so the state above
 	// stands, and there is simply nothing more to say about it.
 	live := qr.r.sessions.byQueue(qr.r.opts.Config.QueueLabel(qr.q))
+	if beside != nil {
+		// The session of the run being described, not the queue's newest.
+		live = qr.r.sessions.forRun(tel.runID)
+	}
 	if live == nil {
 		qr.fillHeadroom(s, nil)
 		qr.putModel(s, tel)
@@ -693,6 +717,9 @@ func (r *Runner) telemetryPass(ctx context.Context, d time.Duration) {
 // Setup state is the last check, not a claim that an unchecked queue is ready.
 // Never ship error text: vendor failures may contain credentials or URLs.
 func (qr *queueRunner) setPreflightState(state string) {
+	// The queue's, whichever fork's run found it out: the beat and the serve
+	// loop read the queue's own runner.
+	qr = qr.root()
 	qr.telMu.Lock()
 	qr.preflightState = state
 	if state == "ready" {

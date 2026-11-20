@@ -68,6 +68,15 @@ would take repositories away from a queue. See docs/service.md.`,
 	return cmd
 }
 
+// parallelWords is a queue's `parallel` as `rein config check` and `rein
+// status` print it: the number of runs it may drive at once.
+func parallelWords(n int) string {
+	if n <= 1 {
+		return "1 (one run at a time)"
+	}
+	return fmt.Sprintf("%d (up to %d runs at once)", n, n)
+}
+
 func printConfigReport(cmd *cobra.Command, rep runner.ConfigReport) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "config  %s\n", rep.Config)
@@ -85,10 +94,10 @@ func printConfigReport(cmd *cobra.Command, rep runner.ConfigReport) error {
 	}
 	fmt.Fprintln(out)
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "QUEUE\tREPOSITORIES\tDEFAULT")
+	fmt.Fprintln(w, "QUEUE\tPARALLEL\tREPOSITORIES\tDEFAULT")
 	for _, q := range rep.Queues {
 		repos := strings.Join(q.Repositories, ", ")
-		fmt.Fprintf(w, "%s\t%s\t%s\n", q.Queue, orDash(repos), orDash(q.Default))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", q.Queue, parallelWords(q.Parallel), orDash(repos), orDash(q.Default))
 	}
 	if err := w.Flush(); err != nil {
 		return err

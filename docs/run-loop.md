@@ -865,7 +865,8 @@ reply is where Rein learns the run has been parked for Elk's review pass.
 
 `--max-concurrent` (default **4**) is the **ceiling** on how many runs are
 driven at once across every queue — the bound is on the machine, because what
-is scarce is memory. It is not the number: every claim takes the smaller of the
+is scarce is memory. (How many of those one queue may drive is a separate,
+per-queue setting, `parallel`, below; it defaults to one.) It is not the number: every claim takes the smaller of the
 ceiling and what the machine can afford right now, budgeting 4 GiB of RAM and
 10 GiB of disk under `work_dir` per run, floor of one. `docs/service.md` has
 the arithmetic and how each platform is measured. The slot is taken **before**
@@ -925,9 +926,111 @@ what holds the slot, then one every ten minutes. A cancellation while it waits
 discards the run as any cancellation does; a shutdown leaves the claim to
 lapse.
 
-What does not change: a queue drives one run at a time, so a queue whose run
-is under review claims nothing else until the review settles — the slot is
-free for the *other* queues.
+The wait does not hold the queue either. Since v0.9.19 (`ark:rein#65`) it runs
+beside the queue's serve loop (`internal/runner/review_detach.go`), so a queue
+whose run is under review claims its own next run straight away, as well as
+leaving the slot free for the other queues. This section used to say the
+opposite, that the queue claimed nothing until the review settled; that stopped
+being true in v0.9.19.
+
+So "a queue drives one run at a time" has always meant one run *in its first
+session*. A queue can have, at the same moment: that one run with an agent at
+work; any number of runs parked with Elk's review, holding no slot; and runs the
+review sent back, each working its revisions in a slot of its own, taken at
+revision priority.
+
+### A queue that drives several runs at once: `parallel`
+
+A machine can have slots free while its only queue has work waiting, because by
+default a queue's loop claims a run and drives it before it claims the next.
+`parallel` in a queue's `config.toml` block lifts that for one queue:
+
+```toml
+[[queues]]
+name       = "mac-claude"
+agent_kind = "claude"
+repos      = ["rein", "scout"]
+parallel   = 2          # this queue may drive two runs at once; unset or 1 is one
+```
+
+Two different limits now decide whether a run starts, and Rein says which one
+is in the way:
+
+| | What it is | Where it is set | Who shares it |
+|---|---|---|---|
+| **slots** | what the machine can afford: the ceiling (`--max-concurrent`, default 4) or less when memory or disk is short | measured, every claim | every queue on the machine |
+| **`parallel`** | how many runs one queue may drive at once | that queue's `[[queues]]` block; unset or `1` is one | that queue only |
+
+`parallel` is a permission, never a reservation. Every claim still takes a slot
+from the same line before it asks Elk for a run, so a queue set to `parallel =
+3` on a machine that can afford one run drives one run. It is never more than
+the ceiling: a larger value is held to it, the start-up log says so, and `rein
+config check` warns. It is set on the machine only; Elk does not set it.
+
+**What the bound counts** is a run from its claim until Rein has submitted it
+or handed it to its wait on Elk's review. A run parked with Elk's review is not
+counted, and neither is a run the review sent back: it takes a slot at revision
+priority, as above. That is exactly what `parallel = 1` already meant, which is
+why leaving it out changes nothing.
+
+**Other queues are not starved.** A parallel queue joins the back of the slot
+line for each claim, behind any claim already waiting, and Wrangler and revision
+priority are unchanged (*Who gets the next slot*, above). On a two-slot machine
+a queue set to `parallel = 2` with a long line of its own work and a second
+queue with work of its own take turns; `TestAParallelQueueDoesNotStarveAnotherQueue`
+holds it to that.
+
+**Each run keeps its own state.** A run driven this way gets a fork of the
+queue's runner (`internal/runner/parallel.go`) holding its own log, slot,
+session, redactor, comments and trace, the same arrangement a review wait has
+had since v0.9.19, and its own worktree and branch. The queue's own runner keeps
+what belongs to the queue: the subscription window, the model Elk set, the
+agent's setup state, the heartbeat.
+
+**A worktree is not an ordering.** Separate worktrees keep two agents out of
+each other's files. They do not decide which pull request merges first, and
+they do not make one task wait for another's result. Order is Elk's, at the
+claim, and Rein never names a run. As read in `elk-work/scout` on 2026-11-20
+(`supabase/functions/elk-mcp/queue.ts`):
+
+- `claim_run` counts nothing per queue: one queue's token may hold several
+  runs, and a second claim hands over a different run, never the one already
+  held (`isClaimableRun`).
+- A **sequential** group offers only its first unfinished step, so a later step
+  is not claimable until the one before it is finished (`pickClaimable`).
+- A second run on a **task another session is working** is not handed out
+  (`heldElsewhere`).
+- Links *between different tasks* are not looked at. Two tasks where one needs
+  the other's result can both be claimable at once.
+
+So turn `parallel` up on a queue whose tasks are independent, and keep
+dependent work in one task's sequential steps, where Elk holds the order. That
+last point is also why the default stays at one.
+
+**Where it shows.** The start-up log has one line per queue (`parallel: up to 2
+runs at once on this queue …`, or `parallel: one run at a time …`). `rein config
+check` and `rein status` have a `PARALLEL` column. While the service runs,
+`rein status` adds a `NOW` section, asked of the service over its control
+socket, that separates the three things Elk's one `running` state covers:
+
+```
+NOW — what the running Rein is doing
+machine   2 of its slots in use; the machine can afford 3 now, ceiling 4
+mac-claude   2 agent sessions, 1 run with Elk's review, no request waiting for a slot; this queue may drive 2 runs at once (parallel = 2)
+  arun-1f0c…  with Elk's review, no slot held  for 14m
+  arun-77aa…  agent session                    for 9m
+  arun-c21e…  agent session                    for 2m
+  not claiming: this queue is driving 2 runs, as many as its parallel setting in config.toml allows (2). …
+```
+
+An *agent session* is a vendor process at work. *With Elk's review, no slot
+held* costs the machine nothing. *Waiting for a slot* is a claim, or a run back
+from review, standing in line, with what it is behind. Elk's fleet reading is
+still one session a queue, so on a parallel queue it describes the run the
+queue has had longest; `host.runner.slots_used` is the count of runs at work.
+
+`--once`, `--dry-run` and a hosted container drive one run whatever `parallel`
+says: each exists for a single run.
 
 ### Saying why work is not starting
 
@@ -942,6 +1045,7 @@ has no run id Rein knows, so the reason rides the queue's **heartbeat** as
 | Elk cannot answer | `claim_run failed: Elk answered error -32603: …`, or `… could not be reached` |
 | the beat counted runs the claim would not hand over | `Elk's heartbeat counted 2 waiting on this queue, but claim_run handed none over: Queue "mac-grok" is clear: …` |
 | a newer Rein is installed | `not claiming: a newer Rein is installed, …` |
+| the queue is driving as many runs as its `parallel` allows | `not claiming: this queue is driving 2 runs, as many as its parallel setting in config.toml allows (2). That is the queue's own limit, not the machine's: free slots do not change it` |
 | the queue's repository folder cannot be read | `not claiming: Rein cannot read the repository folder …`, with the Full Disk Access fix |
 | a claimed run names a folder that cannot be read | `not starting a run: Rein cannot read the repository folder …`, and the run is left queued |
 
@@ -1421,12 +1525,22 @@ agent_kind      = "claude"
 repo            = "/Users/you/dev/elk"
 permission_mode = "full"        # read_only | ask | accept_edits | full
 land            = "merge"       # merge | pr | branch; unset is merge
+parallel        = 1             # runs this queue may drive at once; unset is 1
 capabilities    = ["xcode"]     # added to the top-level list
 base_ref        = "origin/main" # rarely needed; see above
 ```
 
 A `[queues.secrets]` table makes a queue scoped; see *Scoped secrets* above.
 Without one a queue behaves exactly as it did before the table existed.
+
+`parallel` is how many runs the queue may drive at once, an integer from 1 up.
+Unset or `1` is one run at a time. It is held to the machine's slot ceiling
+(`--max-concurrent`), and a run still starts only when the machine has a free
+slot, so it never makes the machine drive more than it can afford. A negative
+value, or one above 64, stops the config loading with the queue named. `rein
+config check` and `rein status` print each queue's value. See *A queue that
+drives several runs at once: `parallel`* above for what it counts and what it
+does not order.
 
 `land` defaults to `merge` and `rein run` prints each queue's policy at
 startup beside its permission mode. A value other than `merge`, `pr` or

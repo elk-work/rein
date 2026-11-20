@@ -13,6 +13,7 @@ import (
 
 	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/config"
+	"github.com/elk-work/rein/internal/control"
 	"github.com/elk-work/rein/internal/elk"
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/runner"
@@ -103,11 +104,11 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 
 	fmt.Fprintln(out)
 	qw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(qw, "QUEUE\tAGENT\tWORKSPACE\tLAND\tTOKEN\tADAPTER\tSUBSCRIPTION")
+	fmt.Fprintln(qw, "QUEUE\tAGENT\tWORKSPACE\tLAND\tPARALLEL\tTOKEN\tADAPTER\tSUBSCRIPTION")
 	for _, q := range cfg.Queues {
 		ws := cfg.WorkspaceFor(q)
-		fmt.Fprintf(qw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			cfg.QueueLabel(q), q.AgentKind, orDash(ws), q.LandOrDefault(), tokenState(store, ws, q.Name),
+		fmt.Fprintf(qw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			cfg.QueueLabel(q), q.AgentKind, orDash(ws), q.LandOrDefault(), q.ParallelOrDefault(), tokenState(store, ws, q.Name),
 			preflightState(ctx, q.AgentKind), subscriptionState(dir, cfg.QueueLabel(q)))
 	}
 	if err := qw.Flush(); err != nil {
@@ -128,10 +129,113 @@ func runStatus(cmd *cobra.Command, path string, online bool) error {
 		}
 	}
 
+	printNow(ctx, out, dir)
+
 	if online {
 		printOnline(ctx, out, cmd.Root().Version, cfg, store)
 	}
 	return nil
+}
+
+// printNow says what the running service is doing right now, asked over its
+// control socket: for each queue, the runs with an agent at work, the runs
+// parked with Elk's review (which hold no slot), and what is in line for a
+// slot. It is the one part of `rein status` that is not read from disk, and
+// it says so when nothing answers.
+//
+// The two limits are printed apart because they are different questions.
+// "slots" is what the machine can afford and is shared by every queue;
+// PARALLEL is what one queue's config.toml lets it drive at once.
+func printNow(ctx context.Context, out io.Writer, home string) {
+	dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	client, err := control.Dial(dctx, home)
+	if err != nil {
+		fmt.Fprintln(out, "\nNOW      no running Rein answered on this machine, so nothing above says what is running. "+
+			"`rein service status` says whether the service is up")
+		return
+	}
+	defer client.Close()
+	st, err := client.Status()
+	if err != nil {
+		if errors.Is(err, control.ErrNoStatus) {
+			fmt.Fprintln(out, "\nNOW      the running Rein is an older version that does not report what its queues are doing. "+
+				"`rein attach` lists live agent sessions")
+			return
+		}
+		fmt.Fprintf(out, "\nNOW      the running Rein did not answer: %v\n", err)
+		return
+	}
+	renderNow(out, st, time.Now())
+}
+
+// renderNow prints a status report. now is passed in so a test can pin it.
+func renderNow(out io.Writer, st control.Status, now time.Time) {
+	fmt.Fprintln(out, "\nNOW — what the running Rein is doing")
+	afford := "not measured yet"
+	if st.SlotsNow > 0 {
+		afford = fmt.Sprintf("the machine can afford %d now", st.SlotsNow)
+	}
+	fmt.Fprintf(out, "machine   %d of its slots in use; %s, ceiling %d\n", st.SlotsUsed, afford, st.SlotsCeiling)
+	if st.Draining {
+		fmt.Fprintln(out, "          not claiming: a newer Rein is installed, and this one restarts once the runs it holds are finished")
+	}
+	for _, q := range st.Queues {
+		sessions, reviews, slotWaits := 0, 0, 0
+		for _, r := range q.Runs {
+			switch r.State {
+			case runner.ActivitySession:
+				sessions++
+			case runner.ActivityReview:
+				reviews++
+			case runner.ActivityRevisionWait:
+				slotWaits++
+			}
+		}
+		if q.ClaimWaiting != "" {
+			slotWaits++
+		}
+		fmt.Fprintf(out, "%s   %s, %s with Elk's review, %s waiting for a slot; this queue may drive %s (parallel = %d)\n",
+			q.Queue, count(sessions, "agent session"), count(reviews, "run"), count(slotWaits, "request"),
+			count(q.Parallel, "run")+" at once", q.Parallel)
+		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		for _, r := range q.Runs {
+			line := r.State
+			if r.Detail != "" {
+				line += ": " + r.Detail
+			}
+			fmt.Fprintf(w, "  %s\t%s\tfor %s\n", r.RunID, line, roughly(now.Sub(r.Since)))
+		}
+		if q.ClaimWaiting != "" {
+			fmt.Fprintf(w, "  next claim\twaiting for a slot: %s\tfor %s\n", q.ClaimWaiting, roughly(now.Sub(q.ClaimWaitingSince)))
+		}
+		_ = w.Flush()
+		if q.NotClaiming != "" {
+			fmt.Fprintf(out, "  %s\n", q.NotClaiming)
+		}
+	}
+}
+
+// count is "1 agent session", "2 agent sessions", "no agent session".
+func count(n int, noun string) string {
+	switch n {
+	case 0:
+		return "no " + noun
+	case 1:
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// roughly is a duration a person reads in a status line.
+func roughly(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%dh%02dm", int(d/time.Hour), int((d%time.Hour)/time.Minute))
 }
 
 // subscriptionState is what the running service last knew about a queue's

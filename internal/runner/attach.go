@@ -278,6 +278,13 @@ func (r *sessionRegistry) byQueue(queue string) *liveSession {
 	return found
 }
 
+// forRun is the session driving one run right now, or nil.
+func (r *sessionRegistry) forRun(runID string) *liveSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.byRun[runID]
+}
+
 func (r *sessionRegistry) all() []*liveSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()

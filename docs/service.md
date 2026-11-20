@@ -339,6 +339,12 @@ every time a queue is about to claim:
 | the **ceiling** | `--max-concurrent`, default **4** |
 | what the machine can **afford** | free RAM ÷ 4 GiB, and free disk under `work_dir` ÷ 10 GiB |
 
+That is the machine's limit, shared by every queue. How many of those runs
+*one queue* may drive is a separate setting, `parallel` in the queue's
+`config.toml` block: one unless set, never more than the ceiling, and never a
+way round what the machine can afford. See `docs/run-loop.md`, *A queue that
+drives several runs at once*.
+
 Four is elk's standing cap for a Mac, and it comes from the 2026-08-20 incident
 where four concurrent agents took a machine's memory out and froze it. But four
 is wrong in both directions on the same machine — timid on a 64 GB desktop,
