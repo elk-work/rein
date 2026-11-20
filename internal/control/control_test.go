@@ -119,7 +119,7 @@ func (h *handler) snapshot() state {
 }
 
 // serve starts a control plane on a fresh home and returns it with a client.
-func serve(t *testing.T, h *handler) (home string, ln net.Listener) {
+func serve(t *testing.T, h control.Handler) (home string, ln net.Listener) {
 	t.Helper()
 	home = tempHome(t)
 	ln, err := control.Listen(home)
@@ -272,5 +272,43 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// reporter is a handler that also answers [control.OpStatus].
+type reporter struct {
+	*handler
+	st control.Status
+}
+
+func (r reporter) Status(context.Context) (control.Status, error) { return r.st, nil }
+
+// Status travels the socket whole, and a runner that cannot answer it — one
+// from before the op existed — is told apart from one that failed.
+func TestStatusOverTheSocket(t *testing.T) {
+	since := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	want := control.Status{
+		Version: "v-test", SlotsCeiling: 4, SlotsNow: 2, SlotsUsed: 1,
+		Queues: []control.QueueStatus{{
+			Queue: "mac-claude", Parallel: 2, Driving: 1,
+			Runs: []control.RunActivity{{RunID: "run-1", State: "agent session", Since: since}},
+		}},
+	}
+	home, _ := serve(t, reporter{&handler{}, want})
+	got, err := dial(t, home).Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SlotsCeiling != 4 || got.SlotsNow != 2 || got.SlotsUsed != 1 || len(got.Queues) != 1 {
+		t.Fatalf("Status = %+v", got)
+	}
+	q := got.Queues[0]
+	if q.Parallel != 2 || q.Driving != 1 || len(q.Runs) != 1 || q.Runs[0].RunID != "run-1" || !q.Runs[0].Since.Equal(since) {
+		t.Errorf("queue = %+v", q)
+	}
+
+	home, _ = serve(t, &handler{})
+	if _, err := dial(t, home).Status(); !errors.Is(err, control.ErrNoStatus) {
+		t.Errorf("a runner with no status answered %v, want ErrNoStatus", err)
 	}
 }

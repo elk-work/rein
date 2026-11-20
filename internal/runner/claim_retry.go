@@ -53,7 +53,9 @@ func (qr *queueRunner) claimRun(ctx context.Context) (*elk.WorkOrder, error) {
 		return wo, err
 	}
 	for _, id := range clear.Held {
-		if qr.alreadyReviewing(id) || qr.isDeclined(id) {
+		if qr.alreadyReviewing(id) || qr.alreadyDriving(id) || qr.isDeclined(id) {
+			// A run this queue is working is held on a live lease by
+			// definition, and Elk lists it: it is not an orphan.
 			// Taking back a declined run would restart its hold and keep it
 			// from returning to the queue (repo_access.go).
 			continue

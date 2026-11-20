@@ -541,6 +541,14 @@ through `/usr/bin/security` inside the user's login session — but only while
 launchd's `SessionCreate` stays false, which is what puts a job in a *new*
 security session with no login keychain.
 
+**One queue can drive several runs.** By default a queue drives one run at a
+time, so a machine with one queue and free slots still does one thing. `parallel
+= 2` in a queue's `[[queues]]` block lets that queue drive two at once. It is a
+permission, not a slot: every run still waits for the machine to afford it, the
+value is held to `--max-concurrent`, other queues keep their turn, and it does
+not order work, so use it for tasks that do not depend on each other.
+`docs/run-loop.md` has the detail.
+
 **Concurrency is a ceiling, not a number.** `--max-concurrent` defaults to 4 —
 elk's standing cap for a Mac, from the 2026-08-20 freeze — and every claim
 takes the smaller of that and what the machine can currently afford: free RAM
@@ -778,7 +786,13 @@ cookies.
 Everything local, and nothing over the network unless you ask:
 
 - the config path, the Rein home, the host label and the machine id;
-- every enrolled queue, its agent kind, workspace and landing policy;
+- every enrolled queue, its agent kind, workspace, landing policy and
+  `PARALLEL`, how many runs it may drive at once (`parallel` in its
+  `config.toml` block, 1 unless set; see `docs/run-loop.md`);
+- `NOW`, when the service is running: asked of it over its control socket, how
+  many slots are in use and, queue by queue, which runs have an agent session,
+  which are parked with Elk's review holding no slot, and what is waiting for a
+  slot. It says so when no service answers;
 - whether that queue's token is in the keychain — never the token itself;
 - whether the adapter for that agent kind can actually run here: `ready`, an
   actionable preflight failure, or `no adapter registered` when this build has

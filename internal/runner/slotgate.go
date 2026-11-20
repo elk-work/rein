@@ -61,6 +61,10 @@ func (p slotPriority) String() string {
 type slotRequest struct {
 	queue string
 	prio  slotPriority
+
+	// runID names the run a revision request is for. A claim has none: the
+	// run is not known until the slot is held and Elk has been asked.
+	runID string
 }
 
 // slotWaiter is a request in line. seq is its place in arrival order.
@@ -364,4 +368,36 @@ func span(d time.Duration) string {
 		return fmt.Sprintf("%dh", h)
 	}
 	return fmt.Sprintf("%dh%02dm", h, m)
+}
+
+// gateHold and gateWaiter are one slot in use and one request in line, as
+// [slotGate.snapshot] reports them.
+type gateHold struct {
+	queue string
+	runID string
+	since time.Time
+}
+
+type gateWaiter struct {
+	queue  string
+	runID  string
+	prio   slotPriority
+	since  time.Time
+	reason string
+}
+
+// snapshot is who holds a slot and who is in line for one, in line order, with
+// the count as of the last measurement and the sentence that explained it.
+func (g *slotGate) snapshot() (holds []gateHold, waiting []gateWaiter, total int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, h := range g.holds {
+		holds = append(holds, gateHold{queue: h.queue, runID: h.runID, since: h.since})
+	}
+	line := append([]*slotWaiter(nil), g.waiting...)
+	sort.Slice(line, func(i, j int) bool { return line[i].ahead(line[j]) })
+	for _, w := range line {
+		waiting = append(waiting, gateWaiter{queue: w.queue, runID: w.runID, prio: w.prio, since: w.since, reason: w.reason})
+	}
+	return holds, waiting, g.last
 }

@@ -60,6 +60,29 @@ workspace = "Signal"
 			}
 		})
 	}
+	// `parallel`, per queue: the value in the report and in the table, 1
+	// where the file says nothing, and a warning above the default ceiling.
+	par := strings.Replace(old, `agent_kind = "codex"`, "agent_kind = \"codex\"\nparallel = 6", 1)
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(par), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	js, _, _ := run(t, "config", "check", "--json", "--config", path)
+	var rep runner.ConfigReport
+	if err := json.Unmarshal([]byte(js), &rep); err != nil {
+		t.Fatalf("not a report: %v\n%s", err, js)
+	}
+	if len(rep.Queues) != 2 || rep.Queues[0].Parallel != 6 || rep.Queues[1].Parallel != 1 {
+		t.Errorf("parallel in the report = %+v, want 6 and 1", rep.Queues)
+	}
+	human, _, _ := run(t, "config", "check", "--config", path)
+	for _, want := range []string{"PARALLEL", "6 (up to 6 runs at once)", "1 (one run at a time)",
+		"WARNING: queue Elk Scout/mac-codex says parallel = 6, more than the 4 runs"} {
+		if !strings.Contains(human, want) {
+			t.Errorf("config check does not say %q:\n%s", want, human)
+		}
+	}
+
 	out, _, code := run(t, "config", "check", "--json", "--config", filepath.Join(t.TempDir(), "missing.toml"))
 	if code != 1 || !strings.Contains(out, `"error"`) {
 		t.Errorf("a missing config = exit %d\n%s", code, out)

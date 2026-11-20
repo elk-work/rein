@@ -241,6 +241,9 @@ type queueTelemetry struct {
 	// waiting for a slot.
 	waitingOn    string
 	waitingSince time.Time
+	// waitingFrom is the run whose review fork put waitingOn on a parallel
+	// queue's reading, or "" when the queue's own loop did.
+	waitingFrom string
 
 	// model is the last model a live session on this queue reported. It is
 	// what an idle queue says it runs on when its config names none (the
@@ -297,8 +300,16 @@ func (qr *queueRunner) endRun(status runlog.Status) {
 	qr.tel.started = time.Time{}
 	qr.tel.faulted = status == runlog.StatusStuck
 	qr.telMu.Unlock()
-	if qr.reviewParent != nil {
+	switch {
+	case qr.reviewParent != nil:
 		qr.reviewParent.endRunIfCurrent(qr.handedRunID, status)
+	case qr.owner != nil:
+		// A run driven beside the loop (parallel.go). The queue's reading
+		// follows the runs still being driven; how this one ended is what
+		// it says once none are.
+		qr.owner.telMu.Lock()
+		qr.owner.tel.faulted = status == runlog.StatusStuck
+		qr.owner.telMu.Unlock()
 	}
 }
 
@@ -309,6 +320,11 @@ func (qr *queueRunner) endRunIfCurrent(runID string, status runlog.Status) {
 	qr.telMu.Lock()
 	defer qr.telMu.Unlock()
 	if qr.tel.runID != runID {
+		if qr.parallel > 1 {
+			// A parallel queue's own reading never holds a run (the forks
+			// do), so how the last one ended is recorded regardless.
+			qr.tel.faulted = status == runlog.StatusStuck
+		}
 		return
 	}
 	qr.tel.runID = ""
@@ -357,10 +373,32 @@ func (qr *queueRunner) noteEvent(kind adapter.EventKind) {
 // wait whose sentence only counts up the minutes is still the same wait.
 func (qr *queueRunner) setWaiting(reason string) (changed bool) {
 	changed = qr.storeWaiting(reason)
-	if qr.reviewParent != nil && qr.reviewParent.showing(qr.handedRunID) {
-		qr.reviewParent.storeWaiting(reason)
+	switch p := qr.reviewParent; {
+	case p == nil:
+	case p.parallel > 1:
+		p.forwardWaiting(qr.handedRunID, reason)
+	case p.showing(qr.handedRunID):
+		p.storeWaiting(reason)
 	}
 	return changed
+}
+
+// forwardWaiting is a review fork's wait reaching a parallel queue's beat. The
+// queue's own reason (its parallel limit, a sign-in it needs) is the loop's to
+// set and clear, so a fork's reason only fills a silence, and a fork clears
+// only what a fork put there.
+func (qr *queueRunner) forwardWaiting(runID, reason string) {
+	qr.telMu.Lock()
+	defer qr.telMu.Unlock()
+	switch {
+	case reason != "" && (qr.tel.waitingOn == "" || qr.tel.waitingFrom != ""):
+		if qr.tel.waitingOn == "" {
+			qr.tel.waitingSince = time.Now()
+		}
+		qr.tel.waitingOn, qr.tel.waitingFrom = reason, runID
+	case reason == "" && qr.tel.waitingFrom == runID:
+		qr.tel.waitingOn, qr.tel.waitingFrom, qr.tel.waitingSince = "", "", time.Time{}
+	}
 }
 
 // showing reports whether the fleet reading is this run, or idle. A review
@@ -383,6 +421,7 @@ func (qr *queueRunner) storeWaiting(reason string) (changed bool) {
 		qr.tel.waitingSince = time.Now()
 	}
 	qr.tel.waitingOn = reason
+	qr.tel.waitingFrom = ""
 	return changed
 }
 
@@ -418,6 +457,31 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	qr.telMu.Lock()
 	tel := qr.tel
 	qr.telMu.Unlock()
+
+	// A queue driving runs beside its loop keeps each run's reading on the
+	// fork that drives it (parallel.go). Elk's reading is one session a
+	// queue, so it describes the run the queue has had longest; how many
+	// runs the machine is driving is the host half's slots_used.
+	beside := qr.oldestDriving()
+	if beside != nil {
+		beside.telMu.Lock()
+		run := beside.tel
+		beside.telMu.Unlock()
+		tel.runID, tel.started, tel.tokens, tel.asked = run.runID, run.started, run.tokens, run.asked
+	} else if qr.parallel > 1 {
+		// Nothing in its first session, but a run Elk's review sent back may
+		// have an agent at work on its revisions: that is the queue running.
+		// A run only parked with the review is not (Elk #1690).
+		if l := qr.r.sessions.byQueue(qr.r.opts.Config.QueueLabel(qr.q)); l != nil {
+			if fork := qr.reviewFork(l.runID); fork != nil {
+				beside = fork
+				fork.telMu.Lock()
+				run := fork.tel
+				fork.telMu.Unlock()
+				tel.runID, tel.started, tel.tokens, tel.asked = l.runID, run.started, run.tokens, run.asked
+			}
+		}
+	}
 
 	if tel.runID == "" {
 		state := StateIdle
@@ -462,6 +526,10 @@ func (qr *queueRunner) sessionReading() *elk.SessionReading {
 	// Elk's review verdict — the run is still this queue's, so the state above
 	// stands, and there is simply nothing more to say about it.
 	live := qr.r.sessions.byQueue(qr.r.opts.Config.QueueLabel(qr.q))
+	if beside != nil {
+		// The session of the run being described, not the queue's newest.
+		live = qr.r.sessions.forRun(tel.runID)
+	}
 	if live == nil {
 		qr.fillHeadroom(s, nil)
 		qr.putModel(s, tel)
@@ -693,12 +761,22 @@ func (r *Runner) telemetryPass(ctx context.Context, d time.Duration) {
 // Setup state is the last check, not a claim that an unchecked queue is ready.
 // Never ship error text: vendor failures may contain credentials or URLs.
 func (qr *queueRunner) setPreflightState(state string) {
+	// The queue's, whichever fork's run found it out: the beat and the serve
+	// loop read the queue's own runner.
+	fork := qr.owner != nil
+	qr = qr.root()
 	qr.telMu.Lock()
+	defer qr.telMu.Unlock()
+	if fork && state == "ready" && qr.loginBlocked {
+		// Another run on this queue has just been told to sign in again.
+		// This run's preflight, which passed before that, does not undo it:
+		// the queue's own setup check is what clears the block.
+		return
+	}
 	qr.preflightState = state
 	if state == "ready" {
 		qr.loginBlocked = false
 	}
-	qr.telMu.Unlock()
 }
 
 // The states [agentSetupFailure] reports: the agent's own setup failed, as

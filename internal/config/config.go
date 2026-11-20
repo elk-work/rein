@@ -383,6 +383,13 @@ func (d Duration) MarshalText() ([]byte, error) {
 type Queue struct {
 	// Repos lists keys in the top-level repository map served by this queue.
 	Repos []string `toml:"repos,omitempty"`
+	// Parallel is how many runs this queue may drive at once: the bound on
+	// claims it holds with an agent at work. Absent or 1 is one run at a
+	// time. It is a permission, not a number of slots: a run still starts
+	// only when the machine can afford one (internal/runner/slotgate.go), and
+	// the bound is never more than the machine's slot ceiling. Read it
+	// through [Queue.ParallelOrDefault].
+	Parallel int `toml:"parallel,omitempty"`
 	// Wrangler opts this Claude or Codex queue into running the Wrangler, Elk's PM agent
 	// (elk docs/wrangler.md). Read it through [Queue.IsWrangler], which also
 	// honours the old spelling below.
@@ -642,6 +649,19 @@ func ParseSecretItem(s string) (service, account string, err error) {
 var reservedSecretServices = map[string]bool{"rein": true, "elk-connector-url": true}
 
 // Scoped reports whether runs on this queue get only their own secrets.
+// MaxParallel is the most `parallel` may say. It is far above any machine's
+// slot ceiling; it exists so a typo is refused rather than read as "no bound".
+const MaxParallel = 64
+
+// ParallelOrDefault is how many runs this queue may drive at once: what
+// `parallel` says, and 1 when it says nothing.
+func (q Queue) ParallelOrDefault() int {
+	if q.Parallel < 1 {
+		return 1
+	}
+	return q.Parallel
+}
+
 func (q Queue) Scoped() bool { return q.ScopedSecrets || len(q.Secrets) > 0 }
 
 // IsWrangler reports whether this queue runs the Wrangler, under either
@@ -1174,6 +1194,8 @@ func (c Config) Validate() error {
 	seen := make(map[string]bool, len(c.Queues))
 	for i, q := range c.Queues {
 		switch {
+		case q.Parallel < 0 || q.Parallel > MaxParallel:
+			return fmt.Errorf("queues[%d]: parallel = %d is not a number of runs; use 1 to %d, or leave it out for one run at a time", i, q.Parallel, MaxParallel)
 		case q.IsWrangler() && q.AgentKind != "claude" && q.AgentKind != "codex":
 			return fmt.Errorf("queues[%d]: %s requires agent_kind = claude or codex", i, q.wranglerKey())
 		case q.IsWrangler() && len(q.MCPServers) > 0:

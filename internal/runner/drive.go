@@ -628,7 +628,7 @@ func (qr *queueRunner) retakeSlot(ctx context.Context, wo *elk.WorkOrder, round 
 		reported  time.Time
 		cancelled bool
 	)
-	hold, ok := qr.r.gate.enter(waitCtx, slotRequest{queue: qr.r.opts.Config.QueueLabel(qr.q), prio: prioRevision}, func(reason string) {
+	hold, ok := qr.r.gate.enter(waitCtx, slotRequest{queue: qr.r.opts.Config.QueueLabel(qr.q), prio: prioRevision, runID: wo.RunID}, func(reason string) {
 		if qr.setWaiting(reason) && reported.IsZero() {
 			qr.logf("run %s: %s", wo.RunID, reason)
 		}
@@ -957,10 +957,12 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			why := fmt.Sprintf("hit the hosted run cap of %s", qr.r.opts.Config.Hosted.RunCap())
 			return sessionResult{done: true}, qr.submitStuck(ctx, wo, "The run hit the hosted run cap", why, pending)
 		case errors.Is(out.err, adapter.ErrLoginRequired):
-			qr.telMu.Lock()
-			qr.preflightState = setupLogin
-			qr.loginBlocked = true
-			qr.telMu.Unlock()
+			// On the queue's own runner: it is the one that stops claiming.
+			root := qr.root()
+			root.telMu.Lock()
+			root.preflightState = setupLogin
+			root.loginBlocked = true
+			root.telMu.Unlock()
 			return sessionResult{done: true}, qr.submitStuckCode(ctx, wo, "The agent needs you to sign in again", out.err.Error(), "agent_login", pending)
 		case out.err != nil && errors.Is(out.err, adapter.ErrNotAPIAuth):
 			return sessionResult{done: true}, qr.submitStuck(ctx, wo, notAPITitle, out.err.Error(), pending)

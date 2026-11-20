@@ -52,6 +52,11 @@ type QueueReport struct {
 	// Default is the checkout a run that names no repository is cut from, or
 	// empty when such a run would end stuck.
 	Default string `json:"default,omitempty"`
+	// Parallel is how many runs this queue may drive at once: config.toml's
+	// `parallel`, and 1 when it says nothing. It is what the file allows; a
+	// running service holds it to the machine's slot ceiling, and a run
+	// still starts only when the machine has a free slot.
+	Parallel int `json:"parallel"`
 	// Problems are what strand this queue's runs.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -90,6 +95,13 @@ func CheckConfig(cfg config.Config, version string) ConfigReport {
 			Workspace:    cfg.WorkspaceFor(q),
 			Name:         q.Name,
 			Repositories: []string{},
+			Parallel:     q.ParallelOrDefault(),
+		}
+		if qr.Parallel > DefaultMaxConcurrent {
+			r.Warnings = append(r.Warnings, fmt.Sprintf(
+				"queue %s says parallel = %d, more than the %d runs a machine drives at once unless `rein run --max-concurrent` raises it. "+
+					"The queue is held to the machine's ceiling, so the extra does nothing",
+				qr.Queue, qr.Parallel, DefaultMaxConcurrent))
 		}
 		for name := range cfg.RepositoriesFor(q) {
 			qr.Repositories = append(qr.Repositories, name)
