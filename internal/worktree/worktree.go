@@ -523,7 +523,8 @@ var initStopRE = regexp.MustCompile(`(?m)^elk-init-stop: (\S+) ?(.*)$`)
 // recursively does not follow links" is not a thing to be merely fairly sure of.
 //
 // A worktree some process is still working in is never reaped: Reap returns
-// [ErrInUse] and leaves it (ark:rein#80).
+// [ErrInUse] and leaves it (ark:rein#80). A build daemon the run left behind
+// is not work: it is stopped first, so it cannot hold the worktree for ever.
 func (m *Manager) Reap(ctx context.Context, wt *Worktree) error {
 	if wt != nil && wt.Hosted {
 		return os.RemoveAll(wt.Dir)
@@ -531,6 +532,9 @@ func (m *Manager) Reap(ctx context.Context, wt *Worktree) error {
 	if wt == nil || wt.Dir == "" {
 		return nil
 	}
+	// The run is over, so a build daemon still rooted here is waiting for a
+	// build that will not come; anything else still here is work (daemons.go).
+	m.stopBuildDaemons(wt.Dir)
 	if err := m.checkLive(wt.Dir); err != nil {
 		return err
 	}

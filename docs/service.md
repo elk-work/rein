@@ -438,10 +438,13 @@ Nothing rotates them. They are small — an idle queue writes four lines an hour
 ## Stopping, and what a stop costs
 
 `rein service stop` cancels the loop's context, which interrupts any session in
-flight and **submits nothing for it**. Its claim lapses and Elk hands the run to
-whoever asks next. That is the same contract as Ctrl-C on `rein run`, and it is
-deliberately not "report what we had": an outcome that did not happen is worse
-than no outcome.
+flight and **hands its run back to Elk at once**, as interrupted: a line on the
+run saying a restart cut it off, and a stop Elk restarts on a ready agent
+without asking anyone. The run is never reported finished or failed, because an
+outcome that did not happen is worse than no outcome. That is the same contract
+as Ctrl-C on `rein run`. A Rein that is killed outright hands its runs back on
+its next start. [`run-loop.md`](run-loop.md) has the calls, under *Stopping
+hands each interrupted run back*.
 
 `uninstall` stops it and removes the definition. It touches nothing else — the
 config, the keychain tokens and any worktrees under `work_dir` are left exactly

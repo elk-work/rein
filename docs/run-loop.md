@@ -546,6 +546,36 @@ under five background lanes of a finished run, and the branch kept nothing they
 had not yet committed. A probe that cannot run fails open, so a missing `lsof`
 never wedges every reap.
 
+**A build daemon the run left behind is stopped first**
+(`internal/worktree/daemons.go`). A Gradle daemon is started by the agent's
+build, takes the worktree as its working directory, and then waits for hours
+for a build that never comes. On 2026-11-20 one kept a finished Android run's
+835 MB worktree on fij-claude: the reap, and every retry of it, logged
+`worktree: still in use: 1 process(es) still working` and left it. So before a
+reap asks whether the worktree is in use, it stops each process that meets all
+of these:
+
+- its working directory is inside this worktree;
+- it belongs to the user Rein runs as;
+- its command line is a known build daemon's: the Gradle daemon
+  (`org.gradle.launcher.daemon.bootstrap.GradleDaemon`), a Gradle worker
+  (`…GradleWorkerMain`) or the Kotlin compile daemon
+  (`org.jetbrains.kotlin.daemon.KotlinCompileDaemon`).
+
+It is asked to exit (`SIGTERM`), given ten seconds, then killed, and the log
+names it. Anything else found in the worktree is still work and still stops the
+reap, exactly as above: this is a list of daemons, not permission to clear a
+worktree. And nothing outside the worktree is touched, which is why the reap
+does not run `./gradlew --stop`: that stops every daemon of that Gradle version
+the user has, including the one a run in another worktree is building with. A
+new daemon belongs on the list in `daemons.go`.
+
+**A worktree left in place is tried again** (`ark:rein#99`,
+`internal/runner/reapowed.go`). The run's log is marked as owing a reap, and
+Rein retries every such worktree at startup and then every five minutes, so one
+that was in use is removed once it no longer is. The retry stops build daemons
+the same way, which is what clears a worktree an older Rein left behind one.
+
 ## Reporting while it works
 
 | Event | Call |
@@ -923,8 +953,9 @@ Elk reopens the run with revisions.
 While it waits for that slot the run is `running` under this machine's claim,
 so Rein keeps its lease and says so **on the run**: a `report_progress` naming
 what holds the slot, then one every ten minutes. A cancellation while it waits
-discards the run as any cancellation does; a shutdown leaves the claim to
-lapse.
+discards the run as any cancellation does; a shutdown carries the wait across
+the restart where Rein keeps state, and hands the claim back where it keeps
+none (*Stopping hands each interrupted run back*, below).
 
 The wait does not hold the queue either. Since v0.9.19 (`ark:rein#65`) it runs
 beside the queue's serve loop (`internal/runner/review_detach.go`), so a queue
@@ -1063,9 +1094,67 @@ its slot and what was holding it, so the reason ends up on the run itself.
 Queues are polled in parallel with a ±10% jitter, so several queues on one
 machine, or several machines restarted together, do not all ask at once.
 
-Ctrl-C or `SIGTERM` interrupts an in-flight session and submits nothing for it.
-The claim then lapses and Elk hands the run to whoever asks next, which is
-better than reporting an outcome that did not happen.
+### Stopping hands each interrupted run back
+
+Ctrl-C, `SIGTERM` or `rein service stop` interrupts every in-flight session,
+and then **hands each interrupted run's claim back to Elk at once**
+(`internal/runner/handback.go`). It never reports an outcome that did not
+happen: an interrupted run is not submitted as finished, and not as failed.
+
+Up to and including v0.9.24 a stop said nothing and left the claim to lapse. On 2026-11-20 on
+fij-claude a `rein service stop` and `start` cut off `arun-0940104a` mid-session;
+Elk kept it `running` with nobody driving it until the lease ran out about ten
+minutes later, so the Agents page showed a fourth run in progress beside the
+three Rein was really driving.
+
+**The call.** Elk's connector has no tool that puts a `running` run back to
+`queued` (read in `elk-work/scout` on 2026-11-20,
+`supabase/functions/elk-mcp/queue.ts`: a runner has `claim_run`,
+`report_progress`, `ask_elk` and `submit_deliverable`, and the only thing ever
+released is a claim's own unanswered hold). What it has for a run whose runner
+stopped driving it is the stop code `claim_lapsed`, the one Elk gives a claim it
+finds lapsed: scout migration `0782` restarts such a stop on a ready queue, as a
+new run whose parent is this one, without asking a person, on a sweep every
+thirty minutes and at most twice. So a hand-back is two calls:
+
+1. `report_progress`, one line on the run's timeline: *"Rein on mac-01 was
+   stopped or restarted while this run was in progress. The run was interrupted
+   by the restart: it did not finish and it did not fail. Rein is handing it
+   back to Elk to be started again."*
+2. `submit_deliverable` with `status: stuck` and `stop_code: claim_lapsed`,
+   titled "Interrupted by a Rein restart", naming the run branch, where
+   anything the agent committed still is.
+
+Both go out on a context of their own, bounded at fifteen seconds, because the
+loop's is already cancelled; and before the worktree is reaped, so a slow reap
+cannot outlast the service manager's patience first.
+
+| When Rein stops and a run is … | What happens |
+|---|---|
+| in an agent session, first or a revision | interrupted, handed back |
+| claimed but not yet started (no report sent) | nothing is said: Elk's claim is only a hold until the runner first speaks (scout 0790), so the run is still `queued` |
+| parked with Elk's review (`ready`) | left `ready`; the wait resumes on the next start (*Stopping mid-review is not an approval*, above) |
+| sent back by the review, waiting for a slot | carried across the restart where Rein keeps state; handed back where it keeps none |
+| already cancelled or submitted | nothing: it has its outcome |
+| on a hosted container | nothing: the container is one attempt, and Elk starts another |
+
+If Elk cannot be reached, the log says so and the claim lapses as it used to.
+
+**A drain is not a stop.** A restart for an upgrade or a changed `config.toml`
+stops claiming and lets in-flight runs finish (`upgrade.go`), so it interrupts
+nothing and hands nothing back.
+
+**A Rein that died hands back on its next start.** A kill, a crash or a power
+cut skips all of the above. At startup Rein settles every run log still marked
+`running` whose process is gone (`runlog.SettleDeadRuns`), and each queue hands
+its own back before its first claim, with the same two calls. Three kinds are
+left alone: a run whose review was saved and has just been resumed; a run that
+never started; and a run whose log was last written more than five minutes ago.
+The last is a safety margin. Elk's lease runs fifteen minutes from the last
+report and Rein reports at least every ten, so inside five minutes the claim is
+certainly still this machine's; past that it may have lapsed and been claimed
+again, and a submit would end a run somebody is working. Elk's own lapse
+handling, and the held-run sweep under *claim_run* above, have it by then.
 
 ## The system prompt
 

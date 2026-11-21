@@ -153,9 +153,9 @@ rein run --dry-run                     # claim nothing; say what is waiting
 rein run --keep-worktrees              # leave each run's checkout in place
 ```
 
-Ctrl-C interrupts an in-flight session and submits nothing for it: the claim
-lapses and Elk hands the run to whoever asks next, which is better than
-reporting an outcome that did not happen.
+Ctrl-C interrupts an in-flight session and hands its run back to Elk at once,
+as interrupted, so Elk starts it again. It never reports an outcome that did
+not happen.
 
 By default the agent **lands its own work**: it pushes the run branch, opens a
 non-draft PR, waits for CI and squash-merges it, and reports the PR URL and

@@ -126,6 +126,8 @@ func (qr *queueRunner) forkReview(runID string) *queueRunner {
 		parallel:      1,
 	}
 	child.redact.Store(qr.redact.Load())
+	// A run with Elk's review was submitted, so Elk has long since started it.
+	child.started.Store(true)
 	qr.humanMu.Lock()
 	child.human = qr.human
 	qr.humanMu.Unlock()
@@ -182,6 +184,11 @@ func (qr *queueRunner) alreadyReviewing(runID string) bool {
 func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 	defer func() {
 		qr.slot.release()
+		if !qr.keepReview {
+			// A stop that cut a revision short, with nothing kept to carry
+			// it across the restart, hands the claim back (handback.go).
+			qr.handBackInterrupted(ctx, c.wo, c.wt, c.pending)
+		}
 		c.clean.run()
 		if !qr.keepReview {
 			path := reviewFile(qr.r.opts.StateDir, c.wo.RunID)
@@ -273,6 +280,11 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 		}
 		if stop, err := qr.retakeSlot(ctx, c.wo, round+1, c.pending); stop {
 			qr.keepReview = ctx.Err() != nil && qr.r.opts.StateDir != ""
+			if ctx.Err() != nil && !qr.keepReview && qr.logStatus != runlog.StatusCancelled {
+				// Elk reopened the run and it is running under this claim
+				// with nothing to carry it across the restart.
+				qr.logStatus = runlog.StatusInterrupted
+			}
 			if err != nil {
 				qr.logf("run %s: %v", c.wo.RunID, err)
 			}

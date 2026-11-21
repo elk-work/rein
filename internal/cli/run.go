@@ -258,9 +258,9 @@ func runRun(cmd *cobra.Command) error {
 	}
 
 	// Ctrl-C and SIGTERM stop the loop cleanly: an in-flight session is
-	// interrupted and nothing is submitted for it, so the claim lapses and Elk
-	// hands the run to whoever asks next. Reporting an outcome on the way out
-	// would be reporting work that did not finish.
+	// interrupted and its run handed back to Elk as interrupted, to be started
+	// again (runner/handback.go). Reporting an outcome on the way out would be
+	// reporting work that did not finish.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if flag {
