@@ -130,6 +130,8 @@ func TestClaimFailureNeverShipsTheConnectorURL(t *testing.T) {
 			"Elk answered error -32603: canceling statement due to statement timeout"},
 		"http": {fmt.Errorf("claim: %w", &elk.HTTPError{StatusCode: 502, Status: "502 Bad Gateway", Body: "<html>"}),
 			"Elk answered 502 Bad Gateway"},
+		"unread": {fmt.Errorf("claim: %w", &elk.UnreadClaimReplyError{Text: "Held back: run `arun-9` is on a task another session is already working"}),
+			"claim_run answered something Rein could not read: Held back: run `arun-9` is on a task another session is already working"},
 		"tier": {&elk.TierRefusalError{Tool: "claim_run", Required: "run-scoped", Held: "read-only"},
 			"it is read-only, and claim_run needs run-scoped"},
 	} {
@@ -137,6 +139,9 @@ func TestClaimFailureNeverShipsTheConnectorURL(t *testing.T) {
 			got := claimFailure(tc.err)
 			if !strings.Contains(got, tc.want) {
 				t.Errorf("claimFailure = %q, want it to contain %q", got, tc.want)
+			}
+			if name != "transport" && strings.Contains(got, "could not be reached") {
+				t.Errorf("claimFailure called an answer from Elk a failure to reach it: %q", got)
 			}
 			if strings.Contains(got, secret) || strings.Contains(got, "https://") {
 				t.Errorf("claimFailure shipped the connector URL: %q", got)
