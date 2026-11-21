@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -531,5 +532,140 @@ func TestClaimWorkspaceWinsAndMismatchRefused(t *testing.T) {
 				t.Fatal("overwrote queue")
 			}
 		})
+	}
+}
+
+// `rein enrol --update` changes a queue enrolled here with the token it
+// already holds: the Mac app reuses a person's worker and cannot get a fresh
+// claim for a queue name already in use.
+func TestEnrolUpdateAddsARepoAndKeepsTheToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	registerAs(t, "claude")
+	s := enrolServer(t)
+	elkRepo, scout := checkout(t, "elk"), checkout(t, "scout")
+
+	if out, errb, code := run(t, "enrol",
+		"--workspace", "Elk Scout", "--agent-kind", "claude", "--host-id", "mac",
+		"--token", enrolToken, "--mcp-url", s.URL,
+		"--repo", "elk-work/elk="+elkRepo); code != 0 {
+		t.Fatalf("enrol exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+
+	out, errb, code := run(t, "enrol", "--update", "--queue", "mac-claude",
+		"--repo", "elk-work/scout="+scout)
+	if code != 0 {
+		t.Fatalf("update exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, _ := cfg.Queue("mac-claude")
+	if strings.Join(q.Repos, ",") != "elk-work/elk,elk-work/scout" {
+		t.Errorf("queue repos = %v, want the old one kept and the new one added", q.Repos)
+	}
+	if cfg.Repos["elk-work/scout"] != scout {
+		t.Errorf("[repos] = %v", cfg.Repos)
+	}
+	if q.AgentKind != "claude" {
+		t.Errorf("agent kind = %q, want it kept when --agent-kind is not given", q.AgentKind)
+	}
+
+	store := keyring.NewFileStore(filepath.Join(home, keyring.FileName))
+	if got, err := store.Get("Elk Scout", "mac-claude"); err != nil || got != enrolToken {
+		t.Fatalf("token = %q, err = %v; --update must keep the stored token", got, err)
+	}
+	if keys, _ := store.List(); len(keys) != 1 {
+		t.Errorf("keychain entries = %v, want only the one queue", keys)
+	}
+	if strings.Contains(out, enrolToken) {
+		t.Fatalf("update printed the token:\n%s", out)
+	}
+
+	// Never a second connect_executor: that is what mints a queue.
+	if n := len(s.CallsTo("connect_executor")); n != 1 {
+		t.Errorf("connect_executor calls = %d, want only the enrolment's", n)
+	}
+	// Elk is told the new repository with the stored token.
+	hbs := s.CallsTo("heartbeat_executor")
+	if len(hbs) != 2 {
+		t.Fatalf("heartbeat_executor calls = %d, want the enrolment's and the update's", len(hbs))
+	}
+	args := hbs[1].Args
+	if args["queue"] != "mac-claude" || args["workspace"] != "Elk Scout" || args["host_id"] != cfg.MachineID {
+		t.Errorf("update heartbeat args = %#v", args)
+	}
+	caps, _ := args["declared_capabilities"].([]any)
+	var found bool
+	for _, c := range caps {
+		if c == "repo:elk-work/scout" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the new repository was not declared to Elk: %v", caps)
+	}
+}
+
+func TestEnrolUpdateRefusesAnUnknownQueue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	registerAs(t, "claude")
+	s := enrolServer(t)
+	cfg := config.Default()
+	cfg.Workspace = "Elk Scout"
+	cfg.Elk.MCPURL = s.URL
+	cfg.Queues = []config.Queue{{Name: "mac-claude", AgentKind: "claude"}}
+	path := filepath.Join(home, config.FileName)
+	if err := cfg.SaveFile(path); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, queue, want string }{
+		{"not in the config", "mac-codex", "not enrolled on this machine"},
+		// In the config but with no token stored here.
+		{"no stored token", "mac-claude", "no token stored on this machine"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errb, code := run(t, "enrol", "--update", "--queue", tc.queue,
+				"--repo", "elk-work/scout="+checkout(t, "scout"))
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1", code)
+			}
+			if !strings.Contains(errb, tc.want) {
+				t.Errorf("error = %q, want it to say %q", errb, tc.want)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Errorf("a refused update changed the config:\n%s", after)
+			}
+		})
+	}
+	if n := len(s.Calls()); n != 0 {
+		t.Errorf("%d calls reached Elk for a refused update", n)
+	}
+	store := keyring.NewFileStore(filepath.Join(home, keyring.FileName))
+	if keys, _ := store.List(); len(keys) != 0 {
+		t.Errorf("a refused update wrote a token: %v", keys)
+	}
+}
+
+func TestEnrolUpdateTakesNoCredential(t *testing.T) {
+	t.Setenv(config.EnvHome, t.TempDir())
+	for _, flag := range [][]string{{"--claim-code", "c"}, {"--token", "t"}} {
+		args := append([]string{"enrol", "--update", "--queue", "mac-claude"}, flag...)
+		_, errb, code := run(t, args...)
+		if code != 1 || !strings.Contains(errb, "does not take "+flag[0]) {
+			t.Errorf("%s: exit = %d, error = %q", flag[0], code, errb)
+		}
 	}
 }

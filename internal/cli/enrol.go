@@ -78,6 +78,18 @@ config.toml.bak first). See docs/workspace-repositories.md.
 
   rein enrol --revoke --queue mac-claude
 
+changes what an enrolled queue serves without a new claim:
+
+  rein enrol --update --queue mac-claude --repo elk-work/scout=~/dev/scout
+
+It reads the token this machine already stored for the queue, adds the
+repositories (by the same additive rules as an enrolment), changes the agent
+kind when --agent-kind is given, writes the config and tells Elk the queue's
+new capabilities. It takes no --claim-code or --token and never creates a
+queue: a queue not enrolled on this machine is refused.
+
+  rein enrol --revoke --queue mac-claude
+
 forgets a queue locally: it deletes the keychain entry first, then drops the
 queue from the config. Every other queue keeps the repositories it served. It does not revoke the credential in Elk — an admin does
 that with Stop on its card on Elk's Agents page.`,
@@ -89,6 +101,7 @@ that with Stop on its card on Elk's Agents page.`,
 	f := cmd.Flags()
 	addEnrolConnectFlags(f)
 	f.Bool("revoke", false, "forget a queue: delete its keychain entry, then drop it from the config")
+	f.Bool("update", false, "change an enrolled queue's repositories, agent kind or personal-folders choice with its stored token; needs --queue")
 	return cmd
 }
 
@@ -128,8 +141,15 @@ func runEnrol(cmd *cobra.Command) error {
 		return err
 	}
 
-	if revoke, _ := cmd.Flags().GetBool("revoke"); revoke {
+	revoke, _ := cmd.Flags().GetBool("revoke")
+	update, _ := cmd.Flags().GetBool("update")
+	switch {
+	case revoke && update:
+		return errors.New("pass --update or --revoke, not both")
+	case revoke:
 		return runRevoke(cmd, path, cfg, store)
+	case update:
+		return runEnrolUpdate(cmd, path, cfg, store)
 	}
 	return runEnrolConnect(cmd, path, cfg, store)
 }
@@ -525,6 +545,113 @@ func runRevoke(cmd *cobra.Command, path string, cfg config.Config, store keyring
 	printPinned(out, pinned, backup)
 	fmt.Fprintln(out, "This is local only. The credential still exists in Elk until someone presses Stop on")
 	fmt.Fprintln(out, "its card on Elk's Agents page.")
+	return nil
+}
+
+// runEnrolUpdate re-plans a queue this machine already enrolled: new
+// repositories, a new agent kind, the personal-folders choice. It works from
+// the token already in the keychain, so it needs no claim — Elk refuses a
+// claim for a queue name already in use, which is why the Mac app could not
+// change a reused worker before. It never calls connect_executor, so it can
+// never mint a queue, and it reads and writes no token at all: the only
+// keychain access is the read that proves the queue is enrolled here.
+func runEnrolUpdate(cmd *cobra.Command, path string, cfg config.Config, store keyring.Store) error {
+	out := cmd.OutOrStdout()
+	f := cmd.Flags()
+
+	// Flags that belong to making a queue, not changing one. Refused rather
+	// than ignored, so nobody believes --update re-bound or shared anything.
+	for _, name := range []string{"claim-code", "token", "shared", "force", "display-name", "host-id"} {
+		if f.Changed(name) {
+			return fmt.Errorf("--update changes a queue already enrolled here with the token it already has, so it does not take --%s", name)
+		}
+	}
+
+	queue, _ := f.GetString("queue")
+	if queue == "" {
+		return errors.New("--update needs --queue <name>: the queue on this machine to change")
+	}
+	selector := queue
+	if ws, _ := f.GetString("workspace"); ws != "" {
+		selector = ws + "/" + queue
+	}
+	q, ok := cfg.Queue(selector)
+	if !ok {
+		return fmt.Errorf("queue %q is not enrolled on this machine, so there is nothing to update; enrol it first with a claim code from Elk", selector)
+	}
+	queue = q.Name
+	workspace := cfg.WorkspaceFor(q)
+	if workspace == "" {
+		return fmt.Errorf("queue %q names no workspace in %s, so Rein cannot find its token; pass --workspace", queue, path)
+	}
+	token, err := store.Get(workspace, queue)
+	if err != nil {
+		return fmt.Errorf("queue %q in workspace %q has no token stored on this machine, so it cannot be updated; enrol it again with a claim code from Elk", queue, workspace)
+	}
+
+	agentKind, _ := f.GetString("agent-kind")
+	if agentKind == "" {
+		agentKind = q.AgentKind
+	}
+	if !elk.KnownAgentKind(agentKind) {
+		return fmt.Errorf("--agent-kind %q is not one Elk knows; use one of %s",
+			agentKind, strings.Join(elk.AgentKinds, ", "))
+	}
+
+	repoFlags, _ := f.GetStringArray("repo")
+	defaultRepo, _ := f.GetString("default-repo")
+	repos, err := parseEnrolRepos(repoFlags, defaultRepo)
+	if err != nil {
+		return err
+	}
+
+	if v, _ := f.GetString("mcp-url"); v != "" {
+		cfg.Elk.MCPURL = v
+	}
+	if cfg.Elk.MCPURL == "" {
+		cfg.Elk.MCPURL = DefaultMCPURL
+	}
+
+	// Same plan, same additive rules and same backup as an enrolment. Never
+	// forced: a repository name another queue maps elsewhere stays refused.
+	next, nq, pinned, err := planEnrolment(cfg, workspace, queue, agentKind, repos, false)
+	if err != nil {
+		return fmt.Errorf("nothing was changed: %w", err)
+	}
+	if f.Changed("personal-folders") {
+		nq.PersonalFolders, _ = f.GetBool("personal-folders")
+		next.SetQueue(nq)
+	}
+	var backup string
+	if len(pinned) > 0 {
+		if backup, err = backupConfig(path); err != nil {
+			return fmt.Errorf("nothing was changed: %w", err)
+		}
+	}
+	if err := next.SaveFile(path); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "Updated queue %q (%s) in workspace %q.\n", queue, agentKind, workspace)
+	fmt.Fprintf(out, "config  %s\n", path)
+	printEnrolRepos(out, next, nq)
+	printPinned(out, pinned, backup)
+
+	// Tell Elk what the queue can do now, with the queue's own token, so Pace
+	// routes on the new repositories without waiting for the next run loop.
+	host := runner.DetectHostCapabilities(cmdContext(cmd), next).ForQueue(next, nq)
+	declared := host.Names()
+	if a, ok := adapter.Lookup(agentKind); ok {
+		declared = runner.DeclaredCapabilities(a.Manifest(), host)
+	}
+	if len(declared) > 0 {
+		fmt.Fprintf(out, "declared %s\n", strings.Join(declared, ", "))
+	}
+	live, err := elk.New(next.Elk.MCPURL, token, elk.WithVersion(cmd.Root().Version))
+	if err != nil {
+		return err
+	}
+	verifyEnrolment(cmdContext(cmd), out, live, workspace, queue, next.MachineID, agentKind, declared)
 	return nil
 }
 
