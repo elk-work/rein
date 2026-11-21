@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,10 +9,10 @@ import (
 )
 
 // Claude Code older than 2.1.228 does not apply the personal-folder deny
-// rules to its Write tool, so preflight refuses it in words that name the
-// installed version and the one needed; 2.1.228 and later pass, and output
-// that is not a version is let through.
-func TestPreflightNeedsAMinimumClaudeCodeVersion(t *testing.T) {
+// rules to its Write tool, so it is refused in words that name the installed
+// version and the one needed; 2.1.228 and later pass, and output that is not
+// a version is let through.
+func TestMinimumClaudeCodeVersion(t *testing.T) {
 	for _, tc := range []struct {
 		out     string
 		refused bool
@@ -27,12 +26,7 @@ func TestPreflightNeedsAMinimumClaudeCodeVersion(t *testing.T) {
 		{"3.0.0", false},
 		{"Claude test", false},
 	} {
-		path := stubBinary(t, `case "$1" in
- --version) echo '`+tc.out+`'; exit 0;;
- auth) echo '{"loggedIn":true}'; exit 0;;
- *) echo '{"type":"result","subtype":"success","is_error":false}'; exit 0;;
- esac`)
-		err := (&Adapter{Binary: path}).Preflight(context.Background())
+		err := checkMinimumVersion(tc.out)
 		if !tc.refused {
 			if err != nil {
 				t.Errorf("%q: refused: %v", tc.out, err)
