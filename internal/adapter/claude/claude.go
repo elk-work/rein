@@ -45,6 +45,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -256,6 +258,9 @@ func (a *Adapter) Preflight(ctx context.Context) error {
 	if version == "" {
 		return fmt.Errorf("%w: %s --version printed nothing", adapter.ErrPreflight, bin)
 	}
+	if err := checkMinimumVersion(version); err != nil {
+		return err
+	}
 
 	authOut, err := runTool(ctx, path, "auth", "status")
 	if err != nil {
@@ -290,6 +295,57 @@ func (a *Adapter) Preflight(ctx context.Context) error {
 		a.authVerified = true
 	}
 	return nil
+}
+
+// MinimumVersion is the oldest Claude Code Rein runs. The deny rules that
+// keep a worker out of the person's own folders (personalFolderDenies) are
+// applied to the Write tool only from 2.1.228; an older Claude Code would let
+// a worker write into Documents with the rules in place (follow-up 10 of the
+// review on rein#86).
+var MinimumVersion = [3]int{2, 1, 228}
+
+// checkMinimumVersion fails preflight, in plain words that name both
+// versions, when `claude --version` reports one older than MinimumVersion.
+// Output Rein cannot read as a version is let through: a change in how
+// Claude Code prints its version must not stop every worker.
+func checkMinimumVersion(out string) error {
+	v, ok := parseVersion(out)
+	if !ok || !olderThan(v, MinimumVersion) {
+		return nil
+	}
+	need := fmt.Sprintf("%d.%d.%d", MinimumVersion[0], MinimumVersion[1], MinimumVersion[2])
+	return fmt.Errorf("%w: Claude Code %d.%d.%d is installed, and Rein needs %s or later "+
+		"so a worker's file writes stay out of your personal folders; update it with `claude update`",
+		adapter.ErrPreflight, v[0], v[1], v[2], need)
+}
+
+var versionRE = regexp.MustCompile(`(?:^|\s)v?(\d+)\.(\d+)\.(\d+)`)
+
+// parseVersion reads the first major.minor.patch in `claude --version`'s
+// output ("2.1.251 (Claude Code)").
+func parseVersion(out string) ([3]int, bool) {
+	m := versionRE.FindStringSubmatch(strings.TrimSpace(out))
+	if m == nil {
+		return [3]int{}, false
+	}
+	var v [3]int
+	for i := range v {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return [3]int{}, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+func olderThan(v, min [3]int) bool {
+	for i := range v {
+		if v[i] != min[i] {
+			return v[i] < min[i]
+		}
+	}
+	return false
 }
 
 // runTool runs a short, read-only vendor command and returns its stdout.

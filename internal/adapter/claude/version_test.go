@@ -1,0 +1,46 @@
+package claude
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/elk-work/rein/internal/adapter"
+)
+
+// Claude Code older than 2.1.228 does not apply the personal-folder deny
+// rules to its Write tool, so it is refused in words that name the installed
+// version and the one needed; 2.1.228 and later pass, and output that is not
+// a version is let through.
+func TestMinimumClaudeCodeVersion(t *testing.T) {
+	for _, tc := range []struct {
+		out     string
+		refused bool
+	}{
+		{"2.1.227 (Claude Code)", true},
+		{"2.0.999 (Claude Code)", true},
+		{"1.9.300", true},
+		{"2.1.228 (Claude Code)", false},
+		{"2.1.251 (Claude Code)", false},
+		{"2.2.0 (Claude Code)", false},
+		{"3.0.0", false},
+		{"Claude test", false},
+	} {
+		err := checkMinimumVersion(tc.out)
+		if !tc.refused {
+			if err != nil {
+				t.Errorf("%q: refused: %v", tc.out, err)
+			}
+			continue
+		}
+		if !errors.Is(err, adapter.ErrPreflight) {
+			t.Fatalf("%q: not refused as a preflight failure: %v", tc.out, err)
+		}
+		installed := strings.Fields(tc.out)[0]
+		for _, want := range []string{"Claude Code " + installed + " is installed", "2.1.228 or later", "claude update"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: message %q does not say %q", tc.out, err, want)
+			}
+		}
+	}
+}

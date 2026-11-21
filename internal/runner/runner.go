@@ -616,6 +616,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// the daemon starts right after the press that allowed it, so macOS asks
 	// about them then and not later, out of the blue, while an agent works
 	// (Elk #1832). macOS remembers the answer, so later starts ask nothing.
+	// The configured repositories are opened here as well.
 	// Off the start path: macOS can hold the listing until the person answers.
 	go func() {
 		opened, refused := openPersonalFolders(r.queues, os.UserHomeDir)
@@ -624,6 +625,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		if len(refused) > 0 {
 			r.logf("personal folders allowed but not readable (refused in System Settings > Privacy & Security?): %s", strings.Join(refused, ", "))
+		}
+		// The checkouts runs are cut from, too, whatever the choice above: a
+		// repository kept in Documents would otherwise make macOS ask at the
+		// first claim, from `git worktree add`.
+		repos, refused := openRepositoryFolders(r.opts.Config, r.queues)
+		if len(repos) > 0 {
+			r.logf("repository folders opened at start: %s", strings.Join(repos, ", "))
+		}
+		if len(refused) > 0 {
+			r.logf("repository folders not readable (refused in System Settings > Privacy & Security?): %s", strings.Join(refused, ", "))
 		}
 	}()
 
