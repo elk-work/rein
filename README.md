@@ -81,6 +81,7 @@ reserved for a command that lands ahead of its implementation.
 rein enrol --workspace "Elk Scout" --agent-kind claude --claim-code <code>
 rein enrol --workspace "Elk Scout" --agent-kind claude --token <connector-token> [--shared]
 rein enrol --workspace "Elk Scout" --agent-kind runner --token <connector-token> --queue lab-checks
+rein enrol --update --queue mac-claude [--repo name=path ...] [--default-repo name] [--agent-kind kind] [--personal-folders]
 rein enrol --revoke --queue mac-claude
 rein run   [--queue mac-claude] [--once] [--dry-run] [--keep-worktrees]
            [--review-timeout 20m] [--max-review-rounds 3]
@@ -130,6 +131,15 @@ to believe a private queue is open to their team.
 The key is absent from the request unless `--shared` is set, so an Elk older
 than scout migration 0201 (2026-08-31, `ark:scout#379`) sees no argument it
 does not recognise.
+
+`rein enrol --update --queue <name>` changes a queue already enrolled on this
+machine — adds repositories, changes its agent kind or its personal-folders
+choice — using the token already in the keychain. It takes no claim code or
+token, never calls `connect_executor` (so it cannot mint a queue), and refuses
+a queue that is not enrolled here. Repositories are added by the same rules as
+an enrolment, then the queue heartbeats with its new capabilities so Elk routes
+on them straight away. The Mac app uses it to change a worker it reuses, since
+Elk refuses a fresh claim for a queue name already in use.
 
 `rein enrol --revoke --queue <name>` forgets a queue **locally**. It deletes
 the keychain entry *first* and drops the config row second: the OS keychain
