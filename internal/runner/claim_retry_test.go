@@ -147,7 +147,11 @@ func TestAfterAClaimTimeoutTheNextPollLooksForHeldRuns(t *testing.T) {
 		PollInterval:      time.Millisecond,
 		ReclaimInterval:   time.Hour,
 		ClaimRetryBackoff: time.Millisecond,
-	}, 30*time.Second, func() bool { return len(h.elk.CallsTo("submit_deliverable")) == 1 }); !ok {
+		// At least one: the loop is stopped the moment Elk receives the submit,
+		// which can cut off its reply. Rein then cannot know the run was
+		// saved, and hands it back as interrupted (handback.go), a second
+		// submit. A real Elk answers that one "not running".
+	}, 30*time.Second, func() bool { return len(h.elk.CallsTo("submit_deliverable")) >= 1 }); !ok {
 		t.Fatalf("the held run was never started (err %v)\nlog:\n%s", err, h.log)
 	}
 	if n := len(h.agent.Specs()); n != 1 {
