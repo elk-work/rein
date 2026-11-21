@@ -524,6 +524,36 @@ func (e *NoWorkError) Error() string { return ErrNoWork.Error() + ": " + e.Text 
 // Is makes [errors.Is] match [ErrNoWork].
 func (e *NoWorkError) Is(target error) bool { return target == ErrNoWork }
 
+// notHandedOut opens the reply of an Elk older than scout#3911 when the run a
+// claim would have taken is held elsewhere ("Not handed out: run … is on a
+// task another session is already working"). Newer Elks open that reply with
+// the words [queueClearRE] and [notClaimableRE] already read.
+const notHandedOut = "Not handed out:"
+
+// notHandedOutLine is the line of a reply that says a run was not handed out,
+// or "" when none does.
+func notHandedOutLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, notHandedOut) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+// UnreadClaimReplyError is a claim_run reply that was no error and that Rein
+// could not read: Elk was reached and answered, in words this build does not
+// know. It is not a transport failure and must not be reported as one.
+type UnreadClaimReplyError struct {
+	// Text is Elk's own first line. It is Elk's text, so it carries no
+	// connector URL and is safe to send back.
+	Text string
+}
+
+func (e *UnreadClaimReplyError) Error() string {
+	return "elk: claim_run answered something Rein does not understand: " + e.Text
+}
+
 // heldRunsRE finds Elk's note of the runs a caller already holds, appended to
 // a clear queue's reply: "You hold 1 run on a live lease: `arun-…`."
 var (
@@ -581,7 +611,8 @@ func ClaimMayHaveLanded(err error) bool {
 //
 // It returns [ErrNoWork] when the queue is clear, and when a race left nothing
 // to claim — both are Elk answering in plain text with no `isError`, and both
-// mean the same thing to a poll loop: nothing to do, come back later.
+// mean the same thing to a poll loop: nothing to do, come back later. Any
+// other reply that is no work order is an [*UnreadClaimReplyError].
 func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, error) {
 	args := map[string]any{}
 	putIf(args, "workspace", req.Workspace)
@@ -606,7 +637,12 @@ func (c *Client) ClaimRun(ctx context.Context, req ClaimRequest) (*WorkOrder, er
 	res.Text = text
 	m := claimedRunRE.FindStringSubmatch(res.Text)
 	if m == nil {
-		return nil, fmt.Errorf("elk: claim_run answered something Rein does not understand: %s", firstLine(res.Text))
+		// Only a reply that is not a work order is searched: a work order
+		// may quote the phrase in a task's own text.
+		if line := notHandedOutLine(res.Text); line != "" {
+			return nil, &NoWorkError{Text: line, Held: parseHeldRuns(res.Text)}
+		}
+		return nil, &UnreadClaimReplyError{Text: firstLine(res.Text)}
 	}
 	wo := &WorkOrder{RunID: m[1], Text: res.Text, Notices: res.Notices, Rehanded: rehanded, Asked: asked, Received: received}
 	if a := actionIDRE.FindStringSubmatch(res.Text); a != nil {

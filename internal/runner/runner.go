@@ -1546,10 +1546,11 @@ func (qr *queueRunner) noteClaimOutcome(claimed bool, clear string, err error, d
 // queue's token. The full error still goes to the local log.
 func claimFailure(err error) string {
 	var (
-		tier *elk.TierRefusalError
-		tool *elk.ToolError
-		rpc  *elk.RPCError
-		hErr *elk.HTTPError
+		tier   *elk.TierRefusalError
+		unread *elk.UnreadClaimReplyError
+		tool   *elk.ToolError
+		rpc    *elk.RPCError
+		hErr   *elk.HTTPError
 	)
 	switch {
 	case elk.ClaimMayHaveLanded(err):
@@ -1558,6 +1559,10 @@ func claimFailure(err error) string {
 	case errors.As(err, &tier):
 		return fmt.Sprintf("claim_run refused this queue's token: it is %s, and claim_run needs %s — re-enrol the queue",
 			tier.Held, tier.Required)
+	case errors.As(err, &unread):
+		// Elk was reached and answered; saying otherwise sends whoever
+		// reads the queue looking for a network fault that is not there.
+		return "claim_run answered something Rein could not read: " + clip(firstLine(unread.Text), 300)
 	case errors.As(err, &tool):
 		return "claim_run refused: " + clip(firstLine(tool.Text), 300)
 	case errors.As(err, &rpc):

@@ -86,6 +86,67 @@ func TestClaimRunOnAnEmptyQueue(t *testing.T) {
 	}
 }
 
+// An Elk older than scout#3911 answers a run held elsewhere in words of its
+// own. That is nothing to take, not a failed claim.
+func TestClaimRunNotHandedOutIsNoWork(t *testing.T) {
+	const line = "Not handed out: run `arun-7` is on a task another session is already working."
+	for name, text := range map[string]string{
+		"first line": line + "\n\nYou hold 1 run on a live lease: `arun-3`. Claim it by run_id.",
+		"later line": "Queue \"mac-claude\" has 1 run waiting.\n" + line,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := elktest.New(t, testToken)
+			s.Text("claim_run", text)
+			c := newClient(t, s)
+
+			_, err := c.ClaimRun(context.Background(), elk.ClaimRequest{Queue: "mac-claude"})
+			var clear *elk.NoWorkError
+			if !errors.As(err, &clear) || !errors.Is(err, elk.ErrNoWork) {
+				t.Fatalf("err = %v (%T), want *NoWorkError", err, err)
+			}
+			if clear.Text != line {
+				t.Errorf("text = %q, want Elk's own line %q", clear.Text, line)
+			}
+			if name == "first line" && strings.Join(clear.Held, ",") != "arun-3" {
+				t.Errorf("held = %v, want the run Elk listed", clear.Held)
+			}
+		})
+	}
+}
+
+// A work order that quotes the phrase in a task's own text is still a work
+// order.
+func TestClaimRunWorkOrderQuotingNotHandedOutIsStillClaimed(t *testing.T) {
+	s := elktest.New(t, testToken)
+	s.Text("claim_run", "Claimed Elk run `run-8` (contract v2).\n\n**Direction:** fix the reply \"Not handed out: run\"")
+	c := newClient(t, s)
+
+	wo, err := c.ClaimRun(context.Background(), elk.ClaimRequest{Queue: "mac-claude"})
+	if err != nil || wo.RunID != "run-8" {
+		t.Fatalf("wo = %+v, err = %v, want run-8 claimed", wo, err)
+	}
+}
+
+// A reply Rein cannot read is its own error, carrying Elk's first line, so the
+// runner can say what Elk answered and not that Elk was unreachable.
+func TestClaimRunUnreadReplyCarriesElksFirstLine(t *testing.T) {
+	s := elktest.New(t, testToken)
+	s.Text("claim_run", "Held back: the queue is being rebalanced.\nTry again shortly.")
+	c := newClient(t, s)
+
+	_, err := c.ClaimRun(context.Background(), elk.ClaimRequest{Queue: "mac-claude"})
+	var unread *elk.UnreadClaimReplyError
+	if !errors.As(err, &unread) {
+		t.Fatalf("err = %v (%T), want *UnreadClaimReplyError", err, err)
+	}
+	if unread.Text != "Held back: the queue is being rebalanced." {
+		t.Errorf("text = %q, want Elk's first line", unread.Text)
+	}
+	if errors.Is(err, elk.ErrNoWork) || elk.ClaimMayHaveLanded(err) {
+		t.Errorf("an unread reply was taken for no work or a lost claim: %v", err)
+	}
+}
+
 func TestReportProgressCancellationIsNotAnIsError(t *testing.T) {
 	// The whole point: Elk answers a cancelled run with plain text and no
 	// isError, deliberately, so that a heartbeat "must always stay open". A
