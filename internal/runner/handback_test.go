@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -31,6 +32,29 @@ func reportedInterrupted(h *harness, runID string) bool {
 		}
 	}
 	return false
+}
+
+// leaveDeadRun leaves what a runner that died mid-run leaves: a log, and a
+// meta still `running`, last written lastSeen ago. The pid is this process's
+// own, which at startup can only be an earlier life's (runlog.SettleDead).
+// Written as files, with nothing held open, as after a real death.
+func leaveDeadRun(t *testing.T, logs *runlog.Store, m runlog.Meta, lastSeen time.Duration) {
+	t.Helper()
+	m.Status, m.PID = runlog.StatusRunning, os.Getpid()
+	m.StartedAt = time.Now().Add(-lastSeen - time.Minute)
+	meta, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Add(-lastSeen)
+	for path, body := range map[string][]byte{logs.LogPath(m.RunID): nil, logs.MetaPath(m.RunID): meta} {
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // The 2026-11-20 finding on fij-claude: `rein service stop` while a run was in
@@ -108,19 +132,7 @@ func TestStartupHandsBackRunsItNoLongerDrives(t *testing.T) {
 	logs := openRunLogs(t)
 	label := h.cfg.QueueLabel(h.cfg.Queues[0])
 
-	// Left `running` by a runner that is gone. The pid is this process's own,
-	// which at startup can only be an earlier life's (runlog.SettleDead).
-	leave := func(m runlog.Meta, lastSeen time.Duration) {
-		t.Helper()
-		m.StartedAt = time.Now().Add(-lastSeen - time.Minute)
-		logs.Create(m)
-		at := time.Now().Add(-lastSeen)
-		for _, p := range []string{logs.LogPath(m.RunID), logs.MetaPath(m.RunID)} {
-			if err := os.Chtimes(p, at, at); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
+	leave := func(m runlog.Meta, lastSeen time.Duration) { leaveDeadRun(t, logs, m, lastSeen) }
 	leave(runlog.Meta{RunID: "run-dead", Queue: label, Workspace: space, Worktree: "/gone/run-dead",
 		Branch: "rein/run-run-dead", SessionID: "s-1"}, 20*time.Second)
 	// Too long ago: the lease may have lapsed and somebody else may hold it.
@@ -176,8 +188,8 @@ func TestStartupHandsBackRunsItNoLongerDrives(t *testing.T) {
 func TestStartupSubmitsNothingForARunElkSaysIsOver(t *testing.T) {
 	h := newHarness(t)
 	logs := openRunLogs(t)
-	logs.Create(runlog.Meta{RunID: "run-dead", Queue: h.cfg.QueueLabel(h.cfg.Queues[0]), Workspace: space,
-		Worktree: "/gone/run-dead"})
+	leaveDeadRun(t, logs, runlog.Meta{RunID: "run-dead", Queue: h.cfg.QueueLabel(h.cfg.Queues[0]), Workspace: space,
+		Worktree: "/gone/run-dead"}, 20*time.Second)
 	h.elk.Text("report_progress", "Not recorded: The user cancelled this run — STOP work on it now.")
 
 	if err := h.run(runner.Options{Logs: logs}); err != nil {
