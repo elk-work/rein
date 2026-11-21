@@ -243,7 +243,7 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		}
 		return qr.stuckCode(ctx, wo, title, err.Error()+
 			"\n\nThis is a local problem on the machine serving queue "+qr.q.Name+
-			" — a missing binary or an expired vendor login. Nothing was started.", code)
+			" — a missing or outdated binary, or an expired vendor login. Nothing was started.", code)
 	}
 
 	qr.setPreflightState("ready")

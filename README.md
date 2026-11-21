@@ -422,7 +422,11 @@ deny rules for `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`,
 `~/Movies`, `~/Music` and iCloud Drive, which Claude Code applies in every
 permission mode, `full` included, to its file tools and to the file commands
 it recognises in a shell. A folder holding the run's own repository stays
-open. macOS asks about those folders with no warning the first time a
+open, and the daemon opens every configured repository as it starts, so a
+repository kept in Documents makes macOS ask then rather than at the first
+task. Claude Code 2.1.228 or later is needed (older versions do not apply
+these rules to file writes): on an older one a run stops before it starts
+and says which version is installed. macOS asks about those folders with no warning the first time a
 background program touches one, so without this a run could raise that
 question in the middle of the night. To let a queue in, enrol it with
 `--personal-folders` (or set `personal_folders = true` on the queue) and
