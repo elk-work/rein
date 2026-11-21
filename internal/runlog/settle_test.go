@@ -24,12 +24,18 @@ func TestSettleDeadMarksOnlyRunsWhoseRunnerIsGone(t *testing.T) {
 	mk("no-pid", 0, StatusRunning)
 	mk("done", 4001, StatusSubmitted)
 
-	n, err := s.settleDead(4003, func(pid int) bool { return pid == 4002 || pid == 4003 })
+	settled, err := s.settleDead(4003, func(pid int) bool { return pid == 4002 || pid == 4003 })
 	if err != nil {
 		t.Fatal(err)
 	}
+	n := len(settled)
 	if n != 2 {
 		t.Fatalf("settled %d, want 2", n)
+	}
+	for _, d := range settled {
+		if d.LastActivity.IsZero() || d.Status != StatusInterrupted {
+			t.Fatalf("settled run %s: last activity %v, status %s", d.RunID, d.LastActivity, d.Status)
+		}
 	}
 	want := map[string]Status{
 		"dead": StatusInterrupted, "reused-pid": StatusInterrupted,

@@ -20,15 +20,34 @@ import (
 // like any other. A meta whose PID is alive in another process is left alone —
 // a second `rein run` on the same home may own it.
 func (s *Store) SettleDead() (int, error) {
+	dead, err := s.SettleDeadRuns()
+	return len(dead), err
+}
+
+// DeadRun is a run [Store.SettleDeadRuns] settled: its meta as settled, and
+// when its log was last written — the last moment the runner that died is
+// known to have been driving it.
+type DeadRun struct {
+	Meta
+	LastActivity time.Time
+}
+
+// SettleDeadRuns is [Store.SettleDead], naming the runs it settled, so the
+// runner can hand each one's claim back to Elk rather than leave Elk showing
+// a run nobody drives until its lease lapses.
+func (s *Store) SettleDeadRuns() ([]DeadRun, error) {
 	return s.settleDead(os.Getpid(), pidAlive)
 }
 
-func (s *Store) settleDead(self int, alive func(pid int) bool) (int, error) {
+func (s *Store) settleDead(self int, alive func(pid int) bool) ([]DeadRun, error) {
+	if s == nil {
+		return nil, nil
+	}
 	active, err := s.Active()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var dead []DeadRun
 	for _, m := range active {
 		if m.PID != 0 && m.PID != self && alive(m.PID) {
 			continue
@@ -38,6 +57,14 @@ func (s *Store) settleDead(self int, alive func(pid int) bool) (int, error) {
 			// who drives it; guessing would settle a live run.
 			continue
 		}
+		// Read before the meta is rewritten below: the newer of the two
+		// files is the last thing the dead runner wrote about this run.
+		last := m.StartedAt
+		for _, path := range []string{s.LogPath(m.RunID), s.MetaPath(m.RunID)} {
+			if fi, err := os.Stat(path); err == nil && fi.ModTime().After(last) {
+				last = fi.ModTime()
+			}
+		}
 		m.Status = StatusInterrupted
 		// Its worktree, if it got that far, was never reaped by the runner
 		// that died.
@@ -46,9 +73,9 @@ func (s *Store) settleDead(self int, alive func(pid int) bool) (int, error) {
 			m.EndedAt = time.Now()
 		}
 		if err := writeMetaFile(s.MetaPath(m.RunID), m); err != nil {
-			return n, err
+			return dead, err
 		}
-		n++
+		dead = append(dead, DeadRun{Meta: m, LastActivity: last})
 	}
-	return n, nil
+	return dead, nil
 }

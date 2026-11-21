@@ -373,6 +373,11 @@ type Runner struct {
 	// reap mark it could not clear yet (reapowed.go). One goroutine owns it.
 	reapedUnmarked map[string]bool
 
+	// deadRuns are the runs an earlier Rein on this machine was driving when
+	// it died, settled at startup. Written once in Run before any queue
+	// serves, then only read (handback.go).
+	deadRuns []runlog.DeadRun
+
 	opts   Options
 	queues []config.Queue
 	gate   *slotGate
@@ -625,11 +630,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Before any run of this process exists: a `running` meta whose runner
 	// died is settled, so it stops holding the log and check prunes
 	// (ark:rein#95).
-	if n, err := r.opts.Logs.SettleDead(); err != nil {
+	// Each is also handed back to Elk by its queue, before that queue claims
+	// anything (handback.go).
+	dead, err := r.opts.Logs.SettleDeadRuns()
+	if err != nil {
 		r.logf("run logs: could not settle runs left running: %v", err)
-	} else if n > 0 {
+	}
+	if n := len(dead); n > 0 {
 		r.logf("run logs: %d run(s) were left running by a runner that died; marked interrupted", n)
 	}
+	r.deadRuns = dead
 
 	// And the worktrees earlier runs left in place, now and on a timer
 	// (ark:rein#99). Not under wg: it ends with the loop, not before it.
@@ -792,6 +802,12 @@ type queueRunner struct {
 	// may have landed without its reply; cleared by a clear answer that
 	// listed nothing left to take back. Only the serve goroutine touches it.
 	lookForHeld bool
+
+	// started is set once Elk has recorded anything this runner said on the
+	// current run, which is what turns Elk's hold into a running claim.
+	// handedBack is set once the run was handed back (handback.go).
+	started    atomic.Bool
+	handedBack bool
 	// declined is the runs this queue was handed and left unstarted because
 	// their repository folder cannot be read, and declineWhy the reason the
 	// last claim gave (repo_access.go, ark:rein#172). Serve goroutine only.
@@ -997,6 +1013,9 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 	}
 
 	qr.resumeReviews(ctx)
+	// Before the first claim: runs an earlier Rein here was driving when it
+	// died go back to Elk now, not when their lease lapses (handback.go).
+	qr.handBackDead(ctx)
 	// A runner starting up may hold runs from a process that died, and a
 	// run whose claim reply was lost is held the same way (claim_retry.go).
 	// Not a hosted container: it starts fresh for one run, and a run its queue

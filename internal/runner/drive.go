@@ -42,6 +42,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	}
 	qr.redact.Store(secretenv.NewRedactor(qr.withOwnToken(fetchSecrets)))
 	qr.replyOpened = time.Time{} // a window is one run's
+	// A run Elk handed over again was started by whoever held it before.
+	qr.started.Store(wo.Rehanded)
+	qr.handedBack = false
 	qr.openLog(wo)
 	// Cleanup is a stack rather than defers so a review wait can take it with
 	// it (review_detach.go). The serve loop then claims the queue's next run
@@ -51,6 +54,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	st := &driveState{cur: qr}
 	defer func() {
 		if !st.detached {
+			// First, before the worktree is reaped: a stop that cut the run
+			// short anywhere above hands its claim back (handback.go).
+			st.cur.handBackInterrupted(ctx, wo, nil, nil)
 			clean.run()
 		}
 	}()
@@ -616,8 +622,10 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 //
 // stop is true when the run must go no further — a person cancelled it while
 // it waited, or Rein is shutting down — and err is then what drive returns.
-// Neither submits anything: a cancelled run is not Rein's to write over, and a
-// shutdown leaves the claim to lapse, as Ctrl-C does mid-session.
+// A cancelled run is not Rein's to write over, so nothing is submitted for it.
+// A shutdown is the caller's to settle: the wait is carried across the restart
+// where Rein keeps state, and the claim is handed back where it does not
+// (review_detach.go, handback.go).
 func (qr *queueRunner) retakeSlot(ctx context.Context, wo *elk.WorkOrder, round int, pending *elk.Usage) (stop bool, err error) {
 	if qr.slot != nil && !qr.slot.isReleased() {
 		return false, nil
@@ -986,10 +994,13 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 				stoppedBody(why, qr.runDetails(wt, repo, spec, sess.ID()), out), pending)
 
 		case ctx.Err() != nil:
-			// The daemon is shutting down. Stop the agent and let the claim
-			// lapse rather than reporting an outcome that did not happen.
+			// The daemon is shutting down. Stop the agent and hand the claim
+			// back to Elk at once, as interrupted: never an outcome that did
+			// not happen, and never a claim left to lapse, which Elk shows as
+			// a run in progress that nobody is driving (handback.go).
 			qr.interrupt(sess)
-			qr.logf("run %s: interrupted by shutdown; the claim will lapse and the run returns to the queue", wo.RunID)
+			qr.logf("run %s: interrupted by shutdown", wo.RunID)
+			qr.handBackInterrupted(ctx, wo, wt, pending)
 			return sessionResult{done: true}, ctx.Err()
 		}
 
@@ -1788,6 +1799,7 @@ func (qr *queueRunner) reportProgress(ctx context.Context, p elk.Progress, pendi
 	if err != nil {
 		return err
 	}
+	qr.started.Store(true)
 	qr.holdComments(res.Text)
 	qr.log.Runner(runlog.KindReport, "report_progress %s: %s", p.Kind, firstLine(p.Body))
 	if p.Usage != nil {
