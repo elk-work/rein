@@ -307,10 +307,11 @@ const SecretsFileName = "secrets.json"
 var ErrItemNotFound = errors.New("keyring: no such keychain item")
 
 // reservedItemServices are the keychain services a queue's secrets map may
-// never name: Rein's own per-queue Elk tokens, and a Wrangler queue's owner
-// connector (internal/adapter/claude). Either one handed to a run would be a
+// never name: Rein's own per-queue Elk tokens, a Wrangler queue's owner
+// connector (internal/adapter/claude), and each queue's vault broker caller
+// token ([BrokerService]). Any one handed to a run through a map would be a
 // credential for a different queue, or a different person, than the run's own.
-var reservedItemServices = map[string]bool{Service: true, "elk-connector-url": true}
+var reservedItemServices = map[string]bool{Service: true, "elk-connector-url": true, BrokerService: true}
 
 // ReservedItemService reports whether a secrets map may not name this service.
 func ReservedItemService(service string) bool { return reservedItemServices[service] }
@@ -496,4 +497,131 @@ func (f *FileItems) DeleteItem(service, account string) error {
 		return err
 	}
 	return f.edit(func(m map[string]string) { delete(m, service+"/"+account) })
+}
+
+// ---------------------------------------------------------------------------
+// Vault broker caller tokens (ark:rein#175).
+//
+// Elk's `vault-run` reads secrets through Scout's vault broker only when the
+// run's environment carries a caller token (ELK_CONNECTOR_TOKEN); without one
+// every read falls back to the Management API. A queue's own Elk token is the
+// one Rein claims and reports with, which a session must never hold
+// (ark:rein#112), so the broker gets a token of its own: one keychain item per
+// queue, at service [BrokerService] and account "<workspace>/<queue>", which
+// Rein reads at the start of each of that queue's runs.
+//
+// The service is reserved, so a secrets map can never name another queue's
+// item. Rein reads and writes it through [BrokerTokens] instead of
+// [ItemReader], which refuses reserved services.
+
+// BrokerService is the keychain service every queue's vault broker caller
+// token is filed under.
+const BrokerService = "rein-vault-broker"
+
+// BrokerTokens reads and writes the per-queue vault broker caller tokens.
+// [OSItems] and [FileItems] implement it, so the [ItemReader] Rein already
+// opens serves it too; a reader that does not is simply a machine with none.
+type BrokerTokens interface {
+	// BrokerToken returns the queue's token, or a wrapped [ErrItemNotFound].
+	// An error never carries the value.
+	BrokerToken(workspace, queue string) (string, error)
+	SetBrokerToken(workspace, queue, token string) error
+	// DeleteBrokerToken removes the queue's token; a missing one is not an
+	// error.
+	DeleteBrokerToken(workspace, queue string) error
+}
+
+// BrokerItem describes a queue's broker token item for a message — never its
+// value.
+func BrokerItem(workspace, queue string) string {
+	return fmt.Sprintf("service %q, account %q", BrokerService, Key{Workspace: workspace, Queue: queue}.String())
+}
+
+// BrokerToken implements [BrokerTokens].
+func (OSItems) BrokerToken(workspace, queue string) (string, error) {
+	k, err := validate(workspace, queue)
+	if err != nil {
+		return "", err
+	}
+	v, err := keyring.Get(BrokerService, k.String())
+	if errors.Is(err, keyring.ErrNotFound) {
+		return "", fmt.Errorf("%w: %s", ErrItemNotFound, BrokerItem(workspace, queue))
+	}
+	if err != nil {
+		return "", fmt.Errorf("keyring: reading %s failed (the keychain refused or is locked)", BrokerItem(workspace, queue))
+	}
+	return v, nil
+}
+
+// SetBrokerToken implements [BrokerTokens].
+func (OSItems) SetBrokerToken(workspace, queue, token string) error {
+	k, err := validate(workspace, queue)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return errors.New("keyring: refusing to store an empty token")
+	}
+	if err := keyring.Set(BrokerService, k.String(), token); err != nil {
+		return fmt.Errorf("keyring: storing %s failed (the keychain refused or is locked)", BrokerItem(workspace, queue))
+	}
+	return nil
+}
+
+// DeleteBrokerToken implements [BrokerTokens].
+func (OSItems) DeleteBrokerToken(workspace, queue string) error {
+	k, err := validate(workspace, queue)
+	if err != nil {
+		return err
+	}
+	if err := keyring.Delete(BrokerService, k.String()); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		return fmt.Errorf("keyring: removing %s failed", BrokerItem(workspace, queue))
+	}
+	return nil
+}
+
+// BrokerToken implements [BrokerTokens].
+func (f *FileItems) BrokerToken(workspace, queue string) (string, error) {
+	k, err := validate(workspace, queue)
+	if err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	data, err := os.ReadFile(f.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("keyring: read %s: %w", f.path, err)
+	}
+	m := map[string]string{}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &m); err != nil {
+			return "", fmt.Errorf("keyring: parse %s: not a JSON object of strings", f.path)
+		}
+	}
+	v, ok := m[BrokerService+"/"+k.String()]
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrItemNotFound, BrokerItem(workspace, queue))
+	}
+	return v, nil
+}
+
+// SetBrokerToken implements [BrokerTokens].
+func (f *FileItems) SetBrokerToken(workspace, queue, token string) error {
+	k, err := validate(workspace, queue)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return errors.New("keyring: refusing to store an empty token")
+	}
+	return f.edit(func(m map[string]string) { m[BrokerService+"/"+k.String()] = token })
+}
+
+// DeleteBrokerToken implements [BrokerTokens].
+func (f *FileItems) DeleteBrokerToken(workspace, queue string) error {
+	k, err := validate(workspace, queue)
+	if err != nil {
+		return err
+	}
+	return f.edit(func(m map[string]string) { delete(m, BrokerService+"/"+k.String()) })
 }

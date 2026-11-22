@@ -86,6 +86,7 @@ func TestSecretsValidation(t *testing.T) {
 		{"no service", "[queues.secrets]\nTOKEN = \"/acct\"", "names no keychain service"},
 		{"rein's own tokens", "[queues.secrets]\nTOKEN = \"rein/Elk Scout/mac-claude\"", "Rein's own credentials"},
 		{"wrangler connector", "[queues.secrets]\nTOKEN = \"elk-connector-url\"", "Rein's own credentials"},
+		{"another queue's broker token", "[queues.secrets]\nTOKEN = \"rein-vault-broker/Elk Scout/mac-codex\"", "Rein's own credentials"},
 		{"vault on a scoped queue", "capabilities = [\"supabase-vault\"]\n[queues.secrets]\nTOKEN = \"svc\"", "cannot declare supabase-vault"},
 		{"credential outside the map", "capabilities = [\"OTHER_KEY\"]\n[queues.secrets]\nTOKEN = \"svc\"", "add it there"},
 		{"vault on an empty scoped queue", "scoped_secrets = true\ncapabilities = [\"supabase-vault\"]", "cannot declare supabase-vault"},

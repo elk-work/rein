@@ -644,9 +644,10 @@ func ParseSecretItem(s string) (service, account string, err error) {
 }
 
 // reservedSecretServices mirrors internal/keyring's reserved services — Rein's
-// own per-queue Elk tokens and the Wrangler's owner connector — duplicated so config
-// stays free of the keyring dependency. The keyring refuses them as well.
-var reservedSecretServices = map[string]bool{"rein": true, "elk-connector-url": true}
+// own per-queue Elk tokens, the Wrangler's owner connector and each queue's
+// vault broker caller token — duplicated so config stays free of the keyring
+// dependency. The keyring refuses them as well.
+var reservedSecretServices = map[string]bool{"rein": true, "elk-connector-url": true, "rein-vault-broker": true}
 
 // Scoped reports whether runs on this queue get only their own secrets.
 // MaxParallel is the most `parallel` may say. It is far above any machine's

@@ -300,8 +300,12 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		// Every run is scoped; a queue without a secrets map keeps, beyond
 		// the system variables, only what it names (env.go).
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
-		if len(providerKey) > 0 {
-			values := map[string]string{}
+		// The vault broker's caller token, for a queue that keeps the vault
+		// (broker.go, ark:rein#175). Optional: with none, vault-run falls
+		// back to the Management API as before.
+		values := map[string]string{}
+		qr.withBrokerToken(&spec, values, wo.RunID)
+		if len(providerKey) > 0 || len(values) > 0 {
 			for k, v := range fetchSecrets {
 				values[k] = v
 			}
@@ -422,6 +426,9 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		spec.SystemPrompt = scopedSecretsPromptNames(spec.SystemPrompt, names)
 		spec.SystemPrompt = strings.ReplaceAll(spec.SystemPrompt, "from this machine's keychain", "from the hosted environment")
 	}
+	if spec.Env[BrokerTokenEnv] != "" && !qr.q.Scoped() && !qr.r.opts.Hosted {
+		spec.SystemPrompt += "\n\n" + brokerTokenNote
+	}
 	if len(advisory) > 0 {
 		spec.SystemPrompt += "\n\nPreflight treated these unknown packet requirements as advisory: " + strings.Join(advisory, ", ") + ". Proceed; these names do not block this run."
 	}
@@ -464,6 +471,9 @@ func (qr *queueRunner) driveWithoutRepo(ctx context.Context, a adapter.Adapter, 
 	spec.SystemPrompt = runSystemPrompt(qr.q, cycle) +
 		"\n\n### Declared environment capabilities — preflight list\n" + strings.Join(host.Names(), ", ") +
 		"\n\n" + noRepoInstructions
+	if spec.Env[BrokerTokenEnv] != "" && !qr.q.Scoped() && !qr.r.opts.Hosted {
+		spec.SystemPrompt += "\n\n" + brokerTokenNote
+	}
 	if len(advisory) > 0 {
 		spec.SystemPrompt += "\n\nPreflight treated these unknown packet requirements as advisory: " + strings.Join(advisory, ", ") + ". Proceed; these names do not block this run."
 	}
