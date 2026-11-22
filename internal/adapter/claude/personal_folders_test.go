@@ -22,10 +22,33 @@ func specFor(t *testing.T, personalFolders bool) adapter.RunSpec {
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
 
+// useHomeFolders puts the person's folders at adapter.PersonalFolders under
+// home, as on a Mac, so a test means the same on every platform: on Windows
+// the real lookup would find the CI machine's own known folders.
+func useHomeFolders(t *testing.T) {
+	useFolders(t, func(home string) []adapter.PersonalFolder {
+		if home == "" {
+			return nil
+		}
+		var out []adapter.PersonalFolder
+		for _, f := range adapter.PersonalFolders {
+			out = append(out, adapter.PersonalFolder{Name: f, Path: filepath.Join(home, filepath.FromSlash(f))})
+		}
+		return out
+	})
+}
+
+func useFolders(t *testing.T, at func(string) []adapter.PersonalFolder) {
+	was := personalFolderPaths
+	personalFolderPaths = at
+	t.Cleanup(func() { personalFolderPaths = was })
+}
+
 // Elk #1832: by default a worker stays out of the person's own folders, by a
 // Read and an Edit deny rule for each, written from home so Claude Code
 // applies them wherever the run's worktree is.
 func TestPersonalFolderDeniesCoverEveryFolderByDefault(t *testing.T) {
+	useHomeFolders(t)
 	home := t.TempDir()
 	worktree := filepath.Join(home, "dev", "app")
 	deny := personalFolderDenies(home, worktree)
@@ -49,6 +72,7 @@ func TestPersonalFolderDeniesCoverEveryFolderByDefault(t *testing.T) {
 // A run restarted after a stall keeps the list it started with, even if the
 // agent rewrote its worktree's .git file to point into Documents meanwhile.
 func TestARunKeepsTheDenyListItStartedWith(t *testing.T) {
+	useHomeFolders(t)
 	home := t.TempDir()
 	worktree := filepath.Join(home, ".rein", "work", "run1")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
@@ -68,6 +92,7 @@ func TestARunKeepsTheDenyListItStartedWith(t *testing.T) {
 
 // Case is ignored only where the disk usually ignores it.
 func TestCaseIsIgnoredOnlyOnMacAndWindows(t *testing.T) {
+	useHomeFolders(t)
 	home := t.TempDir()
 	deny := personalFolderDenies(home, filepath.Join(home, "documents", "app"))
 	opened := !slices.Contains(deny, "Read(~/Documents/**)")
@@ -80,6 +105,7 @@ func TestCaseIsIgnoredOnlyOnMacAndWindows(t *testing.T) {
 // worker, whether the run's worktree sits there or only the repository's git
 // data does; the other folders are still denied.
 func TestAFolderHoldingTheRunsOwnRepositoryIsLeftOpen(t *testing.T) {
+	useHomeFolders(t)
 	home := t.TempDir()
 	inDocs := filepath.Join(home, "Documents", "GitHub", "site")
 	deny := personalFolderDenies(home, inDocs)
@@ -114,6 +140,7 @@ func TestAFolderHoldingTheRunsOwnRepositoryIsLeftOpen(t *testing.T) {
 // The rules reach Claude Code through the one --settings file, beside the
 // watchdog's hooks; a queue that allows personal folders gets none.
 func TestBuildArgsWritesTheFolderRulesUnlessTheQueueAllowsThem(t *testing.T) {
+	useHomeFolders(t)
 	t.Setenv("HOME", t.TempDir())
 	a := &Adapter{DisableWatchdog: true}
 
@@ -140,5 +167,39 @@ func TestBuildArgsWritesTheFolderRulesUnlessTheQueueAllowsThem(t *testing.T) {
 	}
 	if slices.Contains(args, "--settings") {
 		t.Errorf("allowed queue still got a settings file: %v", args)
+	}
+}
+
+// A folder outside home, such as a Windows Documents that OneDrive moved to
+// another drive, is denied by its absolute path from the filesystem root; a
+// folder moved within home is still written from home.
+func TestAFolderOutsideHomeIsDeniedByItsRealPath(t *testing.T) {
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	moved := filepath.Join(elsewhere, "OneDrive", "Documents")
+	useFolders(t, func(string) []adapter.PersonalFolder {
+		return []adapter.PersonalFolder{
+			{Name: "Documents", Path: moved},
+			{Name: "Pictures", Path: filepath.Join(home, "OneDrive", "Pictures")},
+		}
+	})
+	deny := personalFolderDenies(home, filepath.Join(home, "dev", "app"))
+	root := "/" + posixPath(moved)
+	for _, want := range denyRules(root) {
+		if !slices.Contains(deny, want) {
+			t.Errorf("missing %s in %v", want, deny)
+		}
+	}
+	if !strings.HasPrefix(root, "//") || strings.Contains(root, `\`) || strings.Contains(root, ":") {
+		t.Errorf("rule root %q is not a POSIX path from the filesystem root", root)
+	}
+	if !slices.Contains(deny, "Read(~/OneDrive/Pictures/**)") {
+		t.Errorf("Pictures moved within home should be written from home: %v", deny)
+	}
+
+	// A repository kept in the moved Documents leaves it open.
+	deny = personalFolderDenies(home, filepath.Join(moved, "GitHub", "site"))
+	if slices.Contains(deny, "Read("+root+"/**)") {
+		t.Errorf("worktree in the moved Documents was denied: %v", deny)
 	}
 }

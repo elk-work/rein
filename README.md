@@ -421,7 +421,10 @@ OS user, or a separate machine, per customer. The detail is in
 deny rules for `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`,
 `~/Movies`, `~/Music` and iCloud Drive, which Claude Code applies in every
 permission mode, `full` included, to its file tools and to the file commands
-it recognises in a shell. A folder holding the run's own repository stays
+it recognises in a shell. On Windows the rules follow where each folder
+really is (Documents, Desktop, Downloads, Pictures, Videos and Music as
+Windows reports them, so a Documents that OneDrive's folder backup moved is
+covered there), plus OneDrive's own folder. A folder holding the run's own repository stays
 open, and the daemon opens every configured repository as it starts, so a
 repository kept in Documents makes macOS ask then rather than at the first
 task. Claude Code 2.1.228 or later is needed (older versions do not apply
