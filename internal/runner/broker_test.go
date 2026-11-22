@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/elk-work/rein/internal/config"
 	"github.com/elk-work/rein/internal/keyring"
 	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/runner"
@@ -149,6 +150,33 @@ func TestABrokerTokenReinWillNotHandOverIsRefused(t *testing.T) {
 				t.Errorf("the log does not say why:\n%s", h.log)
 			}
 		})
+	}
+}
+
+func TestAnotherQueuesElkTokenIsNeverABrokerToken(t *testing.T) {
+	h := newHarness(t)
+	const otherToken = "other_queue_token_0123456789abcdef"
+	h.cfg.Queues = append(h.cfg.Queues, config.Queue{Name: "mac-codex", AgentKind: kind})
+	if err := h.store.Set(space, "mac-codex", otherToken); err != nil {
+		t.Fatal(err)
+	}
+	h.elk.Text("claim_run", order("run-1"))
+	if err := h.run(runner.Options{
+		Secrets:          newFakeBroker(space+"/"+queue, otherToken),
+		HostCapabilities: machineHolds("supabase-vault"),
+		Queues:           []string{queue},
+	}); err != nil {
+		t.Fatalf("%v\nlog:\n%s", err, h.log)
+	}
+	specs := h.agent.Specs()
+	if len(specs) == 0 {
+		t.Fatalf("the run did not start\nlog:\n%s", h.log)
+	}
+	if _, ok := specs[0].Env[runner.BrokerTokenEnv]; ok {
+		t.Error("another queue's Elk token was handed to the run")
+	}
+	if !strings.Contains(h.log.String(), "a Rein queue's own Elk token") {
+		t.Errorf("the log does not say why:\n%s", h.log)
 	}
 }
 

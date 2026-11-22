@@ -105,3 +105,30 @@ func TestSecretBrokerStoresAQueuesTokenAndNeverPrintsIt(t *testing.T) {
 		t.Fatal("rm left the token")
 	}
 }
+
+func TestSecretBrokerRefusesAQueuesOwnElkToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	t.Setenv(keyring.EnvBackend, "file")
+	cfg := config.Config{HostID: "mac", Workspace: "Elk Scout", Queues: []config.Queue{{Name: "mac-claude", AgentKind: "claude"}}}
+	if err := cfg.SaveFile(filepath.Join(home, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	const own = "queue_own_token_0123456789abcdef"
+	if err := keyring.NewFileStore(filepath.Join(home, keyring.FileName)).Set("Elk Scout", "mac-claude", own); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	root := cli.NewRootCommand("v0.0.0-test")
+	root.SetArgs([]string{"secret", "broker", "set"})
+	root.SetIn(strings.NewReader(own))
+	root.SetOut(&out)
+	root.SetErr(&out)
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "own Elk token") || strings.Contains(out.String()+err.Error(), own) {
+		t.Fatalf("err=%v out=%q", err, out.String())
+	}
+	if _, err := keyring.NewFileItems(filepath.Join(home, keyring.SecretsFileName)).BrokerToken("Elk Scout", "mac-claude"); err == nil {
+		t.Fatal("the queue's own token was stored as its broker token")
+	}
+}

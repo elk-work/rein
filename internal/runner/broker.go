@@ -6,7 +6,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/elk-work/rein/internal/adapter"
 	"github.com/elk-work/rein/internal/keyring"
+	"github.com/elk-work/rein/internal/runlog"
 	"github.com/elk-work/rein/internal/secretenv"
 )
 
@@ -60,6 +62,9 @@ func CheckBrokerToken(v string) error {
 // brokerToken reads this queue's vault broker caller token for one run. It
 // returns "" with a note for the run log when there is none to hand over; the
 // note names the item and never a value.
+//
+// A Wrangler cycle gets it too: it is the same queue's token, redacted the
+// same way, and the cycle's vault reads are as much the queue's as any run's.
 func (qr *queueRunner) brokerToken() (token, note string) {
 	if !qr.host.Has("supabase-vault") {
 		return "", ""
@@ -81,11 +86,54 @@ func (qr *queueRunner) brokerToken() (token, note string) {
 	if err := CheckBrokerToken(v); err != nil {
 		return "", "vault broker: the value at keychain " + item + " is " + err.Error() + ", so this run carries none"
 	}
-	if qr.elkToken != "" && v == qr.elkToken {
-		return "", "vault broker: the value at keychain " + item + " is this queue's own Elk token, which a run must " +
+	if qr.isQueueToken(v) {
+		return "", "vault broker: the value at keychain " + item + " is a Rein queue's own Elk token, which a run must " +
 			"never hold, so this run carries none; store a separate token for the broker"
 	}
 	return v, "vault broker: " + BrokerTokenEnv + " set for this run from keychain " + item
+}
+
+// isQueueToken reports whether v is the Elk token any queue on this machine
+// claims and reports with: this queue's, as it holds it now, or another's from
+// the token store. A run holding one could skip that queue's run connector
+// (ark:rein#112), so none is ever handed over as a broker token.
+func (qr *queueRunner) isQueueToken(v string) bool {
+	if qr.elkToken != "" && v == qr.elkToken {
+		return true
+	}
+	store := qr.r.opts.Store
+	if store == nil {
+		return false
+	}
+	for _, q := range qr.r.opts.Config.Queues {
+		ws := qr.r.opts.Config.WorkspaceFor(q)
+		if ws == "" {
+			continue
+		}
+		if tok, err := store.Get(ws, q.Name); err == nil && tok != "" && tok == v {
+			return true
+		}
+	}
+	return false
+}
+
+// withBrokerToken hands spec this queue's broker token, when it has one to
+// hand over, and adds it to values for the run's redactors. It logs why when
+// it does not.
+func (qr *queueRunner) withBrokerToken(spec *adapter.RunSpec, values map[string]string, runID string) {
+	broker, note := qr.brokerToken()
+	if note != "" {
+		qr.log.Runner(runlog.KindNote, "%s", note)
+		qr.logf("run %s: %s", runID, note)
+	}
+	if broker == "" {
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	spec.Env[BrokerTokenEnv] = broker
+	values[BrokerTokenEnv] = broker
 }
 
 // brokerTokenNote tells a run holding the caller token what it is, by name.

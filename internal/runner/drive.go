@@ -303,24 +303,14 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 		// The vault broker's caller token, for a queue that keeps the vault
 		// (broker.go, ark:rein#175). Optional: with none, vault-run falls
 		// back to the Management API as before.
-		broker, note := qr.brokerToken()
-		if note != "" {
-			qr.log.Runner(runlog.KindNote, "%s", note)
-			qr.logf("run %s: %s", wo.RunID, note)
-		}
-		if broker != "" {
-			spec.Env = map[string]string{BrokerTokenEnv: broker}
-		}
-		if len(providerKey) > 0 || broker != "" {
-			values := map[string]string{}
+		values := map[string]string{}
+		qr.withBrokerToken(&spec, values, wo.RunID)
+		if len(providerKey) > 0 || len(values) > 0 {
 			for k, v := range fetchSecrets {
 				values[k] = v
 			}
 			for k, v := range providerKey {
 				values[k] = v
-			}
-			if broker != "" {
-				values[BrokerTokenEnv] = broker
 			}
 			red := secretenv.NewRedactor(qr.withOwnToken(values))
 			qr.redact.Store(red)

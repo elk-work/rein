@@ -118,6 +118,10 @@ claims with and a run must never hold. Only a queue that keeps the vault
 			if err := runner.CheckBrokerToken(value); err != nil {
 				return fmt.Errorf("that value is %v; nothing was stored", err)
 			}
+			if isQueueToken(cmd, value) {
+				return errors.New("that value is a Rein queue's own Elk token, which a run must never hold; " +
+					"store a separate token for the broker. Nothing was stored")
+			}
 			if err := store.SetBrokerToken(ws, q.Name, value); err != nil {
 				return err
 			}
@@ -146,6 +150,34 @@ claims with and a run must never hold. Only a queue that keeps the vault
 	}
 	cmd.AddCommand(set, rm)
 	return cmd
+}
+
+// isQueueToken reports whether value is the Elk token any configured queue
+// claims with. A store that cannot be read is no answer; the run loop checks
+// again before a run is handed the token.
+func isQueueToken(cmd *cobra.Command, value string) bool {
+	path, err := resolveConfigPath(cmd)
+	if err != nil {
+		return false
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		return false
+	}
+	dir, err := config.Dir()
+	if err != nil {
+		return false
+	}
+	store, err := keyring.Open(dir)
+	if err != nil {
+		return false
+	}
+	for _, q := range cfg.Queues {
+		if tok, err := store.Get(cfg.WorkspaceFor(q), q.Name); err == nil && tok == value {
+			return true
+		}
+	}
+	return false
 }
 
 func brokerTarget(cmd *cobra.Command) (string, config.Queue, keyring.BrokerTokens, error) {

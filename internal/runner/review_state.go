@@ -193,6 +193,10 @@ func (qr *queueRunner) restoreReviewRuntime(c *reviewCont) error {
 		}
 	} else {
 		spec.PassEnv = qr.passEnv(spec.MCPServers != nil)
+		// Read again, as at the run's start: the saved prompt still says the
+		// run holds it (broker.go, ark:rein#175).
+		delete(spec.Env, BrokerTokenEnv)
+		qr.withBrokerToken(spec, values, c.wo.RunID)
 	}
 	if qr.q.AgentKind == geminiadapter.Kind {
 		if key := qr.storedGeminiKey(); key != "" {
