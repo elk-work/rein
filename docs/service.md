@@ -555,6 +555,33 @@ alone. Values never pass through Elk: the Elk app on the worker's own computer
 stores them with `rein secret set NAME` (value on stdin) under keychain
 service `elk-secret`.
 
+## The vault broker's caller token
+
+Elk's `vault-run` reads a secret through Scout's vault broker when the run's
+environment carries a caller token, and otherwise logs `vault broker
+no_connector; fell back to Management API` and reads it with the machine's
+Management API key. A queue with no secrets map that keeps the vault
+(`supabase-vault`) hands each run its own token, as `ELK_CONNECTOR_TOKEN`:
+
+```sh
+rein secret broker set --queue mac-claude   # the token on stdin
+rein secret broker rm --queue mac-claude
+```
+
+It is one keychain item per queue, at service `rein-vault-broker` and account
+`<workspace>/<queue>`, read fresh at the start of every run, so a new token
+takes effect at the next run without a restart. It joins every redactor of the
+run, as a mapped secret does, and the run's prompt names the variable and
+never the value. It must not be the queue's own Elk token, which Rein claims
+with and a run must never hold; Rein refuses that, a value shorter than eight
+characters, and anything the broker would not accept as a token. With no item,
+or one it refuses, the run goes ahead as before and the run log says why.
+A secrets map can never name a `rein-vault-broker` item, so no queue's run
+reaches another queue's token.
+
+It is per queue rather than minted per run because Elk mints run-bound tokens
+only for its cloud-hosted queues today; a machine has no call to mint one with.
+
 On Linux without a systemd user manager (including containers without a user
 bus), `rein service status` reports **service manager unavailable** and exits
 successfully. This is distinct from **not installed**. Unexpected errors such

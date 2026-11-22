@@ -52,7 +52,7 @@ func TestFileItemsCorruptFileNamesNoContent(t *testing.T) {
 func TestItemReadersRefuseReinsOwnServices(t *testing.T) {
 	gokeyring.MockInit()
 	for _, r := range []keyring.ItemReader{keyring.OSItems{}, keyring.NewFileItems(filepath.Join(t.TempDir(), "x.json"))} {
-		for _, svc := range []string{keyring.Service, "elk-connector-url"} {
+		for _, svc := range []string{keyring.Service, "elk-connector-url", keyring.BrokerService} {
 			if _, err := r.ReadItem(svc, "Elk Scout/mac-claude"); err == nil || !strings.Contains(err.Error(), "Rein's own") {
 				t.Errorf("%s reader read service %q: %v", r.Name(), svc, err)
 			}

@@ -61,3 +61,47 @@ func TestSecretSetRefusesABadNameAndAnEmptyValue(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q", code, errb)
 	}
 }
+
+func TestSecretBrokerStoresAQueuesTokenAndNeverPrintsIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	t.Setenv(keyring.EnvBackend, "file")
+	cfg := config.Config{HostID: "mac", Workspace: "Elk Scout", Queues: []config.Queue{{Name: "mac-claude", AgentKind: "claude"}}}
+	if err := cfg.SaveFile(filepath.Join(home, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	const value = "elkbroker_not-a-real-token_0123"
+	exec := func(stdin string, args ...string) (string, error) {
+		var out, errb bytes.Buffer
+		root := cli.NewRootCommand("v0.0.0-test")
+		root.SetArgs(args)
+		root.SetIn(strings.NewReader(stdin))
+		root.SetOut(&out)
+		root.SetErr(&errb)
+		err := root.Execute()
+		return out.String() + errb.String(), err
+	}
+	out, err := exec(value+"\n", "secret", "broker", "set", "--queue", "mac-claude")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if strings.Contains(out, value) {
+		t.Fatal("the token was printed")
+	}
+	items := keyring.NewFileItems(filepath.Join(home, keyring.SecretsFileName))
+	if got, err := items.BrokerToken("Elk Scout", "mac-claude"); err != nil || got != value {
+		t.Fatalf("read back: %v", err)
+	}
+
+	// A value the broker would refuse is never stored.
+	if out, err := exec("not a token at all\n", "secret", "broker", "set"); err == nil || strings.Contains(out+err.Error(), "not a token at all") {
+		t.Fatalf("stored or echoed a bad value: %v\n%s", err, out)
+	}
+
+	if out, err := exec("", "secret", "broker", "rm"); err != nil {
+		t.Fatalf("rm: %v\n%s", err, out)
+	}
+	if _, err := items.BrokerToken("Elk Scout", "mac-claude"); err == nil {
+		t.Fatal("rm left the token")
+	}
+}

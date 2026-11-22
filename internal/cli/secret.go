@@ -73,8 +73,111 @@ app; Rein takes that choice at its next check-in.`,
 			return nil
 		},
 	}
+	cmd.AddCommand(set, rm, newBrokerTokenCommand())
+	return cmd
+}
+
+// newBrokerTokenCommand: store or remove one queue's vault broker caller token
+// (ark:rein#175). Each of the queue's runs is handed it as ELK_CONNECTOR_TOKEN,
+// so vault-run reads through Elk's vault broker instead of falling back to the
+// Management API.
+func newBrokerTokenCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "broker",
+		Short: "Store or remove a queue's vault broker caller token",
+		Long: `Store the token a queue's runs hand to Elk's vault broker, so vault-run
+reads through the broker instead of falling back to the Management API.
+
+  rein secret broker set --queue mac-claude    reads the token from stdin
+  rein secret broker rm --queue mac-claude
+
+The token is read from stdin only, stored in this computer's keychain under
+service "` + keyring.BrokerService + `", account "<workspace>/<queue>", and never sent
+to Elk, printed or logged. Each run of the queue reads it fresh and gets it as
+` + runner.BrokerTokenEnv + `; it must not be the queue's own Elk token, which Rein
+claims with and a run must never hold. Only a queue that keeps the vault
+(supabase-vault) and has no secrets map uses it.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error { return cmd.Help() },
+	}
+	cmd.PersistentFlags().String("queue", "", "the queue, as name or workspace/name (default: the only queue)")
+	set := &cobra.Command{
+		Use:   "set",
+		Short: "Store the queue's token, read from stdin",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, q, store, err := brokerTarget(cmd)
+			if err != nil {
+				return err
+			}
+			value, err := readSecretValue(cmd.InOrStdin())
+			if err != nil {
+				return err
+			}
+			value = strings.TrimSpace(value)
+			if err := runner.CheckBrokerToken(value); err != nil {
+				return fmt.Errorf("that value is %v; nothing was stored", err)
+			}
+			if err := store.SetBrokerToken(ws, q.Name, value); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "stored the vault broker token for %s/%s; its next run gets it\n", ws, q.Name)
+			if q.Scoped() {
+				fmt.Fprintf(cmd.OutOrStdout(), "note: %s has a secrets map, so its runs do not use it\n", q.Name)
+			}
+			return nil
+		},
+	}
+	rm := &cobra.Command{
+		Use:   "rm",
+		Short: "Remove the queue's token",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, q, store, err := brokerTarget(cmd)
+			if err != nil {
+				return err
+			}
+			if err := store.DeleteBrokerToken(ws, q.Name); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed the vault broker token for %s/%s\n", ws, q.Name)
+			return nil
+		},
+	}
 	cmd.AddCommand(set, rm)
 	return cmd
+}
+
+func brokerTarget(cmd *cobra.Command) (string, config.Queue, keyring.BrokerTokens, error) {
+	path, err := resolveConfigPath(cmd)
+	if err != nil {
+		return "", config.Queue{}, nil, err
+	}
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		return "", config.Queue{}, nil, err
+	}
+	q, err := pickQueue(cmd, cfg)
+	if err != nil {
+		return "", q, nil, err
+	}
+	ws := cfg.WorkspaceFor(q)
+	if ws == "" {
+		return "", q, nil, fmt.Errorf("queue %s has no workspace; re-enrol it first", q.Name)
+	}
+	dir, err := config.Dir()
+	if err != nil {
+		return "", q, nil, err
+	}
+	w, err := keyring.OpenItemWriter(dir)
+	if err != nil {
+		return "", q, nil, err
+	}
+	store, ok := w.(keyring.BrokerTokens)
+	if !ok {
+		return "", q, nil, fmt.Errorf("the %s keychain backend cannot hold a vault broker token", w.Name())
+	}
+	return ws, q, store, nil
 }
 
 func secretTarget(raw string) (string, keyring.ItemWriter, error) {
