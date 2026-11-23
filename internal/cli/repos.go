@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/elk-work/rein/internal/config"
@@ -58,7 +61,15 @@ unless --from or --into say otherwise; a checkout already there is reused).`,
 			}
 			force, _ := cmd.Flags().GetBool("force")
 			return changeRepos(cmd, func(cfg config.Config, q config.Queue) (config.Config, config.Queue, error) {
-				return applyEnrolRepos(cfg, q, enrolRepos{Repos: []namedRepo{{Name: name, Path: dir}}}, force)
+				if have, ok := cfg.RepositoriesFor(q)[name]; ok {
+					if filepath.Clean(expandHome(have)) == dir {
+						return cfg, q, fmt.Errorf("queue %s already has %s, at %s; nothing changed", q.Name, name, have)
+					}
+					if !force {
+						return cfg, q, fmt.Errorf("queue %s already has %s, at %s; nothing changed (pass --force to point it at %s)", q.Name, name, have, dir)
+					}
+				}
+				return applyEnrolRepos(cfg, pinServed(cfg, q), enrolRepos{Repos: []namedRepo{{Name: name, Path: dir}}}, force)
 			}, addNote)
 		},
 	}
@@ -78,22 +89,39 @@ func newReposRemoveCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
 			return changeRepos(cmd, func(cfg config.Config, q config.Queue) (config.Config, config.Queue, error) {
+				if _, ok := cfg.RepositoriesFor(q)[name]; !ok {
+					return cfg, q, fmt.Errorf("queue %s does not have %s, so there is nothing to remove; it has %s",
+						q.Name, name, orDash(strings.Join(servedNames(cfg, q), ", ")))
+				}
+				q = pinServed(cfg, q)
 				var kept []string
 				for _, r := range q.Repos {
 					if r != name {
 						kept = append(kept, r)
 					}
 				}
-				switch {
-				case len(kept) == len(q.Repos):
-					return cfg, q, fmt.Errorf("queue %s does not list %s; it lists %s", q.Name, name, strings.Join(q.Repos, ", "))
-				case len(kept) == 0:
+				if len(kept) == 0 {
 					return cfg, q, fmt.Errorf("%s is queue %s's last repository, and a queue with none stops every run; add another first, or revoke the queue", name, q.Name)
 				}
 				q.Repos = kept
 				if q.Repo == name {
 					// A run that names none still needs a default.
 					q.Repo = kept[0]
+				}
+				// Lists in one workspace combine, so a peer that lists it
+				// would keep it reachable: say so rather than claim it gone.
+				next := cfg
+				next.Queues = append([]config.Queue(nil), cfg.Queues...)
+				next.SetQueue(q)
+				if _, still := next.RepositoriesFor(q)[name]; still {
+					var via []string
+					for _, peer := range cfg.Queues {
+						if peer.Name != q.Name && cfg.WorkspaceFor(peer) == cfg.WorkspaceFor(q) && slices.Contains(peer.Repos, name) {
+							via = append(via, cfg.QueueLabel(peer))
+						}
+					}
+					return cfg, q, fmt.Errorf("queue %s would still reach %s through %s, which lists it in the same workspace; nothing changed",
+						q.Name, name, orDash(strings.Join(via, ", ")))
 				}
 				return cfg, q, nil
 			}, removalNote)
@@ -190,4 +218,25 @@ func cloneRepo(cmd *cobra.Command, name, from, into string) (string, error) {
 		fmt.Fprintf(cmd.OutOrStdout(), "cloned  %s into %s\n", firstNonEmpty(from, "https://github.com/"+name+".git"), dir)
 	}
 	return dir, err
+}
+
+// servedNames is what a run on q can be cut from today, sorted.
+func servedNames(cfg config.Config, q config.Queue) []string {
+	names := make([]string, 0)
+	for name := range cfg.RepositoriesFor(q) {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// pinServed gives a queue with no repos list of its own an explicit list of
+// what it serves today, before an add or remove edits that list. Without it,
+// a hand-set-up queue that reached all of [repos] would be narrowed to only
+// the repository just added, dropping every other one it had.
+func pinServed(cfg config.Config, q config.Queue) config.Queue {
+	if len(q.Repos) == 0 {
+		q.Repos = servedNames(cfg, q)
+	}
+	return q
 }

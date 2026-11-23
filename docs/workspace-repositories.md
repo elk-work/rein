@@ -95,6 +95,13 @@ reused). `rein repos remove owner/name` takes one off. `--queue` names the
 queue when the machine has several. Both write config.toml the way an
 enrolment's `--repo` does: every other queue keeps what it serves, and
 config.toml is backed up first when another queue's list has to be written.
+A queue with no `repos` list of its own is first given one naming what it
+serves today, so an add never narrows it to the new repository alone.
+
+Adding a repository the queue already has, or removing one it does not have,
+is refused with a plain message and leaves config.toml untouched. So is
+removing one that another queue in the same workspace still lists, since lists
+in a workspace combine and the queue would still reach it.
 
 A running service picks up an added repository between tasks, and its next
 heartbeat declares it to Elk. A removed one is not picked up: the service
