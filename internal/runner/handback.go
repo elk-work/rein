@@ -106,7 +106,7 @@ func (qr *queueRunner) handBackDead(ctx context.Context) {
 		case qr.alreadyReviewing(d.RunID):
 			// Its review was saved and has just been resumed (review_state.go).
 			continue
-		case d.Worktree == "" && d.SessionID == "":
+		case !d.Acknowledged && d.Worktree == "" && d.SessionID == "":
 			// It never reached its first report, so Elk never started it.
 			qr.logf("run %s: the Rein that claimed it stopped before starting it; Elk still has it queued", d.RunID)
 			continue

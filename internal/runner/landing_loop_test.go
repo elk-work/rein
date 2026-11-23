@@ -81,7 +81,7 @@ func TestAPRQueueIsToldItsPolicyAndCheckedAfterTheRun(t *testing.T) {
 	if strings.Contains(prompt, "Merge it yourself") {
 		t.Error("the pr queue was still told to merge")
 	}
-	if !strings.Contains(h.elk.CallsTo("report_progress")[0].Arg("body"), "Landing policy: `pr`") {
+	if !strings.Contains(h.elk.CallsTo("report_progress")[1].Arg("body"), "Landing policy: `pr`") {
 		t.Error("the opening report does not say the run's landing policy")
 	}
 

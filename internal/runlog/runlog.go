@@ -201,6 +201,10 @@ func (r Record) Terminal() bool {
 // before it opens the log at all: which queue, what was asked for, whether it
 // is still going, and where the work is happening.
 type Meta struct {
+	// Acknowledged records a successful claim report, even before setup has
+	// produced a worktree or session. Startup must hand this run back.
+	Acknowledged bool `json:"acknowledged,omitempty"`
+
 	RunID     string `json:"run_id"`
 	Queue     string `json:"queue,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
