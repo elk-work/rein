@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -102,11 +103,8 @@ func TestReposAddKeepsAnotherQueueOnWhatItServes(t *testing.T) {
 		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
 	}
 	cfg := loadConfig(t)
-	if q, _ := cfg.Queue("mac-codex"); !strings.Contains(strings.Join(q.Repos, ","), "elk-work/elk") {
-		t.Errorf("mac-codex lost elk-work/elk: %v", q.Repos)
-	}
-	if !strings.Contains(out, "kept    mac-codex") {
-		t.Errorf("add did not say it kept mac-codex:\n%s", out)
+	if q, _ := cfg.Queue("mac-codex"); cfg.RepositoriesFor(q)["elk-work/elk"] != elk {
+		t.Errorf("mac-codex lost elk-work/elk: %v", cfg.RepositoriesFor(q))
 	}
 }
 
@@ -147,9 +145,11 @@ func TestReposAddClonesIntoTheFolderGiven(t *testing.T) {
 	if got := loadConfig(t).Repos["elk-work/pulse"]; got != want {
 		t.Errorf("[repos] elk-work/pulse = %q, want %q", got, want)
 	}
-	// Again: the checkout is there now, so it is reused, not cloned over.
-	if _, errb, code := run(t, "repos", "add", "elk-work/pulse", "--clone", "--from", src, "--into", into); code != 0 {
-		t.Fatalf("second add: exit = %d, stderr: %s", code, errb)
+	// Again: the checkout is there now, so it is reused, not cloned over, and
+	// the queue already has it, so nothing changes.
+	out, errb, code = run(t, "repos", "add", "elk-work/pulse", "--clone", "--from", src, "--into", into)
+	if code == 0 || !strings.Contains(errb, "already has elk-work/pulse") || strings.Contains(out, "cloned") {
+		t.Fatalf("second add: exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
 	}
 }
 
@@ -181,5 +181,98 @@ func TestReposRemoveTakesARepositoryOffTheQueue(t *testing.T) {
 	// Its last repository stays: a queue with none strands every run.
 	if _, errb, code := run(t, "repos", "remove", "elk-work/elk"); code == 0 || !strings.Contains(errb, "last repository") {
 		t.Fatalf("exit = %d, stderr: %s", code, errb)
+	}
+}
+
+// Adding a repository the queue already has, or removing one it does not
+// have, says so and leaves config.toml byte for byte as it was.
+func TestReposRefusalsLeaveTheFileAsItWas(t *testing.T) {
+	elk, pulse := checkout(t, "elk"), checkout(t, "pulse")
+	path := saveConfig(t, config.Config{Workspace: "Elk Scout", HostID: "mac",
+		Repos:  map[string]string{"elk-work/elk": elk, "elk-work/pulse": pulse},
+		Queues: []config.Queue{{Name: "worker-4", AgentKind: "claude", Parallel: 2, Repos: []string{"elk-work/elk", "elk-work/pulse"}, Repo: "elk-work/elk"}}})
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"repos", "add", "elk-work/pulse", "--path", pulse}, "already has elk-work/pulse"},
+		{[]string{"repos", "add", "elk-work/pulse", "--path", checkout(t, "other")}, "already has elk-work/pulse"},
+		{[]string{"repos", "remove", "elk-work/scout"}, "does not have elk-work/scout"},
+	} {
+		out, errb, code := run(t, tc.args...)
+		if code == 0 || !strings.Contains(errb, tc.want) || !strings.Contains(errb, "nothing") {
+			t.Errorf("%v: exit = %d\nstdout: %s\nstderr: %s", tc.args, code, out, errb)
+		}
+		if after, _ := os.ReadFile(path); string(after) != string(before) {
+			t.Errorf("%v changed config.toml:\n%s", tc.args, after)
+		}
+	}
+}
+
+// Removing one repository changes that queue's list and nothing else: the
+// other repositories, the [repos] table and every other setting stay.
+func TestReposRemoveLeavesEverythingElseAsItWas(t *testing.T) {
+	a, b, c := checkout(t, "a"), checkout(t, "b"), checkout(t, "c")
+	before := config.Config{Workspace: "Elk Scout", HostID: "mac", MachineID: "m-1",
+		Repos: map[string]string{"o/a": a, "o/b": b, "o/c": c},
+		Queues: []config.Queue{
+			{Name: "worker-4", AgentKind: "claude", Parallel: 3, Repos: []string{"o/a", "o/b"}, Repo: "o/a"},
+			{Name: "mac-codex", AgentKind: "codex", Workspace: "Other", Repos: []string{"o/c"}, Repo: "o/c"}}}
+	saveConfig(t, before)
+	want := loadConfig(t)
+	if _, errb, code := run(t, "repos", "remove", "o/b", "--queue", "worker-4"); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errb)
+	}
+	got := loadConfig(t)
+	q, _ := got.Queue("worker-4")
+	if strings.Join(q.Repos, ",") != "o/a" || q.Repo != "o/a" {
+		t.Errorf("worker-4 repos = %v, repo = %q", q.Repos, q.Repo)
+	}
+	// Put back what remove was asked to change; the rest must be identical.
+	w, _ := want.Queue("worker-4")
+	w.Repos = []string{"o/a"}
+	want.SetQueue(w)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("remove changed more than the one repository:\n got  %+v\n want %+v", got, want)
+	}
+}
+
+// A worker set up by hand with no repos list reaches all of [repos]. Adding
+// one must keep every repository it already had, not narrow it to the new one.
+func TestReposAddKeepsWhatAnUnlistedQueueAlreadyHad(t *testing.T) {
+	elk, pulse := checkout(t, "elk"), checkout(t, "pulse")
+	saveConfig(t, config.Config{Workspace: "Elk Scout",
+		Repos:  map[string]string{"elk-work/elk": elk},
+		Queues: []config.Queue{{Name: "worker-4", AgentKind: "claude"}}})
+	if out, errb, code := run(t, "repos", "add", "elk-work/pulse", "--path", pulse); code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out, errb)
+	}
+	cfg := loadConfig(t)
+	q, _ := cfg.Queue("worker-4")
+	served := cfg.RepositoriesFor(q)
+	if served["elk-work/elk"] != elk || served["elk-work/pulse"] != pulse {
+		t.Errorf("worker-4 serves %v, want elk and pulse", served)
+	}
+}
+
+// Lists in one workspace combine, so taking a repository off one queue while
+// a peer still lists it would leave it reachable. Remove says so instead.
+func TestReposRemoveRefusesARepositoryAPeerStillLists(t *testing.T) {
+	a, b := checkout(t, "a"), checkout(t, "b")
+	saveConfig(t, config.Config{Workspace: "Elk Scout",
+		Repos: map[string]string{"o/a": a, "o/b": b},
+		Queues: []config.Queue{
+			{Name: "worker-4", AgentKind: "claude", Repos: []string{"o/a", "o/b"}, Repo: "o/a"},
+			{Name: "mac-codex", AgentKind: "codex", Repos: []string{"o/b"}, Repo: "o/b"}}})
+	_, errb, code := run(t, "repos", "remove", "o/b", "--queue", "worker-4")
+	if code == 0 || !strings.Contains(errb, "mac-codex") {
+		t.Fatalf("exit = %d, stderr: %s", code, errb)
+	}
+	if q, _ := loadConfig(t).Queue("worker-4"); strings.Join(q.Repos, ",") != "o/a,o/b" {
+		t.Errorf("worker-4 repos = %v", q.Repos)
 	}
 }
