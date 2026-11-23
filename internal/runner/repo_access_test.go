@@ -152,6 +152,13 @@ func TestARunNamingAnUnreadableRepositoryIsLeftQueued(t *testing.T) {
 	if got := runScoped(h, "run-1"); len(got) != 0 {
 		t.Errorf("the declined run was named in %v; that starts it rather than leaving it queued", got)
 	}
+	// The guard must skip only the unreadable run: the next readable run
+	// still acknowledges receipt before starting its setup.
+	reports := h.elk.CallsTo("report_progress")
+	if len(reports) == 0 || reports[0].Arg("run_id") != "run-2" ||
+		!strings.Contains(reports[0].Arg("body"), "Rein received the work order") {
+		t.Fatal("the readable run was not acknowledged first")
+	}
 	for _, c := range h.elk.CallsTo("submit_deliverable") {
 		if c.Arg("run_id") == "run-1" {
 			t.Errorf("the declined run was submitted %q", c.Arg("status"))

@@ -199,3 +199,21 @@ func TestStartupSubmitsNothingForARunElkSaysIsOver(t *testing.T) {
 		t.Fatalf("submit_deliverable calls = %d, want 0 for a run Elk says is over", n)
 	}
 }
+
+// Acknowledgement now starts the run before a worktree exists. A crash in
+// setup must therefore be recovered just like a crash in an agent session.
+func TestStartupHandsBackAcknowledgedRunBeforeWorktree(t *testing.T) {
+	h := newHarness(t)
+	logs := openRunLogs(t)
+	leaveDeadRun(t, logs, runlog.Meta{
+		RunID: "run-ack", Queue: h.cfg.QueueLabel(h.cfg.Queues[0]), Workspace: space,
+		Acknowledged: true,
+	}, 20*time.Second)
+	if err := h.run(runner.Options{Logs: logs}); err != nil {
+		t.Fatal(err)
+	}
+	back := handBacks(h)
+	if len(back) != 1 || back[0].Arg("run_id") != "run-ack" {
+		t.Fatalf("expected acknowledged run to be handed back, got %v", back)
+	}
+}

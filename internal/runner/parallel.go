@@ -206,7 +206,7 @@ func (qr *queueRunner) forkRun() *queueRunner {
 //
 // It is called on the serve goroutine, which is what makes the registration
 // safe to rely on: by the time the loop claims again, the run is listed.
-func (qr *queueRunner) driveBeside(ctx context.Context, wo *elk.WorkOrder, hold *slotHold) {
+func (qr *queueRunner) driveBeside(ctx context.Context, wo *elk.WorkOrder, hold *slotHold, ack *elk.ToolResult) {
 	w := qr.forkRun()
 	w.slot, w.trace = hold, qr.trace
 	qr.slot, qr.trace = nil, nil
@@ -225,7 +225,7 @@ func (qr *queueRunner) driveBeside(ctx context.Context, wo *elk.WorkOrder, hold 
 		defer qr.r.endClaim()
 		defer qr.driveOver(wo.RunID)
 		defer hold.release()
-		if err := w.drive(ctx, wo); err != nil {
+		if err := w.drive(ctx, wo, ack); err != nil {
 			w.logf("run %s: %v", wo.RunID, err)
 		}
 	}()

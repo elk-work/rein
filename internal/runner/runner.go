@@ -1432,6 +1432,17 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		qr.logf("run %s is already being driven on this queue; not starting it again", wo.RunID)
 		return false, "", nil
 	}
+	// A claim only holds the run for a minute. Acknowledge receipt before
+	// preflight or worktree setup can consume that hold, but only after the
+	// unreadable-repository guard: declined runs must receive no scoped call.
+	ack, ackErr := qr.elk.ReportProgress(ctx, elk.Progress{
+		RunID: wo.RunID, Kind: elk.ProgressTool,
+		Body: "Starting run: Rein received the work order; checking the machine and preparing the worktree.",
+	})
+	if ackErr != nil {
+		qr.logf("run %s: claim acknowledgement: %v", wo.RunID, ackErr)
+		ack = nil
+	}
 	hold.setRun(wo.RunID)
 	qr.traceClaim(wo)
 	qr.setWaiting("")
@@ -1452,10 +1463,10 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 	}
 	if qr.parallel > 1 {
 		handed = true
-		qr.driveBeside(ctx, wo, hold)
+		qr.driveBeside(ctx, wo, hold, ack)
 		return true, "", nil
 	}
-	return true, "", qr.drive(ctx, wo)
+	return true, "", qr.drive(ctx, wo, ack)
 }
 
 // lentLine says what lending the front of the line means for this queue's

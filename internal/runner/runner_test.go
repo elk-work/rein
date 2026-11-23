@@ -333,7 +333,7 @@ func TestCancelledMidRunDiscardsTheWork(t *testing.T) {
 	h := newHarness(t)
 	h.elk.Text("claim_run", order("run-1"))
 	// The agent asks a question, which is never throttled, so it is the
-	// second report — and the one Elk cancels on.
+	// third report — and the one Elk cancels on.
 	h.agent.Script = []adapter.Event{
 		{Kind: adapter.EventProgress, Text: "reading the code"},
 		{Kind: adapter.EventQuestion, Text: "Which target framework?"},
@@ -345,7 +345,7 @@ func TestCancelledMidRunDiscardsTheWork(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		n++
-		if n == 1 {
+		if n <= 2 {
 			return elktest.Reply{Text: "Progress recorded on `run-1`. Lease refreshed."}
 		}
 		// Plain text, no isError — exactly how Elk says it.
@@ -1024,7 +1024,7 @@ func TestTheOpeningReportSaysWhatTheAgentIsLookingAt(t *testing.T) {
 	if err := h.run(runner.Options{}); err != nil {
 		t.Fatalf("%v\nlog:\n%s", err, h.log)
 	}
-	first := h.elk.CallsTo("report_progress")[0].Arg("body")
+	first := h.elk.CallsTo("report_progress")[1].Arg("body")
 	for _, want := range []string{"origin/main", "abc12345", "Ark:", "could not link .ark"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("the opening report is missing %q:\n%s", want, first)

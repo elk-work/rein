@@ -105,7 +105,7 @@ func TestWatchReportsWhenSendFails(t *testing.T) {
 		t.Errorf("something reached a session that takes no input: %v", sent)
 	}
 	reports := h.elk.CallsTo("report_progress")
-	if len(reports) < 3 || reports[2].Arg("body") != "Couldn't pass your message to the session" {
+	if len(reports) < 4 || reports[3].Arg("body") != "Couldn't pass your message to the session" {
 		var bodies []string
 		for _, r := range reports {
 			bodies = append(bodies, r.Arg("body"))

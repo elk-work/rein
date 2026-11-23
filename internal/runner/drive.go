@@ -30,7 +30,7 @@ import (
 // that the run is no longer running. Returning without doing one of those two
 // things would leave a claim to lapse and the run to be handed to somebody
 // else fifteen minutes later, having already been worked.
-func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
+func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder, ack *elk.ToolResult) error {
 	if qr.r.opts.Hosted {
 		qr.hostedDeadline = time.Now().Add(qr.r.opts.Config.Hosted.RunCap())
 	}
@@ -42,8 +42,12 @@ func (qr *queueRunner) drive(ctx context.Context, wo *elk.WorkOrder) error {
 	}
 	qr.redact.Store(secretenv.NewRedactor(qr.withOwnToken(fetchSecrets)))
 	qr.replyOpened = time.Time{} // a window is one run's
-	// A run Elk handed over again was started by whoever held it before.
-	qr.started.Store(wo.Rehanded)
+	// Preserve the acknowledgement across setup and parallel forks so an
+	// interrupted setup hands back a run that has already started.
+	qr.started.Store(wo.Rehanded || ack != nil)
+	if ack != nil {
+		qr.holdComments(ack.Text)
+	}
 	qr.handedBack = false
 	qr.openLog(wo)
 	// Cleanup is a stack rather than defers so a review wait can take it with
@@ -533,10 +537,9 @@ func (qr *queueRunner) driveWithReview(ctx context.Context, a adapter.Adapter, s
 		spec.SystemPrompt += "\n\n" + runConnectorNote
 	}
 
-	// Report before spending a single token. The runbook asks for a report
-	// immediately after claiming, and it doubles as the cheapest possible
-	// check that the claim is still live: a run cancelled between the claim
-	// and here costs nothing instead of a whole session.
+	// Report the setup details before spending a single token. The claim was
+	// acknowledged before setup; this report also checks that it is still
+	// live, so a cancellation during setup costs no agent session.
 	// A tool line, not a step: this is Rein's note about the machine, and a step
 	// is what a person reads on their Lock Screen as what the agent is doing.
 	if err := qr.report(ctx, wo.RunID, elk.ProgressTool, qr.openingReport(repo, wt), "", "", &pending); err != nil {
