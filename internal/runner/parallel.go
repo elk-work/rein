@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -225,7 +226,7 @@ func (qr *queueRunner) driveBeside(ctx context.Context, wo *elk.WorkOrder, hold 
 		defer qr.r.endClaim()
 		defer qr.driveOver(wo.RunID)
 		defer hold.release()
-		if err := w.drive(ctx, wo, ack); err != nil {
+		if err := w.drive(ctx, wo, ack); err != nil && !errors.Is(err, errYielded) {
 			w.logf("run %s: %v", wo.RunID, err)
 		}
 	}()

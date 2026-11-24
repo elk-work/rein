@@ -131,6 +131,10 @@ const (
 
 // Options configure a [Runner].
 type Options struct {
+	// PriorityJobs is how the GitHub Actions jobs that come before agent work
+	// are read (yield.go); nil uses the GitHub CLI.
+	PriorityJobs PriorityLookup
+
 	// ArkCommand overrides the local Ark CLI for lifecycle tests.
 	ArkCommand func(context.Context, string, ...string) (string, error)
 
@@ -349,6 +353,10 @@ type WorktreeManager interface {
 
 // Runner serves one or more queues.
 type Runner struct {
+	// yield is the watch on this machine's GitHub Actions runner, nil when
+	// [config.Config.YieldToGitHub] is off (yield.go).
+	yield *yieldGate
+
 	upgradeMu sync.Mutex
 	// settingsMu serialises queues writing the Elk app's settings into
 	// config.toml (settings.go), so two beats cannot interleave a rewrite.
@@ -529,6 +537,13 @@ func New(opts Options) (*Runner, error) {
 		logf:    r.logf,
 		retry:   opts.SlotInterval,
 	}
+	if y := opts.Config.YieldToGitHub; y.Enabled() && !opts.Hosted {
+		lookup := opts.PriorityJobs
+		if lookup == nil {
+			lookup = GitHubPriorityJobs("")
+		}
+		r.yield = newYieldGate(y, lookup, r.logf)
+	}
 	r.sleep, r.awake = opts.SleepWatch, opts.Assertion
 	if opts.KeepAwake && !opts.Hosted && !opts.DryRun {
 		if r.sleep == nil {
@@ -657,6 +672,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	go r.retryReaps(inner)
 
 	r.startUpgradeWatch(inner)
+	// The GitHub runner watch, before any queue claims: it also stops agent
+	// sessions whose grace has run out, so it runs for the life of the loop.
+	if r.yield != nil && !r.opts.DryRun {
+		go r.yield.run(inner)
+	}
 	var wg sync.WaitGroup
 	errs := make([]error, len(r.queues))
 	for i, q := range r.queues {
@@ -804,6 +824,10 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 // A fork's owner is the queue's own runner, the one the loop and the heartbeat
 // read. What belongs to the queue rather than to a run is kept there.
 type queueRunner struct {
+	// yieldWhy is why claimAndDrive stopped short of claiming for this
+	// machine's GitHub job, for noteClaimOutcome to keep on the beat.
+	yieldWhy string
+
 	// trace is the current run's place in its task's trace (tasktrace.go).
 	// Nil when spans are off. Set at the claim; a review continuation takes
 	// its run's with it.
@@ -1162,6 +1186,15 @@ func (qr *queueRunner) serve(ctx context.Context) error {
 			repoBlockLogged = block
 		}
 
+		// This machine's GitHub Actions jobs come first (yield.go): no claim
+		// while one waits for its runner, or while GitHub cannot be asked.
+		if wantClaim && qr.r.yield != nil {
+			if why := qr.r.yield.hold(ctx); why != "" {
+				wantClaim = false
+				qr.setWaiting(why)
+			}
+		}
+
 		// What the queue allows, as distinct from what the machine can
 		// afford: a queue already driving as many runs as its `parallel`
 		// says claims nothing more, whatever slots are free (parallel.go).
@@ -1402,6 +1435,15 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		}
 	}()
 
+	// Asked again here, on a fresh reading: a GitHub job may have turned up
+	// while the claim stood in line for a slot (yield.go).
+	if qr.r.yield != nil {
+		if why := qr.r.yield.holdFresh(ctx); why != "" {
+			qr.yieldWhy = why
+			return false, "", nil
+		}
+	}
+
 	var wo *elk.WorkOrder
 	for tries := 0; ; tries++ {
 		wo, err = qr.claimRun(ctx)
@@ -1466,7 +1508,10 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		qr.driveBeside(ctx, wo, hold, ack)
 		return true, "", nil
 	}
-	return true, "", qr.drive(ctx, wo, ack)
+	if err := qr.drive(ctx, wo, ack); err != nil && !errors.Is(err, errYielded) {
+		return true, "", err
+	}
+	return true, "", nil
 }
 
 // lentLine says what lending the front of the line means for this queue's
@@ -1529,6 +1574,12 @@ func (qr *queueRunner) releaseSlot() {
 // hands over the oldest group first. When the count and the claim disagree,
 // Rein cannot see which runs were passed over, but it can say that some were.
 func (qr *queueRunner) noteClaimOutcome(claimed bool, clear string, err error, depth int, known bool) {
+	if why := qr.yieldWhy; why != "" {
+		// The claim stopped short for this machine's GitHub job.
+		qr.yieldWhy = ""
+		qr.setWaiting(why)
+		return
+	}
 	switch {
 	case err != nil:
 		why := claimFailure(err)

@@ -202,6 +202,12 @@ type Config struct {
 	//	env_vars = ["CONTEXT7_API_KEY"]             # NAMES passed through
 	MCPServers map[string]MCPServer `toml:"mcp_servers"`
 
+	// YieldToGitHub gives this machine's GitHub Actions runner first call on
+	// it: while a job for that runner is waiting, Rein claims nothing, and an
+	// agent run already going is stopped and handed back. See
+	// internal/runner/yield.go.
+	YieldToGitHub YieldToGitHub `toml:"yield_to_github"`
+
 	// Queues are the named per-(host, agent kind) queues this machine serves.
 	Queues []Queue `toml:"queues"`
 }
@@ -341,6 +347,109 @@ type Stride struct {
 	// Disabled turns the spans off whatever else is set, the environment
 	// variables included.
 	Disabled bool `toml:"disabled,omitempty"`
+}
+
+// YieldToGitHub is the [Config] block for a machine that is also a GitHub
+// Actions runner whose jobs come before Elk's agent work:
+//
+//	[yield_to_github]
+//	runner    = "win-01"
+//	labels    = ["self-hosted", "windows", "win11", "ui-lab", "win-01"]
+//	repos     = ["elk-work/scout"]
+//	workflows = ["port-train.yml"]   # empty: every workflow in those repos
+//	grace     = "2m"
+//	interval  = "60s"
+//
+// A job counts when it is waiting and every one of its labels is one of
+// Labels (so GitHub could hand it to this runner), or when it is running on
+// Runner. GitHub is asked with the GitHub CLI's own login (`gh auth login`);
+// no token goes in this file.
+type YieldToGitHub struct {
+	// Runner is this machine's GitHub Actions runner name. Empty turns the
+	// block off.
+	Runner string `toml:"runner,omitempty"`
+	// Labels are every label the runner carries, its name label included.
+	Labels []string `toml:"labels,omitempty"`
+	// Repos are the owner/name repositories whose jobs this runner takes.
+	Repos []string `toml:"repos,omitempty"`
+	// Workflows narrows the jobs to these workflow files. Empty means all.
+	Workflows []string `toml:"workflows,omitempty"`
+	// Grace is how long a running agent run has, once a job is seen, before
+	// Rein stops it. Zero means [DefaultYieldGrace]; "0s" is not expressible
+	// as zero, so a machine that wants no grace writes "1s".
+	Grace Duration `toml:"grace,omitempty"`
+	// Interval is how often GitHub is asked. Zero means
+	// [DefaultYieldInterval]; anything under [MinYieldInterval] is refused.
+	Interval Duration `toml:"interval,omitempty"`
+}
+
+// The defaults and floor for [YieldToGitHub].
+const (
+	DefaultYieldGrace    = 2 * time.Minute
+	DefaultYieldInterval = time.Minute
+	// MinYieldInterval keeps the lookups well inside GitHub's hourly API
+	// allowance for the login they share with the person.
+	MinYieldInterval = 15 * time.Second
+)
+
+// Enabled reports whether the block is in use.
+func (y YieldToGitHub) Enabled() bool { return strings.TrimSpace(y.Runner) != "" }
+
+// GraceOrDefault is Grace, or [DefaultYieldGrace] when unset.
+func (y YieldToGitHub) GraceOrDefault() time.Duration {
+	if y.Grace <= 0 {
+		return DefaultYieldGrace
+	}
+	return y.Grace.Duration()
+}
+
+// IntervalOrDefault is Interval, or [DefaultYieldInterval] when unset.
+func (y YieldToGitHub) IntervalOrDefault() time.Duration {
+	if y.Interval <= 0 {
+		return DefaultYieldInterval
+	}
+	return y.Interval.Duration()
+}
+
+var workflowFileRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
+
+// validate refuses a block that would watch nothing, or the wrong thing.
+func (y YieldToGitHub) validate() error {
+	const where = "yield_to_github"
+	if !y.Enabled() {
+		if len(y.Labels)+len(y.Repos)+len(y.Workflows) > 0 || y.Grace != 0 || y.Interval != 0 {
+			return fmt.Errorf("%s: names no runner, so nothing else in it applies; set runner to this machine's GitHub Actions runner name", where)
+		}
+		return nil
+	}
+	if len(y.Labels) == 0 {
+		return fmt.Errorf("%s: labels must list every label runner %s carries, or no waiting job can be recognised as its", where, y.Runner)
+	}
+	for _, l := range y.Labels {
+		if strings.TrimSpace(l) == "" {
+			return fmt.Errorf("%s: labels has an empty label", where)
+		}
+	}
+	if len(y.Repos) == 0 {
+		return fmt.Errorf("%s: repos must name the owner/name repositories whose jobs runner %s takes", where, y.Runner)
+	}
+	for _, r := range y.Repos {
+		if !HostedRepoName(r) {
+			return fmt.Errorf("%s: repos entry %q is not owner/name", where, r)
+		}
+	}
+	for _, w := range y.Workflows {
+		if !workflowFileRE.MatchString(w) {
+			return fmt.Errorf("%s: workflows entry %q is not a workflow file name like port-train.yml", where, w)
+		}
+	}
+	if y.Grace < 0 {
+		return fmt.Errorf("%s: grace %s must not be negative", where, y.Grace.Duration())
+	}
+	if y.Interval != 0 && y.Interval.Duration() < MinYieldInterval {
+		return fmt.Errorf("%s: interval %s is under the %s floor", where, y.Interval.Duration(), MinYieldInterval)
+	}
+	return nil
 }
 
 // Duration is a [time.Duration] that reads and writes as TOML text — "60s",
@@ -1156,6 +1265,9 @@ func (c Config) Validate() error {
 	// one up to its own floor rather than refusing a config over it.
 	if c.Telemetry.Interval < 0 {
 		return fmt.Errorf("telemetry.interval %s: must not be negative", c.Telemetry.Interval.Duration())
+	}
+	if err := c.YieldToGitHub.validate(); err != nil {
+		return err
 	}
 	if u := strings.TrimSpace(c.Stride.IngestURL); u != "" {
 		parsed, err := url.Parse(u)

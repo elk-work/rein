@@ -780,6 +780,47 @@ today, and reading `exhausted_until` is the router's half (`ark:scout#2003`).
 A Codex window whose stated length is five hours or seven days is reported
 under those names, so Elk shows it without learning Codex's slot names.
 
+### A GitHub Actions runner first — `[yield_to_github]`
+
+Some machines are GitHub Actions runners before they are agent machines: Elk
+Scout's Windows lab boxes run the Windows port train, and win-02 is also the
+one desktop for on-screen device checks. Casey's ruling of 2026-11-23 lets
+them take Elk agent work only while no such job is waiting for them. The block
+says which runner this machine is:
+
+```toml
+[yield_to_github]
+runner    = "win-01"                                              # the GitHub runner's name
+labels    = ["self-hosted", "windows", "win11", "ui-lab", "win-01"] # every label it carries
+repos     = ["elk-work/scout"]
+workflows = ["port-train.yml"]   # optional, but set it: empty asks about every open run in repos
+grace     = "2m"                 # how long a running agent gets before it is stopped
+interval  = "60s"                # how often GitHub is asked; 15s at the least
+```
+
+A job counts when it is waiting and every label in its `runs-on` is in
+`labels` (GitHub's own rule for which runner may take it), or when it is
+running on `runner`. Then:
+
+- **No claims.** The queue stays online, beats as usual, and says on its beat
+  which job it is waiting behind.
+- **No claims when GitHub cannot be asked either.** A lookup that fails — no
+  `gh`, an expired login, GitHub down — holds claims exactly as a waiting job
+  does, so the machine can only end up idle, never ahead of a port.
+- **A running agent gives way.** Once a job has been seen for `grace`, Rein
+  interrupts the agent, pushes the run's branch if it has commits, and hands
+  the run back to Elk as interrupted (`stuck`, stop code `claim_lapsed`), which
+  Elk starts again on another agent. Only committed work is pushed:
+  committing what the agent left uncommitted would mean running git in the
+  worktree, whose config the agent controls. A failed lookup never stops a run.
+
+GitHub's runner is its own process and starts a job the moment GitHub hands it
+one, so a port is never delayed by Rein; `grace` bounds how long it shares the
+machine with an agent. On win-02, where a device check needs the desktop to
+itself, keep it short. GitHub is asked with the GitHub CLI's own login (`gh
+auth login` as the user Rein runs as); no token goes in `config.toml`. The code
+is `internal/runner/yield.go`.
+
 ### Chrome for runs — `rein browser`
 
 Every run gets one Chrome, headless, with a fresh profile per launch: a
