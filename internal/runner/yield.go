@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -95,6 +96,11 @@ func priorityJobs(y config.YieldToGitHub, jobs []PriorityJob) []PriorityJob {
 	return out
 }
 
+// yieldLookupTimeout bounds one lookup: a call per open run, so a busy
+// repository watched with no workflows named takes a while. A lookup that
+// runs out fails closed, which is why `workflows` should be set.
+const yieldLookupTimeout = 2 * time.Minute
+
 // yieldGate is the machine's one watch on its GitHub Actions runner, shared
 // by every queue.
 type yieldGate struct {
@@ -102,6 +108,10 @@ type yieldGate struct {
 	lookup PriorityLookup
 	logf   func(string, ...any)
 	now    func() time.Time
+
+	// lookupMu runs one lookup at a time, so an older answer can never land
+	// after a newer one.
+	lookupMu sync.Mutex
 
 	mu sync.Mutex
 	// checked is when the last lookup finished; zero before the first.
@@ -133,7 +143,18 @@ func newYieldGate(y config.YieldToGitHub, lookup PriorityLookup, logf func(strin
 // refresh asks GitHub once and records the answer, then stops any session
 // whose grace has run out.
 func (g *yieldGate) refresh(ctx context.Context) {
-	lctx, cancel := context.WithTimeout(ctx, landingTimeout)
+	asked := g.now()
+	g.lookupMu.Lock()
+	defer g.lookupMu.Unlock()
+	g.mu.Lock()
+	answered := g.checked.After(asked)
+	g.mu.Unlock()
+	if answered {
+		// A lookup that started while this one waited has answered for it.
+		g.preempt()
+		return
+	}
+	lctx, cancel := context.WithTimeout(ctx, yieldLookupTimeout)
 	jobs, err := g.lookup(lctx, g.y)
 	cancel()
 	if ctx.Err() != nil {
@@ -163,6 +184,15 @@ func (g *yieldGate) refresh(ctx context.Context) {
 		}
 	}
 	g.preempt()
+}
+
+// holdFresh is [yieldGate.hold] on a reading taken now: the last word before
+// a claim.
+func (g *yieldGate) holdFresh(ctx context.Context) string {
+	g.refresh(ctx)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reasonLocked()
 }
 
 // hold is the sentence saying why no claim may be made now, or "" when one
@@ -206,9 +236,10 @@ func (g *yieldGate) reasonLocked() string {
 	return ""
 }
 
-// due reports whether a job has been seen for at least the grace period.
+// dueLocked reports whether a job has been seen for at least the grace
+// period, on a lookup that succeeded: a failed one never stops a run.
 func (g *yieldGate) dueLocked() bool {
-	return len(g.jobs) > 0 && !g.since.IsZero() && g.now().Sub(g.since) >= g.y.GraceOrDefault()
+	return g.err == nil && len(g.jobs) > 0 && !g.since.IsZero() && g.now().Sub(g.since) >= g.y.GraceOrDefault()
 }
 
 // preempt stops every session when a job has waited out the grace period.
@@ -338,6 +369,8 @@ func GitHubPriorityJobs(gh string) PriorityLookup {
 // ghLines runs `gh api --paginate` with a jq filter and returns its lines.
 func ghLines(ctx context.Context, gh, path, jq string) ([]string, error) {
 	cmd := exec.CommandContext(ctx, gh, "api", "--paginate", "-H", "Accept: application/vnd.github+json", path, "--jq", jq)
+	// Plain lines whatever the service's environment says about colour.
+	cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=0", "GH_FORCE_TTY=", "NO_COLOR=1")
 	out, err := cmd.Output()
 	if err != nil {
 		var exit *exec.ExitError

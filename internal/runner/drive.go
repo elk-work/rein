@@ -921,7 +921,9 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			wctx, unwatch = qr.r.yield.watch(ctx, wo.RunID)
 		}
 		out := qr.watch(wctx, sess, wo, spec, pending)
-		yielded := ctx.Err() == nil && errors.Is(context.Cause(wctx), errYielded)
+		// A session that already gave its result is finished, not stopped:
+		// the cancel can land between the result and the session's exit.
+		yielded := ctx.Err() == nil && out.result == nil && errors.Is(context.Cause(wctx), errYielded)
 		unwatch()
 		qr.r.sessions.remove(wo.RunID)
 		qr.live = nil

@@ -200,3 +200,29 @@ esac
 		t.Errorf("a gh failure was not reported: %v", err)
 	}
 }
+
+// A job seen once and then a GitHub that stops answering: claims stay held,
+// but the run is not stopped on a sighting nobody can confirm.
+func TestAFailedLookupAfterASightingDoesNotStopARun(t *testing.T) {
+	now := time.Now()
+	fail := false
+	g := newYieldGate(win02(), func(context.Context, config.YieldToGitHub) ([]PriorityJob, error) {
+		if fail {
+			return nil, errors.New("gh api: HTTP 502")
+		}
+		return []PriorityJob{{Name: "device check", Status: "queued", Labels: []string{"self-hosted", "win-02"}}}, nil
+	}, func(string, ...any) {})
+	g.now = func() time.Time { return now }
+	wctx, release := g.watch(context.Background(), "run-1")
+	defer release()
+	g.refresh(context.Background())
+	fail = true
+	now = now.Add(time.Hour)
+	g.refresh(context.Background())
+	if wctx.Err() != nil {
+		t.Fatal("stopped on a sighting the last lookup could not confirm")
+	}
+	if g.hold(context.Background()) == "" {
+		t.Error("claims were let through with GitHub unreadable")
+	}
+}

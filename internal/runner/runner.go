@@ -824,6 +824,10 @@ func (r *Runner) newQueueRunner(q config.Queue) (*queueRunner, error) {
 // A fork's owner is the queue's own runner, the one the loop and the heartbeat
 // read. What belongs to the queue rather than to a run is kept there.
 type queueRunner struct {
+	// yieldWhy is why claimAndDrive stopped short of claiming for this
+	// machine's GitHub job, for noteClaimOutcome to keep on the beat.
+	yieldWhy string
+
 	// trace is the current run's place in its task's trace (tasktrace.go).
 	// Nil when spans are off. Set at the claim; a review continuation takes
 	// its run's with it.
@@ -1431,11 +1435,11 @@ func (qr *queueRunner) claimAndDrive(ctx context.Context) (claimed bool, clear s
 		}
 	}()
 
-	// Asked again here: a GitHub job may have turned up while the claim stood
-	// in line for a slot (yield.go).
+	// Asked again here, on a fresh reading: a GitHub job may have turned up
+	// while the claim stood in line for a slot (yield.go).
 	if qr.r.yield != nil {
-		if why := qr.r.yield.hold(ctx); why != "" {
-			qr.setWaiting(why)
+		if why := qr.r.yield.holdFresh(ctx); why != "" {
+			qr.yieldWhy = why
 			return false, "", nil
 		}
 	}
@@ -1570,6 +1574,12 @@ func (qr *queueRunner) releaseSlot() {
 // hands over the oldest group first. When the count and the claim disagree,
 // Rein cannot see which runs were passed over, but it can say that some were.
 func (qr *queueRunner) noteClaimOutcome(claimed bool, clear string, err error, depth int, known bool) {
+	if why := qr.yieldWhy; why != "" {
+		// The claim stopped short for this machine's GitHub job.
+		qr.yieldWhy = ""
+		qr.setWaiting(why)
+		return
+	}
 	switch {
 	case err != nil:
 		why := claimFailure(err)

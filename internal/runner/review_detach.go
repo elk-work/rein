@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -289,6 +290,15 @@ func (qr *queueRunner) continueReview(ctx context.Context, c reviewCont) {
 				qr.logf("run %s: %v", c.wo.RunID, err)
 			}
 			return
+		}
+		if y := qr.r.yield; y != nil {
+			if why := y.holdFresh(ctx); why != "" {
+				// A revision is agent work like any other: this machine's
+				// GitHub job goes first, and the run goes back to Elk.
+				qr.logf("run %s: Elk asked for revisions, but %s", c.wo.RunID, strings.TrimPrefix(why, "not claiming: "))
+				qr.yieldBack(ctx, c.wo, c.wt, c.pending)
+				return
+			}
 		}
 		qr.logf("run %s: Elk asked for revisions; running the agent again (round %d)", c.wo.RunID, round+1)
 		qr.log.Runner(runlog.KindReview, "Elk asked for revisions; running the agent again (round %d)", round+1)

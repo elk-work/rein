@@ -793,7 +793,7 @@ says which runner this machine is:
 runner    = "win-01"                                              # the GitHub runner's name
 labels    = ["self-hosted", "windows", "win11", "ui-lab", "win-01"] # every label it carries
 repos     = ["elk-work/scout"]
-workflows = ["port-train.yml"]   # optional; empty watches every workflow in repos
+workflows = ["port-train.yml"]   # optional, but set it: empty asks about every open run in repos
 grace     = "2m"                 # how long a running agent gets before it is stopped
 interval  = "60s"                # how often GitHub is asked; 15s at the least
 ```
