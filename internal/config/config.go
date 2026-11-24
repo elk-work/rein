@@ -566,9 +566,10 @@ type Queue struct {
 	// Documents, Desktop, Downloads, Pictures, Movies, Music and iCloud Drive.
 	// Off by default (Casey's ruling on Elk #1832, 2026-11-12): a worker stays
 	// out unless the person allows it, because macOS asks about those folders
-	// with no warning the moment a background agent touches one. Today only
-	// the Claude Code adapter enforces it, with deny rules (see
-	// adapter/claude personalFolderDenies); the others do not yet.
+	// with no warning the moment a background agent touches one. Claude Code
+	// (deny rules), Gemini CLI (policy-engine deny rules) and Grok (the OS
+	// sandbox, and deny rules) enforce it; Codex does not yet, because it can
+	// deny folders only inside a sandbox Rein's full mode turns off.
 	PersonalFolders bool `toml:"personal_folders,omitempty"`
 }
 

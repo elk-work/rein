@@ -127,6 +127,47 @@ served:
 | `read_only` | `--approval-mode plan` | `write_file` into the worktree refused |
 | `full` | `--approval-mode yolo` | `write_file` and `run_shell_command` ran |
 
+## The person's own folders (`ark:rein#162`)
+
+Unless the queue allows them (`personal_folders`), a run stays out of the
+person's own folders (`adapter.PersonalFolderPaths`: Documents, Desktop,
+Downloads, Pictures, Movies, Music and iCloud Drive; on Windows the known
+folders where Windows says they are, and OneDrive). Gemini CLI has no
+read-deny setting; what it has is its policy engine, and Rein uses that.
+
+- The rules go in `<private home>/.gemini/policies/rein-personal-folders.toml`,
+  the user tier. Yolo's allow-everything rule is in the default tier
+  (priority 998 → 1.998); Rein's deny rules are 999 → 4.999, so they win in
+  every approval mode. The workspace tier is switched off in Gemini CLI, so a
+  repository cannot outrank them.
+- One rule per folder, for `run_shell_command` and the file tools
+  (`read_file`, `read_many_files`, `write_file`, `replace`, `list_directory`,
+  `glob`, `grep_search`), matching the folder's absolute path or its path
+  from `~`, `$HOME`, `${HOME}` (and `%USERPROFILE%`, `$env:USERPROFILE` on
+  Windows) in the call's arguments. MCP tools are left alone: their
+  arguments are text for another service.
+- The file tools already refuse a path outside the workspace ("Path not in
+  workspace"); the rules are what stop a shell command that names a folder.
+  A command that reaches one without naming it (`cd ~; cat */x`) is not
+  matched: like Claude Code's, this is a default, not a sandbox.
+- A folder holding the run's own repository stays open.
+
+**Gemini CLI drops a rule it thinks is a ReDoS risk, and runs on without
+it.** Its check (`isSafeRegExp`, Gemini CLI 0.64) refuses any pattern
+matching `\([^)]*[*+?{].*\)[*+?{]`, which is every pattern with a quantified
+group. A first version using `(?:/|\\\\)+` loaded no rule at all, with only a
+debug line to say so. The patterns use classes (`[/\\]+`), and Rein refuses to
+start a run with a pattern that check would drop (`safeForGemini`).
+
+Verified 2026-11-25 against Gemini CLI 0.64's own policy engine
+(`createPolicyEngineConfig` + `PolicyEngine.check`, yolo, headless) with a
+rule file this adapter wrote: `ls ~/Documents`, `cat "$HOME/documents/a"`,
+`read_file /Users/me/Documents/x`, a shell-escaped `Mobile\ Documents`, and on
+Windows `dir C:\Users\me\Documents`, `%USERPROFILE%\documents` and
+`$env:USERPROFILE\Documents` were denied; `ls /Users/me/Documents2`,
+`go test ./...` and an MCP call mentioning `~/Documents` were allowed. No
+model turn was run.
+
 ## Events
 
 `--output-format stream-json`: `init` (session id, model), `message`

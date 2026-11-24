@@ -24,7 +24,7 @@ func (h *privateHome) sandboxCommand(ctx context.Context, binary string, args []
 	if runtime.GOOS != "darwin" {
 		return nil, fmt.Errorf("grok: macOS sandbox requested on %s", runtime.GOOS)
 	}
-	profile, err := h.writeMacSandbox(ctx, spec.WorktreeDir)
+	profile, err := h.writeMacSandbox(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -41,8 +41,8 @@ func (h *privateHome) commandEnv(spec adapter.RunSpec) []string {
 	return h.runEnv(spec.InheritedEnv(), extra)
 }
 
-func (h *privateHome) writeMacSandbox(ctx context.Context, work string) (string, error) {
-	work, err := filepath.EvalSymlinks(work)
+func (h *privateHome) writeMacSandbox(ctx context.Context, spec adapter.RunSpec) (string, error) {
+	work, err := filepath.EvalSymlinks(spec.WorktreeDir)
 	if err != nil {
 		return "", err
 	}
@@ -80,6 +80,13 @@ func (h *privateHome) writeMacSandbox(ctx context.Context, work string) (string,
 	for _, name := range []string{"hooks", "hooks-paths", "config.toml", "sandbox.toml", "sandbox.sb", "trusted_folders.toml", "managed_config.toml", "requirements.toml", "auth.json"} {
 		fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", strconv.Quote(filepath.Join(home, name)))
 	}
+	// The person's own folders, closed to reads as well, unless the queue
+	// allows them (personal_folders.go). Last, so they win.
+	denies, err := seatbeltDenies(h.deniedFolders(spec))
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(denies)
 	profile := filepath.Join(home, "sandbox.sb")
 	if err := os.WriteFile(profile, []byte(b.String()), 0600); err != nil {
 		return "", err

@@ -435,10 +435,20 @@ question in the middle of the night. To let a queue in, enrol it with
 `--personal-folders` (or set `personal_folders = true` on the queue) and
 restart the worker (`rein service stop`, then `rein service start`);
 the daemon opens each folder once as it starts, so macOS asks then, not in
-the middle of a run. A folder you refuse is named in the log. The other
-adapters do not enforce this yet, and a
+the middle of a run. A folder you refuse is named in the log. A
 command that reads files without naming them can still reach the folders:
-it is a default, not a sandbox.
+for Claude Code it is a default, not a sandbox.
+
+The other agents, each with what its program really offers:
+
+| Agent | Kept out by | Platforms |
+|---|---|---|
+| Claude Code | deny rules (above) | macOS, Linux, Windows |
+| Gemini CLI | deny rules in its policy engine, which hold in `yolo` mode, for its file tools and any shell command that names a folder; its file tools already stay inside the repository | macOS, Linux, Windows |
+| Grok | the operating system: Rein's sandbox profile on macOS, Grok's own sandbox on Linux (which needs bubblewrap installed, or the run does not start); plus Grok's deny rules on every platform | macOS, Linux. **Windows: deny rules only** — Grok has no sandbox on Windows |
+| Codex | **nothing yet.** Codex can deny folders only inside its own sandbox, and Rein's `full` mode runs Codex with that sandbox off (`danger-full-access`). A Codex run can read and write these folders | — |
+
+See each adapter's doc under `docs/` for the detail.
 
 **Tools that read credentials themselves: wrap them.** Under the service, a
 run's environment is closed — a LaunchAgent does not read your shell profile,

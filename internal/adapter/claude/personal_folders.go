@@ -1,9 +1,7 @@
 package claude
 
 import (
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 
@@ -37,16 +35,10 @@ func personalFolderDenies(home, worktree string) []string {
 		}
 		return deny
 	}
-	inUse := []string{}
-	if worktree != "" {
-		inUse = append(inUse, worktree)
-		if common := gitCommonDir(worktree); common != "" {
-			inUse = append(inUse, common)
-		}
-	}
+	inUse := adapter.InUsePaths(worktree)
 	var deny []string
 	for _, f := range folders {
-		if holdsAny(f.Path, inUse) {
+		if adapter.HoldsAny(f.Path, inUse) {
 			continue
 		}
 		deny = append(deny, denyRules(ruleRoot(home, f.Path))...)
@@ -67,7 +59,7 @@ func denyRules(root string) []string {
 // from the filesystem root.
 func ruleRoot(home, path string) string {
 	if home != "" {
-		h, p := fold(filepath.Clean(home)), fold(filepath.Clean(path))
+		h, p := adapter.FoldCase(filepath.Clean(home)), adapter.FoldCase(filepath.Clean(path))
 		if strings.HasPrefix(p, h+string(filepath.Separator)) {
 			return "~/" + filepath.ToSlash(filepath.Clean(path)[len(h)+1:])
 		}
@@ -99,62 +91,4 @@ func personalFolderDeniesForRun(home, worktree string) []string {
 	}
 	v, _ := runDenies.LoadOrStore(key, personalFolderDenies(home, worktree))
 	return v.([]string)
-}
-
-// holdsAny reports whether dir is, or contains, any of paths, comparing both
-// as written and with symlinks resolved. Case is ignored only where the disk
-// usually ignores it (macOS, Windows).
-func holdsAny(dir string, paths []string) bool {
-	for _, d := range []string{dir, resolved(dir)} {
-		d = fold(filepath.Clean(d))
-		for _, p := range paths {
-			for _, form := range []string{p, resolved(p)} {
-				c := fold(filepath.Clean(form))
-				if c == d || strings.HasPrefix(c, d+string(filepath.Separator)) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func fold(p string) string {
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
-		return strings.ToLower(p)
-	}
-	return p
-}
-
-func resolved(p string) string {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
-	}
-	return p
-}
-
-// gitCommonDir is where a worktree's repository keeps its data: the `.git`
-// file's `gitdir:` target, then that directory's `commondir`. Empty when the
-// worktree is an ordinary checkout or cannot be read.
-func gitCommonDir(worktree string) string {
-	b, err := os.ReadFile(filepath.Join(worktree, ".git"))
-	if err != nil {
-		return ""
-	}
-	line := strings.TrimSpace(string(b))
-	if !strings.HasPrefix(line, "gitdir:") {
-		return ""
-	}
-	gitDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktree, gitDir)
-	}
-	if c, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		common := strings.TrimSpace(string(c))
-		if !filepath.IsAbs(common) {
-			common = filepath.Join(gitDir, common)
-		}
-		return filepath.Clean(common)
-	}
-	return filepath.Clean(gitDir)
 }

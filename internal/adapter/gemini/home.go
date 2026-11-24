@@ -164,6 +164,11 @@ func (a *Adapter) newHome(spec adapter.RunSpec, key string) (*home, error) {
 		h.remove()
 		return nil, fmt.Errorf("writing the private Gemini CLI settings: %w", err)
 	}
+	// Never run without the folder rules the person did not waive.
+	if err := writePersonalFolderPolicy(conf, spec); err != nil {
+		h.remove()
+		return nil, err
+	}
 	if real != "" {
 		for _, f := range keyFiles {
 			src := filepath.Join(real, f)
