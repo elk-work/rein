@@ -285,6 +285,37 @@ the linked-worktree integration probe also checks an empty RunSpec has an empty
 MCP inventory. Unit tests cover plugin inventory validation and config encoding;
 replay tests cover passing the requested servers through `session/new`.
 
+## The person's own folders (`ark:rein#162`)
+
+Unless the queue allows them (`personal_folders`), a run stays out of the
+person's own folders (`adapter.PersonalFolderPaths`), less any folder holding
+the run's repository or its private home. Grok offers two layers, read from
+xai-org/grok-build on 2026-11-25; Rein uses each where it exists:
+
+| Layer | What it is | macOS | Linux | Windows |
+|---|---|---|---|---|
+| OS sandbox | the kernel refuses reads and writes | Rein's Seatbelt profile: `(deny file-read* file-write* (subpath …))`, last so it wins | `deny` in the `rein-worktree` profile, for the folders that exist (Grok mounts a placeholder over each, which over a missing one could leave an empty folder in home); Grok enforces it with bubblewrap and **refuses to start without bubblewrap** | **none** — Grok has no sandbox on Windows |
+| Permission rules | `[permission] deny` in the private `config.toml`: `Read(P)`, `Read(P/**)`, `Edit(P)`, `Edit(P/**)`; checked before `yoloMode`, for Grok's file tools and the paths a shell command names | yes | yes | yes, and the only layer |
+
+Grok's rules are absolute, forward-slashed and case-sensitive, and it expands
+no `~`, so with home unknown on macOS or Linux nothing can be named and no
+rule is written. `grok agent` takes no `--deny` flag; the rules can only come
+through the private home. A folder whose path holds a glob character
+(`*?[{`) cannot be named literally in Grok's sandbox, so on Linux such a run
+does not start rather than run without it.
+
+**On Windows a Grok run is covered by text-matching rules only**: a command
+that reaches a folder without naming it is not stopped. The same is true of
+the `rein-worktree` write boundary itself there: Grok's sandbox is a no-op on
+Windows (`xai-grok-sandbox`: "On non-unix targets enabling this feature is a
+no-op").
+
+Verified: `TestMacSandboxDeniesThePersonalFolders` runs the real
+`sandbox-exec` with the profile this adapter writes, on stand-in folders: a
+`cat`, an `ls` and a shell glob into them are refused, and allowed when the
+queue allows the folders. The Linux bubblewrap layer and the permission rules
+are not yet measured against a released Grok.
+
 ## Rate limits: the `StopFailure` hook (`ark:rein#40`)
 
 Grok exposes **no subscription window** — nothing on the ACP stream, no usage

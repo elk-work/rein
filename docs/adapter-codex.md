@@ -215,6 +215,29 @@ regression test asserts this switch reaches the child process.
 `TestIntegrationSessionSeesOnlyTheSpecsMCPServers` asserts the set of servers a
 real session starts, and fails on anything else.
 
+## The person's own folders: not covered (`ark:rein#162`)
+
+**A Codex run is not kept out of the person's own folders.** Every other
+adapter is, when the queue does not allow them (`personal_folders`); Codex
+ignores the setting.
+
+What Codex offers (openai/codex source, read 2026-11-25; nothing run):
+permission profiles in `config.toml` (`default_permissions`,
+`[permissions.<name>.filesystem]` with `read` / `write` / `deny` per path,
+from codex-cli 0.113; `deny` spelled so from 0.133), enforced by Codex's own
+sandbox: Seatbelt on macOS, bubblewrap on Linux, deny-read ACLs on Windows
+(0.131). A profile of `":root" = "write"` with the folders `deny` is "full
+access less those folders".
+
+Why Rein does not use it yet: every deny is ignored under
+`danger-full-access`, which is what `full` is (`permissionFlags`), and a
+profile cannot extend it. Using a profile means running every `full` Codex
+run inside Codex's sandbox: network off unless the profile turns it on, and
+whatever else that sandbox refuses (Keychain access for Git credential
+helpers was the trap in Grok's — docs/adapter-grok.md), and on Windows Codex's
+sandbox refuses full-disk writes outright. That change needs measuring on a
+real Codex before it ships to every Codex worker.
+
 ## Events
 
 | Codex | Rein event | Notes |

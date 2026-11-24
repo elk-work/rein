@@ -132,3 +132,50 @@ func TestMacSandboxInvalidProfileFailsClosed(t *testing.T) {
 		t.Fatal("command ran without enforcement")
 	}
 }
+
+// The kernel, not Grok, keeps the run out of the person's folders: a read and
+// a listing are refused, from any child process, while the
+// checkout stays usable. Run on stand-in folders under a temporary home.
+func TestMacSandboxDeniesThePersonalFolders(t *testing.T) {
+	_, paths := fakeFolders(t, "Documents", "Library/Mobile Documents")
+	secret := filepath.Join(paths[0], "secret.txt")
+	if err := os.WriteFile(secret, []byte("theirs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &privateHome{dir: t.TempDir()}
+	for _, allowed := range []bool{false, true} {
+		spec := adapter.RunSpec{WorktreeDir: work, PersonalFolders: allowed, Env: map[string]string{sandboxEnv: sandboxMacOS}}
+		run := func(args ...string) error {
+			t.Helper()
+			cmd, err := h.sandboxCommand(context.Background(), args[0], args[1:], spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.Dir = work
+			cmd.Env = h.commandEnv(spec)
+			return cmd.Run()
+		}
+		for _, args := range [][]string{
+			{"/bin/cat", secret},
+			{"/bin/ls", paths[0]},
+			{"/bin/ls", paths[1]},
+			{"/bin/sh", "-c", `cat "$1"/*`, "probe", paths[0]},
+		} {
+			if err := run(args...); (err == nil) != allowed {
+				t.Errorf("allowed=%v: %v: err = %v", allowed, args, err)
+			}
+		}
+		// Rein's profile allows writes only to the checkout, whatever the
+		// queue allows; the folder rules deny them as well.
+		if err := run("/usr/bin/touch", filepath.Join(paths[0], "new")); err == nil {
+			t.Errorf("allowed=%v: a write into Documents was allowed", allowed)
+		}
+		if err := run("/usr/bin/touch", filepath.Join(work, "ok")); err != nil {
+			t.Errorf("allowed=%v: the checkout is not writable: %v", allowed, err)
+		}
+	}
+}

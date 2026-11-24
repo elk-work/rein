@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -262,11 +263,28 @@ func (h *privateHome) configure(ctx context.Context, binary string, spec adapter
 	if err != nil {
 		return err
 	}
-	if err := h.writeTOML("config.toml", map[string]any{"plugins": map[string]any{"disabled": names}}); err != nil {
+	conf := map[string]any{"plugins": map[string]any{"disabled": names}}
+	folders := h.deniedFolders(spec)
+	if deny := permissionDenies(folders); len(deny) > 0 {
+		conf["permission"] = map[string]any{"deny": deny}
+	}
+	if err := h.writeTOML("config.toml", conf); err != nil {
 		return err
 	}
 	if spec.Env[sandboxEnv] != sandboxWorktree {
 		return nil
+	}
+	profile := map[string]any{"extends": "workspace"}
+	if runtime.GOOS == "linux" {
+		// Grok's sandbox does nothing on Windows; on Linux it denies these
+		// with bubblewrap, and refuses to start without it.
+		deny, err := profileDenies(folders)
+		if err != nil {
+			return err
+		}
+		if len(deny) > 0 {
+			profile["deny"] = deny
+		}
 	}
 	paths, err := gitWritePaths(ctx, spec.WorktreeDir)
 	if err != nil {
@@ -282,7 +300,8 @@ func (h *privateHome) configure(ctx context.Context, binary string, spec adapter
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return h.writeTOML("sandbox.toml", map[string]any{"profiles": map[string]any{sandboxWorktree: map[string]any{"extends": "workspace", "read_write": paths}}})
+	profile["read_write"] = paths
+	return h.writeTOML("sandbox.toml", map[string]any{"profiles": map[string]any{sandboxWorktree: profile}})
 }
 
 func pluginNames(data []byte) ([]string, error) {
