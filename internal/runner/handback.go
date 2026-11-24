@@ -132,10 +132,17 @@ func (qr *queueRunner) handBackDead(ctx context.Context) {
 // handBack tells Elk a run was interrupted by a restart and gives up the
 // claim. what is the sentence saying how Rein came to stop driving it. It
 // returns [elk.ErrCancelled] when the run was not running any more.
+func (qr *queueRunner) handBack(ctx context.Context, runID, branch, what string, pending *elk.Usage) error {
+	return qr.handBackAs(ctx, runID, branch, "Interrupted by a Rein restart", what+" The run was interrupted by the restart.", false, pending)
+}
+
+// handBackAs is [queueRunner.handBack] under a title of the caller's, for a
+// stop that was not a restart (yield.go). pushed says the branch is on
+// origin.
 //
 // ctx may already be cancelled: the calls are made on one that is not, bounded
 // by [handBackTimeout].
-func (qr *queueRunner) handBack(ctx context.Context, runID, branch, what string, pending *elk.Usage) error {
+func (qr *queueRunner) handBackAs(ctx context.Context, runID, branch, title, what string, pushed bool, pending *elk.Usage) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handBackTimeout)
 	defer cancel()
 
@@ -149,7 +156,7 @@ func (qr *queueRunner) handBack(ctx context.Context, runID, branch, what string,
 	_, err := qr.elk.ReportProgress(ctx, elk.Progress{
 		RunID: runID,
 		Kind:  elk.ProgressStep,
-		Body: qr.redactString(what + " The run was interrupted by the restart: it did not finish and it did not fail. " +
+		Body: qr.redactString(what + " It did not finish and it did not fail. " +
 			"Rein is handing it back to Elk to be started again."),
 		Usage: usage,
 	})
@@ -160,12 +167,14 @@ func (qr *queueRunner) handBack(ctx context.Context, runID, branch, what string,
 		*pending = elk.Usage{}
 	}
 
-	const title = "Interrupted by a Rein restart"
-	body := "## " + title + "\n\n" + what + " The run was interrupted: it did not finish and it did not fail. " +
+	body := "## " + title + "\n\n" + what + " It did not finish and it did not fail. " +
 		"Rein handed it back so Elk can start it again on a ready agent, and nobody needs to do anything.\n\n"
-	if branch != "" {
+	switch {
+	case branch != "" && pushed:
+		body += "Anything the agent had committed is pushed to branch `" + branch + "`. Changes it had not committed are gone with the run's folder.\n"
+	case branch != "":
 		body += "Anything the agent had committed is on branch `" + branch + "`. Changes it had not committed are gone with the run's folder.\n"
-	} else {
+	default:
 		body += "The run had no branch yet, so nothing is left of it on this machine.\n"
 	}
 	_, err = qr.elk.SubmitDeliverable(ctx, elk.Submission{

@@ -913,7 +913,16 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			onAttach:  func() error { return asks.retract(ctx, true) },
 		}
 		qr.r.sessions.add(qr.live)
-		out := qr.watch(ctx, sess, wo, spec, pending)
+		// The watch alone hears a GitHub Actions job that comes first
+		// (yield.go): the session itself keeps ctx, so giving way is an
+		// interrupt like every other stop, not a killed process.
+		wctx, unwatch := ctx, func() {}
+		if qr.r.yield != nil {
+			wctx, unwatch = qr.r.yield.watch(ctx, wo.RunID)
+		}
+		out := qr.watch(wctx, sess, wo, spec, pending)
+		yielded := ctx.Err() == nil && errors.Is(context.Cause(wctx), errYielded)
+		unwatch()
 		qr.r.sessions.remove(wo.RunID)
 		qr.live = nil
 		// What the session last said about the subscription outlives it: it
@@ -1005,6 +1014,15 @@ func (qr *queueRunner) runSession(ctx context.Context, a adapter.Adapter, spec a
 			}
 			return sessionResult{done: true}, qr.submitStuck(ctx, wo, title,
 				stoppedBody(why, qr.runDetails(wt, repo, spec, sess.ID()), out), pending)
+
+		case yielded:
+			// A GitHub Actions job for this machine's runner waited out its
+			// grace. Stop the agent, push what it committed, and hand the
+			// run back to be started again on another agent.
+			qr.interrupt(sess)
+			qr.logf("run %s: stopped for a GitHub Actions job", wo.RunID)
+			qr.yieldBack(ctx, wo, wt, pending)
+			return sessionResult{done: true}, errYielded
 
 		case ctx.Err() != nil:
 			// The daemon is shutting down. Stop the agent and hand the claim
