@@ -188,6 +188,27 @@ If something blocked you, say exactly what, what you tried, and what would
 unblock it. A clear blocker is a good outcome. A run that quietly did something
 adjacent instead is not.
 
+Say what the run leaves for a person on one line of its own, outside any code
+block, so Rein can pass it to Elk (Rein takes the line out of the report):
+
+    Person next: none
+
+Write exactly one of the three values:
+
+- `none`: the work succeeded and nothing needs the person: the task closes
+  itself, nothing lands on Decisions and no notification is sent. Open the
+  deliverable "Nothing needs you."
+- `decision`: the person has a real decision to make: it lands on Decisions,
+  and the deliverable states the decision, its options and which you
+  recommend. Open it "Needs you: decide …".
+- `check`: the person has something to do — look at it in use, verify a fix,
+  test on a device: it lands on To do, and the deliverable says exactly what to
+  check and what success looks like. Open it "Needs you: <the check>." and
+  include "What happened:", "What you do:" and "It worked when:".
+
+A run that stops on a blocker needs no line. Elk refuses an outcome
+the deliverable does not state, so write the parts the value needs.
+
 If Elk reviews your deliverable and asks for changes, you will be started again
 with its verdict as your direction — in the same worktree, usually resuming the
 same session. Make what it asked for and finish the same way; do not start the

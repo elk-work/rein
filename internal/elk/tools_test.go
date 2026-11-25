@@ -833,3 +833,45 @@ func TestClaimRunTimesTheReplyAndReadsATaskNumber(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmitDeliverableSendsPersonNextOnlyWhenSet(t *testing.T) {
+	s := elktest.New(t, testToken)
+	s.Text("submit_deliverable", "Deliverable saved: run `run-77` is `ready`.")
+	c := newClient(t, s)
+	ctx := context.Background()
+
+	if _, err := c.SubmitDeliverable(ctx, elk.Submission{
+		RunID: "run-77", Deliverable: "Needs you: check it.", Status: elk.StatusReady, PersonNext: "check",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SubmitDeliverable(ctx, elk.Submission{
+		RunID: "run-77", Deliverable: "Nothing needs you.", Status: elk.StatusReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := s.CallsTo("submit_deliverable")
+	if got := calls[0].Args["person_next"]; got != "check" {
+		t.Errorf("person_next = %v, want check", got)
+	}
+	if _, sent := calls[1].Args["person_next"]; sent {
+		t.Error("person_next sent although the submission named none")
+	}
+}
+
+func TestPersonNextRefusalIsRecognised(t *testing.T) {
+	s := elktest.New(t, testToken)
+	s.Reply("submit_deliverable", elktest.Reply{IsError: true, Text: "This run says `person_next: \"check\"` — the person has something to do. " +
+		"The deliverable lacks \"What you do:\". Write it in this shape and submit again:\nNeeds you: …"})
+	c := newClient(t, s)
+
+	_, err := c.SubmitDeliverable(context.Background(), elk.Submission{
+		RunID: "run-77", Deliverable: "Done.", Status: elk.StatusReady, PersonNext: "check",
+	})
+	if _, ok := elk.PersonNextRefusal(err); !ok {
+		t.Errorf("err = %v, not read as a person_next refusal", err)
+	}
+	if _, ok := elk.PersonNextRefusal(errors.New("elk: something else")); ok {
+		t.Error("an unrelated error read as a person_next refusal")
+	}
+}

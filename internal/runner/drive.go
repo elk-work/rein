@@ -1874,6 +1874,9 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 		sessionID = out.result.SessionID
 	}
 	summary := agentAccount(out)
+	// The agent's "Person next:" line says what the run leaves a person; it
+	// goes to Elk as person_next, not into the report (personnext.go).
+	summary, personNext := takePersonNext(summary)
 	if summary == "" {
 		summary = "The agent finished without producing a written summary. " +
 			"This run's details name the branch it left behind."
@@ -1934,6 +1937,7 @@ func (qr *queueRunner) submitReady(ctx context.Context, wo *elk.WorkOrder, out w
 		StopCode:    code,
 		Title:       truncate(title, 200),
 		NoProof:     noProof,
+		PersonNext:  personNext,
 	}, pending)
 }
 
@@ -2043,6 +2047,18 @@ func (qr *queueRunner) submit(ctx context.Context, wo *elk.WorkOrder, s elk.Subm
 		s.Usage = &u
 	}
 	res, err := qr.elk.SubmitDeliverable(ctx, s)
+	if refusal, refused := elk.PersonNextRefusal(err); refused && s.PersonNext != "" {
+		// Elk refused the outcome the agent named because the deliverable
+		// does not state what it needs. Losing the run over that would be
+		// worse than the guess Elk makes without it: submit once more
+		// without person_next, so Elk reads the report's opener as before.
+		qr.logf("run %s: Elk refused person_next %q (%s); submitting again without it",
+			wo.RunID, s.PersonNext, firstLine(refusal))
+		qr.log.Runner(runlog.KindNote, "Elk refused person_next %q: %s; submitted again without it",
+			s.PersonNext, firstLine(refusal))
+		s.PersonNext = ""
+		res, err = qr.elk.SubmitDeliverable(ctx, s)
+	}
 	switch {
 	case errors.Is(err, elk.ErrCancelled):
 		qr.logStatus = runlog.StatusCancelled
