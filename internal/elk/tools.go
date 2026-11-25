@@ -923,6 +923,21 @@ func ProofRefusal(err error) (string, bool) {
 	return "", false
 }
 
+// personNextRefusalPrefix opens Elk's refusal of a submit whose deliverable
+// does not state what its `person_next` needs (scout run_outcome.ts
+// personNextProblem): "This run says `person_next: "check"` — …".
+const personNextRefusalPrefix = "This run says `person_next:"
+
+// PersonNextRefusal returns Elk's words when err is its refusal of a submit
+// whose deliverable does not state what the outcome it named needs.
+func PersonNextRefusal(err error) (string, bool) {
+	var te *ToolError
+	if errors.As(err, &te) && strings.HasPrefix(strings.TrimSpace(te.Text), personNextRefusalPrefix) {
+		return te.Text, true
+	}
+	return "", false
+}
+
 // ------------------------------------------------------------ auto-review
 
 // AutoReviewLine is the marching-orders line Elk renders into a work order
@@ -1072,6 +1087,12 @@ type Submission struct {
 	// NoProof says why a finished run carries no screenshot and no Tests
 	// section (scout 0647). Sent only when set.
 	NoProof string
+	// PersonNext is what the run leaves for a person: none, decision or check
+	// (scout run_outcome.ts). Sent only when set; left empty, Elk reads the
+	// outcome from the deliverable's own opener, as it did before Rein sent
+	// one. Elk refuses a submit whose deliverable does not state what the
+	// named outcome needs — see [PersonNextRefusal].
+	PersonNext string
 }
 
 // SubmitResult is what Elk recorded.
@@ -1122,6 +1143,7 @@ func (c *Client) SubmitDeliverable(ctx context.Context, s Submission) (*SubmitRe
 	putIf(args, "summary", s.Summary)
 	putIf(args, "stop_code", s.StopCode)
 	putIf(args, "no_proof", s.NoProof)
+	putIf(args, "person_next", s.PersonNext)
 	if len(s.CompletedActions) > 0 {
 		args["completed_actions"] = s.CompletedActions
 	}
